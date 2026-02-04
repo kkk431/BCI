@@ -7,7 +7,7 @@
 
 import time
 import numpy as np
-from enhanced_data_server import (
+from data_server import (
     UnifiedDataServer,
     create_default_data_dict,
     add_signal_modality
