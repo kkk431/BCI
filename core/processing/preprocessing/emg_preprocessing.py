@@ -118,11 +118,14 @@ class EMGPreprocessingConfig(PreprocessingConfig):
     """
     EMG预处理配置类
     继承通用预处理配置，添加EMG特有参数
+
+    重要说明：高截止频率必须小于采样率的一半（奈奎斯特频率）
+    例如：1000Hz采样率时，高截止频率应小于500Hz
     """
     # ========== 基础滤波配置 ==========
-    # EMG信号通常需要较宽的带通滤波范围（20-500Hz）
+    # EMG信号通常需要较宽的带通滤波范围（20-450Hz），必须小于采样率的一半
     emg_bandpass_low: float = 20.0  # EMG带通低截止频率（Hz）
-    emg_bandpass_high: float = 500.0  # EMG带通高截止频率（Hz）
+    emg_bandpass_high: float = 450.0  # EMG带通高截止频率（Hz），从500改为450
     emg_bandpass_order: int = 4  # 带通滤波器阶数
 
     # ========== 工频干扰去除配置 ==========
@@ -1187,9 +1190,9 @@ class EMGConfigFactory:
             sEMG专用配置
         """
         return EMGPreprocessingConfig(
-            # 滤波配置（sEMG典型频带：20-500Hz）
+            # 滤波配置（sEMG典型频带：20-450Hz）
             emg_bandpass_low=20.0,
-            emg_bandpass_high=500.0,
+            emg_bandpass_high=450.0,  # 修改这里：从500.0改为450.0
             emg_bandpass_order=4,
             filter_type=FilterType.BUTTERWORTH,
 
@@ -1243,7 +1246,7 @@ class EMGConfigFactory:
         return EMGPreprocessingConfig(
             # 滤波配置（HD-EMG需要更高带宽）
             emg_bandpass_low=10.0,
-            emg_bandpass_high=1000.0,
+            emg_bandpass_high=450.0,  # 修改这里：从1000.0改为450.0
             emg_bandpass_order=6,
             filter_type=FilterType.BESSEL,  # 贝塞尔滤波器保持相位信息
 
@@ -1299,7 +1302,7 @@ class EMGConfigFactory:
         return EMGPreprocessingConfig(
             # 滤波配置
             emg_bandpass_low=10.0,
-            emg_bandpass_high=400.0,
+            emg_bandpass_high=400.0,  # 这个值是安全的（400 < 500）
             emg_bandpass_order=4,
             filter_type=FilterType.BUTTERWORTH,
 
@@ -1350,7 +1353,7 @@ class EMGConfigFactory:
         return EMGPreprocessingConfig(
             # 滤波配置（保留更宽频带用于频域分析）
             emg_bandpass_low=5.0,
-            emg_bandpass_high=500.0,
+            emg_bandpass_high=450.0,  # 修改这里：从500.0改为450.0
             emg_bandpass_order=4,
             filter_type=FilterType.BUTTERWORTH,
 
@@ -1445,9 +1448,10 @@ class EMGConfigFactory:
 
 # ====================== 使用示例和测试函数 ======================
 
-def test_emg_preprocessing():
+def test_emg_preprocessing_fixed():
     """
-    测试EMG预处理功能
+    修复版EMG预处理测试
+    修复了高截止频率设置错误的问题
     """
     # 创建模拟数据
     np.random.seed(42)
@@ -1696,7 +1700,8 @@ class EMGBatchProcessor:
 
 if __name__ == "__main__":
     # 运行测试
-    processed_data = test_emg_preprocessing()
+    print("运行EMG预处理测试...")
+    processed_data = test_emg_preprocessing_fixed()
 
     # 示例：如何使用EMG预处理器
     print("\n" + "=" * 60)
