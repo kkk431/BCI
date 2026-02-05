@@ -361,7 +361,8 @@ class fNIRSPreprocessor(GeneralPreprocessor):
     
     def _validate_fNIRS_input(self, data_dict: Dict, modality: str):
         """
-        验证fNIRS特有输入结构
+        独立的fNIRS输入验证方法
+        不调用父类验证，避免2D维度限制
         
         Args:
             data_dict: 四层数据字典
@@ -370,26 +371,63 @@ class fNIRSPreprocessor(GeneralPreprocessor):
         Raises:
             ValueError: 如果输入数据格式不符合fNIRS要求
         """
-        # 首先调用通用验证
-        super()._validate_input(data_dict, modality)
+        # 1. 基本字典结构验证
+        if "signal" not in data_dict:
+            raise ValueError("输入数据字典必须包含'signal'键")
+        
+        if modality not in data_dict["signal"]:
+            raise ValueError(f"模态'{modality}'不在输入数据中")
         
         signal_info = data_dict["signal"][modality]
         
-        # 检查fNIRS特有字段
-        if "wavelengths" not in signal_info and self.config.use_intensity_data:
-            logger.warning(f"fNIRS信号缺少'wavelengths'字段，将使用配置中的波长: {self.config.wavelengths}")
-            data_dict["signal"][modality]["wavelengths"] = self.config.wavelengths
+        # 2. 必需字段验证
+        required_keys = ["data", "sampling_rate"]
+        for key in required_keys:
+            if key not in signal_info:
+                raise ValueError(f"信号信息必须包含'{key}'键")
         
-        # 检查数据维度
+        # 3. 数据格式和维度验证
         data = signal_info["data"]
+        if not isinstance(data, np.ndarray):
+            raise ValueError("信号数据必须是numpy数组")
+        
+        # 检查数据是否为空
+        if data.size == 0:
+            raise ValueError("fNIRS数据不能为空数组")
+        
+        # fNIRS允许2D或3D数据
         if len(data.shape) not in [2, 3]:
             raise ValueError(f"fNIRS数据必须是2维或3维数组，当前维度: {len(data.shape)}")
         
-        if len(data.shape) == 3:
-            # 三维数据: 检查波长数量
-            n_channels, n_wavelengths, _ = data.shape
-            if "wavelengths" in signal_info and len(signal_info["wavelengths"]) != n_wavelengths:
-                raise ValueError(f"波长数量({len(signal_info['wavelengths'])})与数据第二维度({n_wavelengths})不匹配")
+        # 4. 通道信息验证（如果提供了channel_names）
+        if "channel_names" in signal_info:
+            n_channels = data.shape[0] if len(data.shape) == 2 else data.shape[0]
+            if len(signal_info["channel_names"]) != n_channels:
+                raise ValueError(f"通道数量({len(signal_info['channel_names'])})与数据第一维度({n_channels})不匹配")
+        
+        # 5. 波长信息验证（如果是3D数据且需要波长信息）
+        if len(data.shape) == 3 and self.config.use_intensity_data:
+            n_wavelengths = data.shape[1]
+            
+            # 检查配置中的波长数量
+            if len(self.config.wavelengths) != n_wavelengths:
+                logger.warning(f"配置中波长数量({len(self.config.wavelengths)})与数据第二维度({n_wavelengths})不匹配")
+            
+            # 检查信号中的波长信息（如果提供）
+            if "wavelengths" in signal_info:
+                if len(signal_info["wavelengths"]) != n_wavelengths:
+                    raise ValueError(f"波长数量({len(signal_info['wavelengths'])})与数据第二维度({n_wavelengths})不匹配")
+            else:
+                # 如果没有波长信息，使用配置中的波长
+                logger.warning(f"fNIRS信号缺少'wavelengths'字段，将使用配置中的波长: {self.config.wavelengths}")
+                data_dict["signal"][modality]["wavelengths"] = self.config.wavelengths
+        
+        # 6. 采样率验证
+        sampling_rate = signal_info["sampling_rate"]
+        if not isinstance(sampling_rate, (int, float)) or sampling_rate <= 0:
+            raise ValueError(f"采样率必须是正数，当前值: {sampling_rate}")
+        
+        logger.debug(f"fNIRS验证通过: {modality}, 数据形状: {data.shape}, 采样率: {sampling_rate}Hz")
     
     # ====================== fNIRS特有预处理方法 ======================
     
@@ -456,7 +494,16 @@ class fNIRSPreprocessor(GeneralPreprocessor):
             corrected_data: 校正后的光学密度数据
             motion_info: 运动伪影信息字典
         """
-        n_channels, n_wavelengths, n_samples = optical_density.shape
+         # 检查数据维度
+        if len(optical_density.shape) == 2:
+            # 2D数据: 假设 (channels, samples)，添加波长维度
+            n_channels, n_samples = optical_density.shape
+            optical_density = optical_density.reshape(n_channels, 1, n_samples)
+            is_2d = True
+        else:
+            n_channels, n_wavelengths, n_samples = optical_density.shape
+            is_2d = False
+
         corrected_data = optical_density.copy()
         motion_info = {
             "n_motion_events": 0,
@@ -469,6 +516,8 @@ class fNIRSPreprocessor(GeneralPreprocessor):
             corrected_data, motion_info = self._motion_correction_spline(
                 optical_density, sampling_rate, threshold
             )
+            # 确保返回的motion_info包含method
+            motion_info["method"] = method.value
             
         elif method == MotionCorrectionMethod.PCA:
             # 主成分分析法
@@ -489,6 +538,10 @@ class fNIRSPreprocessor(GeneralPreprocessor):
                 optical_density, sampling_rate
             )
         
+            # 如果是2D数据，恢复原始形状
+        if is_2d:
+            corrected_data = corrected_data.reshape(n_channels, n_samples)
+
         return corrected_data, motion_info
     
     def _motion_correction_spline(self,
@@ -506,7 +559,8 @@ class fNIRSPreprocessor(GeneralPreprocessor):
         corrected_data = optical_density.copy()
         motion_info = {
             "n_motion_events": 0,
-            "motion_indices": []
+            "motion_indices": [],
+            "method": "spline"
         }
         
         # 对每个通道和波长进行处理
@@ -664,40 +718,18 @@ class fNIRSPreprocessor(GeneralPreprocessor):
         
         return corrected_data, motion_info
     
-    def _motion_correction_hmp(self,
-                               optical_density: np.ndarray,
-                               sampling_rate: float) -> Tuple[np.ndarray, Dict]:
-        """
-        基于心跳的运动伪影校正(HMP: Heartbeat-based Motion artifact correction using Phase synchronization)
-        
-        算法步骤:
-        1. 提取心跳信号（假设有辅助ECG信号或从fNIRS中提取心跳）
-        2. 利用心跳相位同步检测运动伪影
-        3. 校正运动伪影
-        """
-        # 这是一个简化的实现，实际应用中需要ECG信号或从fNIRS中提取心跳
-        n_channels, n_wavelengths, n_samples = optical_density.shape
-        motion_info = {
-            "n_motion_events": 0,
-            "method": "HMP",
-            "note": "需要ECG信号进行完整实现"
-        }
-        
-        # 这里返回原始数据，实际应用中需要完整实现
-        return optical_density, motion_info
-    
     def convert_to_concentration(self,
-                                 optical_density: np.ndarray,
-                                 wavelengths: List[float],
-                                 distances: Optional[np.ndarray] = None,
-                                 dpf: Optional[Dict[float, float]] = None,
-                                 extinction_coeffs: Optional[Dict[float, Dict[str, float]]] = None,
-                                 optical_model: OpticalModel = OpticalModel.MODIFIED_BEER_LAMBERT) -> Dict[str, np.ndarray]:
+                                optical_density: np.ndarray,
+                                wavelengths: List[float],
+                                distances: Optional[np.ndarray] = None,
+                                dpf: Optional[Dict[float, float]] = None,
+                                extinction_coeffs: Optional[Dict[float, Dict[str, float]]] = None,
+                                optical_model: OpticalModel = OpticalModel.MODIFIED_BEER_LAMBERT) -> Dict[str, np.ndarray]:
         """
         根据修正的比尔-朗伯定律，将光学密度转换为血氧浓度
         
         Args:
-            optical_density: 光学密度数据，形状为 (channels, wavelengths, samples)
+            optical_density: 光学密度数据，形状为 (channels, wavelengths, samples) 或 (channels, samples)
             wavelengths: 波长列表
             distances: 源-探测器距离数组，形状为 (channels,)
             dpf: 微分路径因子字典，键为波长，值为DPF
@@ -706,12 +738,33 @@ class fNIRSPreprocessor(GeneralPreprocessor):
             
         Returns:
             血氧浓度数据字典，包含"HbO"、"HbR"等键
+            对于单波长数据，返回空字典
         """
-        if len(optical_density.shape) != 3:
-            raise ValueError(f"光学密度数据必须是3维数组，当前维度: {len(optical_density.shape)}")
+        # 处理2D数据（单波长）
+        if len(optical_density.shape) == 2:
+            n_channels, n_samples = optical_density.shape
+            n_wavelengths = 1
+            
+            # 如果是单波长，无法计算血氧浓度，返回空字典
+            if len(wavelengths) == 1:
+                logger.warning("单波长数据无法计算血氧浓度，跳过此步骤")
+                return {}
+            
+            # 如果提供了波长但数据是2D，重塑为3D
+            if len(wavelengths) > 1:
+                # 假设数据已经是某种处理过的形式，无法直接计算血氧浓度
+                logger.warning(f"2D数据但有{len(wavelengths)}个波长，无法进行血氧浓度计算")
+                return {}
+        elif len(optical_density.shape) == 3:
+            n_channels, n_wavelengths, n_samples = optical_density.shape
+        else:
+            raise ValueError(f"光学密度数据必须是2维或3维数组，当前维度: {len(optical_density.shape)}")
         
-        n_channels, n_wavelengths, n_samples = optical_density.shape
+        # 如果数据是2D且无法计算血氧浓度，直接返回空字典
+        if len(optical_density.shape) == 2:
+            return {}
         
+        # 以下是3D数据的处理逻辑
         if len(wavelengths) != n_wavelengths:
             raise ValueError(f"波长数量({len(wavelengths)})与数据第二维度({n_wavelengths})不匹配")
         
@@ -1224,142 +1277,3 @@ class fNIRSPreprocessor(GeneralPreprocessor):
             
         else:
             logger.warning("没有找到预处理历史信息")
-
-
-# ====================== 实用函数 ======================
-
-def load_fNIRS_data(filepath: str, 
-                   modality: str = "fnirs",
-                   wavelengths: List[float] = None) -> Dict[str, Any]:
-    """
-    加载fNIRS数据（示例函数）
-    
-    实际应用中需要根据具体数据格式实现
-    
-    Args:
-        filepath: 数据文件路径
-        modality: 信号模态
-        wavelengths: 波长列表
-        
-    Returns:
-        四层结构的数据字典
-    """
-    # 这是一个示例函数，实际应用中需要根据具体数据格式实现
-    logger.warning("这是一个示例加载函数，需要根据实际数据格式实现")
-    
-    # 示例数据字典结构
-    data_dict = {
-        "meta": {
-            "subject_id": "S01",
-            "task": "resting_state",
-            "modality": ["fnirs"],
-            "device": "NIRx",
-            "sampling_rate": 10.0,  # fNIRS典型采样率
-            "n_channels": 20,
-            "channel_names": [f"CH{i}" for i in range(20)],
-            "wavelengths": wavelengths or [730.0, 850.0]
-        },
-        "signal": {
-            "fnirs": {
-                "data": np.random.randn(20, 2, 1000),  # 模拟数据
-                "sampling_rate": 10.0,
-                "unit": "V",
-                "channel_names": [f"CH{i}" for i in range(20)],
-                "wavelengths": wavelengths or [730.0, 850.0],
-                "distances": np.random.uniform(1.0, 3.0, 20)  # 模拟距离
-            }
-        },
-        "event": {
-            "event_id": [1, 2, 1],
-            "event_label": ["stimulus", "rest", "stimulus"],
-            "event_time": [10.0, 30.0, 50.0],
-            "event_sample": [100, 300, 500]
-        },
-        "processed": {}
-    }
-    
-    return data_dict
-
-
-def save_fNIRS_results(data_dict: Dict[str, Any], 
-                      output_path: str,
-                      include_intermediate: bool = False):
-    """
-    保存fNIRS处理结果
-    
-    Args:
-        data_dict: 处理后的数据字典
-        output_path: 输出文件路径
-        include_intermediate: 是否包含中间数据
-    """
-    import pickle
-    
-    # 如果不包含中间数据，则移除它们以减少文件大小
-    save_dict = data_dict.copy()
-    
-    if not include_intermediate and "processed" in save_dict:
-        for modality in list(save_dict["processed"].get("fNIRS_processing", {}).keys()):
-            if "intermediate_data" in save_dict["processed"]["fNIRS_processing"][modality]:
-                del save_dict["processed"]["fNIRS_processing"][modality]["intermediate_data"]
-    
-    # 保存为pickle文件
-    with open(output_path, 'wb') as f:
-        pickle.dump(save_dict, f)
-    
-    logger.info(f"fNIRS处理结果已保存到: {output_path}")
-
-
-# ====================== 示例使用代码 ======================
-
-if __name__ == "__main__":
-    """
-    fNIRS预处理模块使用示例
-    """
-    
-    # 1. 创建fNIRS配置
-    fnirs_config = fNIRSConfig(
-        # 通用预处理参数
-        lowcut=0.01,  # 血流动力学响应的低频截止
-        highcut=0.5,   # 血流动力学响应的高频截止
-        filter_type=FilterType.BUTTERWORTH,
-        filter_order=4,
-        detrend_method=DetrendMethod.LINEAR,
-        remove_baseline=True,
-        normalize_method="zscore",
-        
-        # fNIRS特有参数
-        motion_correction_method=MotionCorrectionMethod.SPLINE,
-        motion_correction_threshold=3.0,
-        use_channel_quality_assessment=True,
-        snr_threshold=15.0,
-        use_short_channel_regression=True,
-        short_channel_distance_threshold=1.0,
-        remove_physiological_noise=True,
-        baseline_correction_window=(-5.0, 0.0)
-    )
-    
-    # 2. 创建fNIRS预处理器
-    fnirs_processor = fNIRSPreprocessor(fnirs_config)
-    
-    # 3. 加载fNIRS数据（示例）
-    data_dict = load_fNIRS_data("example_fnirs_data.npy")
-    
-    # 4. 处理fNIRS数据
-    processed_data = fnirs_processor.process_fNIRS(
-        data_dict,
-        modality="fnirs",
-        return_hb_types=["HbO", "HbR", "HbT"]
-    )
-    
-    # 5. 可视化预处理结果
-    fnirs_processor.visualize_preprocessing(
-        processed_data,
-        modality="fnirs",
-        channel_idx=0,
-        wavelength_idx=0
-    )
-    
-    # 6. 保存处理结果
-    save_fNIRS_results(processed_data, "processed_fnirs_data.pkl")
-    
-    print("fNIRS预处理完成！")
