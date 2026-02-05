@@ -307,7 +307,7 @@ class ExperimentProtocol:
 def quick_example():
     """快速使用示例"""
     # 导入数据服务器
-    from enhanced_data_server import UnifiedDataServer, create_default_data_dict
+    from data_server import UnifiedDataServer, create_default_data_dict
 
     # 1. 创建数据服务器
     data_dict = create_default_data_dict()
