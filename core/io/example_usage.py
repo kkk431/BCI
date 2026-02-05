@@ -7,7 +7,7 @@
 
 import time
 import numpy as np
-from data_server import (
+from core.io.trigger_system.data_server import (
     UnifiedDataServer,
     create_default_data_dict,
     add_signal_modality
