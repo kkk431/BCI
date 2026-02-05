@@ -329,7 +329,7 @@ class BDFReader:
             output_path = os.path.join(self.file_dir, f"{base_name}_unified.h5")
 
         # 3. 保存为HDF5（使用之前的保存方法）
-        from data_server import UnifiedDataServer
+        from enhanced_data_server import UnifiedDataServer
         # 创建临时服务器实例用于保存
         temp_server = UnifiedDataServer(
             device_config={'device_type': 'Neuracle'},
