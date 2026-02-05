@@ -9,7 +9,7 @@ import mne
 import numpy as np
 import os
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List
 
 
 class BDFReader:
@@ -329,7 +329,7 @@ class BDFReader:
             output_path = os.path.join(self.file_dir, f"{base_name}_unified.h5")
 
         # 3. 保存为HDF5（使用之前的保存方法）
-        from data_server import UnifiedDataServer
+        from core.io.trigger_system.data_server import UnifiedDataServer
         # 创建临时服务器实例用于保存
         temp_server = UnifiedDataServer(
             device_config={'device_type': 'Neuracle'},
