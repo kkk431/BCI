@@ -1,0 +1,129 @@
+# 数据服务器配置模板
+
+# 设备配置
+device:
+  type: "Neuracle"  # Neuracle, Neuroscan, DSI, 或自定义
+  host: "127.0.0.1"
+  port: 8712
+  timeout: 10
+  reconnect_attempts: 3
+  reconnect_delay: 1.0
+
+# 数据缓冲配置
+buffer:
+  seconds: 5.0  # 环形缓冲区时长（秒）
+  chunk_size: 1000  # 数据块大小（样本数）
+  prealloc_memory_mb: 100  # 预分配内存（MB）
+
+# 信号配置
+signals:
+  EEG:
+    enabled: true
+    n_channels: 64
+    sampling_rate: 1000
+    channel_names: ["Fp1", "Fp2", "F7", "F3", "Fz", "F4", "F8", "T7", "C3", "Cz", "C4", "T8", "P7", "P3", "Pz", "P4", "P8", "O1", "O2"]
+      # ... 完整的64通道配置
+    unit: "uV"
+    reference: "average"
+
+  EOG:
+    enabled: true
+    n_channels: 2
+    sampling_rate: 1000
+    channel_names: ["HEOG", "VEOG"]
+    unit: "uV"
+
+  EMG:
+    enabled: false  # 默认禁用
+    n_channels: 4
+    sampling_rate: 2000
+    channel_names: ["Biceps_L", "Triceps_L", "Biceps_R", "Triceps_R"]
+    unit: "mV"
+
+# 事件配置
+events:
+  default_types:
+    - "TRIGGER"
+    - "STIMULUS"
+    - "RESPONSE"
+    - "MARKER"
+    - "ARTIFACT"
+  auto_detection:
+    enabled: true
+    amplitude_threshold: 100  # uV
+    duration_threshold: 0.1  # 秒
+
+# 处理管道配置
+processing:
+
+  # 实时预处理
+  preprocessing:
+    - name: "bandpass_filter"
+      enabled: true
+      lowcut: 0.5
+      highcut: 40.0
+
+    - name: "notch_filter"
+      enabled: true
+      freq: 50.0  # 工频干扰
+
+    - name: "referencing"
+      enabled: true
+      method: "average"
+
+  # 实时分析
+  analysis:
+    - name: "fft_analysis"
+      enabled: true
+      window_seconds: 1.0
+      overlap: 0.5
+
+    - name: "artifact_detection"
+      enabled: true
+      threshold: 100
+
+    - name: "feature_extraction"
+      enabled: false
+      features: ["mean", "std", "band_power"]
+
+# 数据保存配置
+saving:
+  auto_save: false
+  format: "hdf5"  # hdf5, numpy, parquet
+  chunk_duration: 30.0  # 每块数据时长（秒）
+  compression: true
+  save_path: "./data/"
+
+  # 触发保存的事件
+  save_triggers:
+    - event_type: "SESSION_END"
+    - event_type: "MANUAL_SAVE"
+
+# 监控和日志
+monitoring:
+  update_interval: 1.0  # 状态更新间隔（秒）
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_file: "./logs/data_server.log"
+
+  # 性能监控
+  performance:
+    track_data_rate: true
+    track_memory_usage: true
+    track_cpu_usage: true
+    alert_thresholds:
+      memory_mb: 1024
+      cpu_percent: 80
+
+# 网络和API
+network:
+  # 数据流API（供其他应用访问）
+  api_enabled: false
+  api_port: 8765
+  api_auth_required: true
+
+  # WebSocket实时数据流
+  websocket_enabled: false
+  websocket_port: 8766
+
+  # 远程触发
+  remote_triggers: true
