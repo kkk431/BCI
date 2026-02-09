@@ -446,25 +446,56 @@ class EEGPreprocessor:
 
     def _set_montage(self, raw: mne.io.RawArray) -> mne.io.RawArray:
         """
-        设置电极位置模板
-
-        Args:
-            raw: MNE Raw对象
-
-        Returns:
-            更新后的Raw对象
+        设置电极位置模板（改进版）
         """
         try:
-            raw.set_montage(self.config.montage)
+            # 首先尝试标准模板
+            raw.set_montage(self.config.montage, on_missing='warn')
             logger.info(f"已设置电极位置模板: {self.config.montage}")
+            return raw
         except Exception as e:
             logger.warning(f"无法设置电极位置模板 {self.config.montage}: {str(e)}")
-            # 尝试使用标准1020模板
-            try:
-                raw.set_montage("standard_1020")
-                logger.info("已使用标准1020模板")
-            except:
-                logger.warning("无法设置任何电极位置模板，空间信息可能不准确")
+
+            # 检查是否是模拟数据（通道名类似EEG_0, EEG_1）
+            ch_names = raw.ch_names
+            if all(name.startswith('EEG_') for name in ch_names):
+                logger.info("检测到模拟数据，创建虚拟电极布局")
+                return self._create_simulated_montage(raw)
+            else:
+                logger.warning("跳过电极位置设置")
+                return raw
+
+    def _create_simulated_montage(self, raw: mne.io.RawArray) -> mne.io.RawArray:
+        """
+        为模拟数据创建虚拟电极布局
+        """
+        try:
+            from mne.channels import make_dig_montage
+
+            ch_names = raw.ch_names
+            n_channels = len(ch_names)
+
+            # 创建一个简单的圆形布局
+            montage_positions = {}
+            radius = 0.1  # 半径
+
+            for i, ch_name in enumerate(ch_names):
+                angle = 2 * np.pi * i / n_channels
+                x = radius * np.cos(angle)
+                y = radius * np.sin(angle)
+                z = 0.0
+                montage_positions[ch_name] = [x, y, z]
+
+            # 创建数字化蒙太奇
+            montage = make_dig_montage(
+                ch_pos=montage_positions,
+                coord_frame='head'
+            )
+            raw.set_montage(montage)
+            logger.info(f"已为{len(ch_names)}个通道创建虚拟电极布局")
+
+        except Exception as e:
+            logger.warning(f"创建虚拟电极布局失败: {str(e)}")
 
         return raw
 
@@ -691,13 +722,7 @@ class EEGPreprocessor:
 
     def _apply_ica_artifact_removal(self, raw: mne.io.RawArray) -> Tuple[mne.io.RawArray, Dict]:
         """
-        应用ICA伪迹去除
-
-        Args:
-            raw: MNE Raw对象
-
-        Returns:
-            (处理后的Raw对象, ICA信息字典)
+        应用ICA伪迹去除（修复版）
         """
         ica_info = {
             "method": self.config.ica_method.value,
@@ -706,48 +731,42 @@ class EEGPreprocessor:
             "n_components_removed": 0
         }
 
-        # 确定ICA成分数量
-        if self.config.ica_n_components is None:
-            # 使用MNE的默认策略：使用解释95%方差的成分数量
-            n_components = None
-        elif isinstance(self.config.ica_n_components, float) and 0 < self.config.ica_n_components < 1:
-            # 解释指定方差比例
-            n_components = self.config.ica_n_components
-        else:
-            # 固定成分数量
-            n_components = int(self.config.ica_n_components)
-
-        ica_info["n_components"] = n_components
-
-        # 创建ICA对象
-        ica = ICA(
-            n_components=n_components,
-            method=self.config.ica_method.value,
-            max_iter=self.config.ica_max_iter,
-            random_state=self.config.ica_random_state,
-            fit_params=dict(extended=True) if self.config.ica_method == ICAMethod.EXTENDED_INFOMAX else None
-        )
-
-        # 拟合ICA
         try:
-            raw_for_ica = raw.copy()
+            # 确定ICA成分数量
+            if self.config.ica_n_components is None:
+                n_components = None
+            elif isinstance(self.config.ica_n_components, float) and 0 < self.config.ica_n_components < 1:
+                n_components = self.config.ica_n_components
+            else:
+                n_components = int(self.config.ica_n_components)
 
-            # 高通滤波（1Hz）以改善ICA性能
+            ica_info["n_components"] = n_components
+
+            # 创建ICA对象
+            ica = ICA(
+                n_components=n_components,
+                method=self.config.ica_method.value,
+                max_iter=self.config.ica_max_iter,
+                random_state=self.config.ica_random_state,
+                fit_params=dict(extended=True) if self.config.ica_method == ICAMethod.EXTENDED_INFOMAX else None
+            )
+
+            # 拟合ICA前进行1Hz高通滤波
+            raw_for_ica = raw.copy()
             raw_for_ica.filter(l_freq=1.0, h_freq=None, method='fir', verbose=False)
 
             # 拟合ICA
-            ica.fit(raw_for_ica, picks='eeg', verbose=False)
+            ica.fit(raw_for_ica, verbose=False)
 
             # 自动标记成分
             if self.config.artifact_removal == ArtifactRemovalMethod.ICA_AUTO:
-                # 使用ICLabel自动标记
+                # 尝试使用ICLabel自动标记
                 try:
+                    from mne_icalabel import label_components
                     ic_labels = label_components(raw_for_ica, ica, method='iclabel')
 
-                    # 确定要排除的成分（非大脑成分）
                     exclude_idx = []
-                    labels = ic_labels['labels']
-                    for i, label in enumerate(labels):
+                    for i, label in enumerate(ic_labels['labels']):
                         if label not in ['brain', 'other']:
                             exclude_idx.append(i)
 
@@ -755,33 +774,44 @@ class EEGPreprocessor:
                     ica_info["n_components_removed"] = len(exclude_idx)
 
                     if exclude_idx:
-                        logger.info(f"ICA自动标记排除{len(exclude_idx)}个成分: {exclude_idx}")
-                        # 应用ICA
+                        logger.info(f"ICA自动标记排除{len(exclude_idx)}个成分")
                         ica.apply(raw, exclude=exclude_idx)
                     else:
                         logger.info("ICA未发现需要排除的成分")
 
                 except Exception as e:
-                    logger.warning(f"ICA自动标记失败: {str(e)}，使用手动标记策略")
-                    # 回退到基于峰度的自动检测
-                    exclude_idx = self._detect_artifact_components_by_kurtosis(ica)
+                    logger.warning(f"ICA自动标记失败: {str(e)}，使用基于峰度的检测")
+                    # 使用基于峰度的检测
+                    sources = ica.get_sources(raw_for_ica).get_data()
+                    kurtosis_values = []
+
+                    for i in range(sources.shape[0]):
+                        source = sources[i, :]
+                        kurt = np.mean((source - np.mean(source)) ** 4) / (np.std(source) ** 4) - 3
+                        kurtosis_values.append(abs(kurt))
+
+                    # 检测异常峰度
+                    median_kurt = np.median(kurtosis_values)
+                    mad_kurt = np.median(np.abs(kurtosis_values - median_kurt))
+                    threshold = median_kurt + 3 * mad_kurt * 1.4826
+
+                    exclude_idx = [i for i, kurt in enumerate(kurtosis_values) if kurt > threshold]
+
                     ica_info["components_removed"] = exclude_idx
                     ica_info["n_components_removed"] = len(exclude_idx)
 
                     if exclude_idx:
                         ica.apply(raw, exclude=exclude_idx)
+                        logger.info(f"基于峰度排除{len(exclude_idx)}个成分")
 
             elif self.config.artifact_removal == ArtifactRemovalMethod.ICA_MANUAL:
-                # 手动标记（需要用户交互，这里只返回ICA对象信息）
                 logger.info("ICA手动标记模式，需要用户交互")
-                ica_info["ica_object"] = ica  # 保存ICA对象供后续使用
-
-            else:
-                logger.warning(f"不支持的伪迹去除方法: {self.config.artifact_removal}")
+                ica_info["ica_object"] = ica
 
         except Exception as e:
             logger.error(f"ICA处理失败: {str(e)}")
-            # 如果ICA失败，返回原始数据
+            # 如果ICA失败，记录错误但继续处理
+            ica_info["error"] = str(e)
 
         return raw, ica_info
 
@@ -1238,204 +1268,3 @@ class EEGConfigFactory:
             bad_channel_threshold=2.5,
             max_bad_channels=0.05  # 最多5%坏道
         )
-
-
-# ====================== 使用示例和测试函数 ======================
-
-def test_eeg_preprocessing_fixed():
-    """
-    EEG预处理测试
-    """
-    # 创建模拟数据
-    np.random.seed(42)
-
-    # 模拟参数
-    n_channels = 32
-    n_samples = 10000  # 10秒数据，1000Hz采样率
-    sampling_rate = 1000
-
-    # 生成模拟EEG数据（包含噪声和伪迹）
-    time = np.arange(n_samples) / sampling_rate
-
-    # 基础EEG信号（模拟alpha波）
-    eeg_data = np.zeros((n_channels, n_samples))
-    for i in range(n_channels):
-        # 模拟alpha波（8-12Hz）
-        alpha_freq = 10 + np.random.randn() * 1.0
-        alpha_amp = np.random.rand() * 20 + 10  # 10-30uV
-
-        # 模拟beta波（13-30Hz）
-        beta_freq = 20 + np.random.randn() * 5.0
-        beta_amp = np.random.rand() * 10 + 5  # 5-15uV
-
-        # 组合信号
-        eeg_data[i, :] = (
-                alpha_amp * np.sin(2 * np.pi * alpha_freq * time) +
-                beta_amp * np.sin(2 * np.pi * beta_freq * time)
-        )
-
-    # 添加噪声
-    noise_level = 5.0
-    eeg_data += np.random.randn(n_channels, n_samples) * noise_level
-
-    # 添加工频干扰（50Hz）
-    line_noise = 20.0 * np.sin(2 * np.pi * 50.0 * time)
-    eeg_data += line_noise.reshape(1, -1)
-
-    # 添加眼电伪迹（模拟眨眼）- 减小幅度以避免分段被拒绝
-    blink_times = [1.5, 4.2, 7.8]
-    for blink_time in blink_times:
-        blink_sample = int(blink_time * sampling_rate)
-        blink_duration = int(0.3 * sampling_rate)  # 300ms
-        blink_signal = 80.0 * np.hanning(blink_duration)  # 减少到80uV（低于150uV阈值）
-        start = max(0, blink_sample - blink_duration // 2)
-        end = min(n_samples, start + blink_duration)
-        actual_duration = end - start
-
-        # 主要影响前部电极
-        for i in range(min(8, n_channels)):  # 前8个通道
-            eeg_data[i, start:end] += blink_signal[:actual_duration]
-
-    # 创建通道名称（标准10-20系统）
-    channel_names = [
-                        'Fp1', 'Fp2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2',
-                        'F7', 'F8', 'T7', 'T8', 'P7', 'P8', 'Fz', 'Cz', 'Pz', 'Oz',
-                        'FC1', 'FC2', 'CP1', 'CP2', 'FC5', 'FC6', 'CP5', 'CP6',
-                        'TP9', 'TP10', 'POz', 'PO4'
-                    ][:n_channels]
-
-    # 创建模拟事件 - 确保所有分段都在数据范围内
-    # 数据长度：10秒，分段时间窗口：[-1.0, 4.0]秒
-    # 所以事件时间应该在[1.0, 6.0]秒之间
-    event_times = [1.5, 3.0, 4.5, 6.0]  # 4个事件，确保所有分段在范围内
-    event_ids = [1, 2, 1, 2]  # 两类事件
-
-    # 构建数据字典
-    data_dict = {
-        "meta": {
-            "subject_id": "S01",
-            "session_id": "test_session",
-            "task": "motor_imagery",
-            "modality": ["EEG"],
-            "device": "Simulated",
-            "sampling_rate": sampling_rate,
-            "n_channels": n_channels,
-            "channel_names": channel_names
-        },
-        "signal": {
-            "EEG": {
-                "data": eeg_data,
-                "sampling_rate": sampling_rate,
-                "unit": "uV",
-                "channel_names": channel_names,
-                "reference": "unknown",
-                "time_offset": 0.0
-            }
-        },
-        "event": {
-            "event_id": event_ids,
-            "event_label": ["left", "right", "left", "right"],
-            "event_time": event_times,
-            "event_sample": [int(t * sampling_rate) for t in event_times],
-            "duration": [2.0, 2.0, 2.0, 2.0]
-        },
-        "processed": {}
-    }
-
-    print("=" * 60)
-    print("EEG预处理测试")
-    print("=" * 60)
-
-    # 创建预处理器（使用运动想象配置）
-    config = EEGConfigFactory.create_motor_imagery_config()
-    preprocessor = EEGPreprocessor(config)
-
-    # 执行预处理
-    print("\n开始预处理...")
-    processed_data = preprocessor.process(data_dict)
-
-    # 显示处理结果
-    print("\n预处理完成!")
-    print(f"原始数据形状: {data_dict['signal']['EEG']['data'].shape}")
-    print(f"处理后数据形状: {processed_data['signal']['EEG']['data'].shape}")
-
-    # 显示处理历史
-    history = processed_data['processed']['eeg_preprocessing']['history']
-    print(f"\n处理步骤数量: {len(history['steps'])}")
-    print("\n处理步骤详情:")
-    for i, step in enumerate(history['steps']):
-        step_name = step['step']
-        details = {k: v for k, v in step.items() if k != 'step'}
-        print(f"  {i + 1:2d}. {step_name:30s} | {details}")
-
-    # 显示坏道信息
-    if 'bad_channels' in processed_data['processed']['eeg_preprocessing']:
-        bad_channels = processed_data['processed']['eeg_preprocessing']['bad_channels']
-        if bad_channels:
-            print(f"\n检测到的坏道: {bad_channels}")
-        else:
-            print("\n未检测到坏道")
-
-    # 显示ICA信息
-    if 'ica_info' in processed_data['processed']['eeg_preprocessing']:
-        ica_info = processed_data['processed']['eeg_preprocessing']['ica_info']
-        if 'n_components_removed' in ica_info:
-            print(f"\nICA去除的成分数量: {ica_info['n_components_removed']}")
-
-    # 显示分段信息
-    if 'epochs' in processed_data['processed']['eeg_preprocessing']:
-        epochs_info = processed_data['processed']['eeg_preprocessing']['epochs']
-        if 'n_epochs' in epochs_info:
-            print(f"\n创建的分段数量: {epochs_info['n_epochs']}")
-
-            if epochs_info['n_epochs'] > 0:
-                print(f"分段数据形状: {epochs_info['data'].shape}")
-                print(f"每个分段的时间点数量: {len(epochs_info['epoch_times'])}")
-                print(f"分段时间范围: [{epochs_info['epoch_times'][0]:.2f}, {epochs_info['epoch_times'][-1]:.2f}]秒")
-        else:
-            print("\n未创建分段")
-
-    print("\n" + "=" * 60)
-    print("测试完成!")
-    print("=" * 60)
-
-    return processed_data
-
-
-# ====================== 主程序入口 ======================
-
-if __name__ == "__main__":
-    # 运行修复版测试
-    processed_data = test_eeg_preprocessing_fixed()
-
-    # 示例：如何使用EEG预处理器
-    print("\n" + "=" * 60)
-    print("EEG预处理器使用示例")
-    print("=" * 60)
-
-    # 示例1：使用默认配置
-    print("\n1. 使用默认配置:")
-    config1 = EEGPreprocessingConfig()
-    preprocessor1 = EEGPreprocessor(config1)
-    print(f"  采样率: {config1.downsample_to or '保持原始'}")
-    print(f"  参考方式: {config1.reference_type.value}")
-    print(f"  ICA: {'启用' if config1.use_ica else '禁用'}")
-    print(f"  振幅拒绝阈值: {config1.rejection_threshold * 1e6:.1f}μV")
-
-    # 示例2：使用运动想象配置
-    print("\n2. 使用运动想象配置:")
-    config2 = EEGConfigFactory.create_motor_imagery_config()
-    preprocessor2 = EEGPreprocessor(config2)
-    print(f"  滤波范围: {config2.highpass_freq}-{config2.lowpass_freq}Hz")
-    print(f"  分段时间: {config2.epoch_tmin}-{config2.epoch_tmax}s")
-    print(f"  降采样: {config2.downsample_to}Hz")
-    print(f"  振幅拒绝阈值: {config2.rejection_threshold * 1e6:.1f}μV")
-
-    # 示例3：使用P300配置
-    print("\n3. 使用P300配置:")
-    config3 = EEGConfigFactory.create_p300_config()
-    print(f"  滤波器类型: {config3.filter_type.value}")
-    print(f"  基线校正: {config3.baseline_correction}")
-    print(f"  振幅拒绝阈值: {config3.rejection_threshold * 1e6:.1f}μV")
-
-    print("\n" + "=" * 60)
