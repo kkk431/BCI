@@ -1,0 +1,104 @@
+{
+  "meta": {
+    "subject_id": "sub-10_optodes",
+    "session_id": "session1",
+    "task": "metadata",
+    "recording_time": "2026-02-11 20:44:31",
+    "file_path": "sub-10_optodes.tsv",
+    "format_version": "2.0",
+    "modality": [],
+    "device": "",
+    "notes": "",
+    "format": "tsv",
+    "file_type": "metadata",
+    "has_signal_data": false,
+    "has_metadata": true,
+    "content_type": "optode_positions"
+  },
+  "signal": {},
+  "event": {
+    "event_id": [],
+    "event_label": [],
+    "event_time": [],
+    "duration": []
+  },
+  "processed": {
+    "features": {},
+    "artifacts": {},
+    "filtered_data": {}
+  },
+  "metadata": {
+    "info": [
+      {
+        "name": "S1",
+        "type": "source",
+        "x": "-0.00247485",
+        "y": "0.00247485",
+        "z": "0.0"
+      },
+      {
+        "name": "S2",
+        "type": "source",
+        "x": "-0.00247485",
+        "y": "-0.00247485",
+        "z": "0.0"
+      },
+      {
+        "name": "S3",
+        "type": "source",
+        "x": "0.00247485",
+        "y": "0.00247485",
+        "z": "0.0"
+      },
+      {
+        "name": "S4",
+        "type": "source",
+        "x": "0.00247485",
+        "y": "-0.00247485",
+        "z": "0.0"
+      },
+      {
+        "name": "S5",
+        "type": "source",
+        "x": "-0.00247485",
+        "y": "-0.00597485",
+        "z": "0.0"
+      },
+      {
+        "name": "S6",
+        "type": "source",
+        "x": "-0.00247485",
+        "y": "-0.01092455",
+        "z": "0.0"
+      },
+      {
+        "name": "S7",
+        "type": "source",
+        "x": "0.00247485",
+        "y": "-0.00597485",
+        "z": "0.0"
+      },
+      {
+        "name": "S8",
+        "type": "source",
+        "x": "0.00247485",
+        "y": "-0.01092455",
+        "z": "0.0"
+      },
+      {
+        "name": "D1",
+        "type": "detector",
+        "x": "0.0",
+        "y": "0.0",
+        "z": "0.0"
+      },
+      {
+        "name": "D2",
+        "type": "detector",
+        "x": "0.0",
+        "y": "-0.0084497",
+        "z": "0.0"
+      }
+    ]
+  }
+}
