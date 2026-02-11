@@ -1,7 +1,9 @@
+#!/usr/bin/env python3
 """
 universal_bio_signal_converter.py
 万能生物信号数据转换器 - 全面改进版
 支持7种生物信号：EMG, GSR, EEG, fNIRS, ECG, 眼动, 呼吸
+适配data_io模块版本
 """
 
 import os
@@ -16,21 +18,16 @@ import json
 import yaml
 import pickle
 
-# 导入工具箱
-from data_io import (
-    DataDictBuilder,
-    SignalType,
-    UniversalBioSignalProcessor,
-    save_data_dict,
-    load_data_dict,
-    EEGProcessor,
-    EMGProcessor,
-    ECGProcessor,
-    GSRProcessor,
-    fNIRSProcessor,
-    EyeTrackerProcessor,
-    RespiratoryProcessor
-)
+# 确保可以导入data_io
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+try:
+    from data_io import DataDictBuilder, SignalType
+
+    HAS_DATA_IO = True
+except ImportError as e:
+    print(f"⚠️  警告: 无法导入data_io - {e}")
+    HAS_DATA_IO = False
 
 # ==================== 支持的输入格式 ====================
 SUPPORTED_INPUT_FORMATS = {
@@ -69,6 +66,7 @@ SUPPORTED_INPUT_FORMATS = {
     'feather': 'Feather格式'
 }
 
+
 # ==================== 文件类型检测 ====================
 class FileTypeDetector:
     """智能检测文件类型"""
@@ -82,7 +80,7 @@ class FileTypeDetector:
             {
                 "format": "csv/tsv/edf等",
                 "file_type": "signal/metadata/events/config",
-                "modality": "eeg/emg/ecg/gsr/fnirs/eyetrack/resp",
+                "modality": "eeg/emg/ecg/gsr/fnirs/et/resp",
                 "has_signal_data": True/False,
                 "has_metadata": True/False
             }
@@ -107,7 +105,7 @@ class FileTypeDetector:
             "ecg": ["ecg", "ekg", "electrocardiogram", "heart"],
             "gsr": ["gsr", "eda", "electrodermal", "skin", "galvanic"],
             "fnirs": ["fnirs", "nirs", "nir", "optical", "hemodynamic"],
-            "eyetrack": ["eye", "gaze", "pupil", "eyetrack", "ocul"],
+            "et": ["eye", "gaze", "pupil", "eyetrack", "ocul", "et"],
             "resp": ["resp", "breath", "respiration", "respiratory"]
         }
 
@@ -188,14 +186,14 @@ class FileTypeDetector:
             signal_columns = [
                 col for col in columns
                 if any(keyword in col for keyword in
-                      ['ch', 'eeg', 'emg', 'ecg', 'gsr', 'eda', 'resp', 'eye', 'pupil'])
+                       ['ch', 'eeg', 'emg', 'ecg', 'gsr', 'eda', 'resp', 'eye', 'pupil'])
             ]
 
             # 检查是否是元数据
             metadata_columns = [
                 col for col in columns
                 if any(keyword in col for keyword in
-                      ['name', 'id', 'label', 'type', 'x', 'y', 'z', 'coord', 'position'])
+                       ['name', 'id', 'label', 'type', 'x', 'y', 'z', 'coord', 'position'])
             ]
 
             if len(time_columns) > 0 and len(signal_columns) > 0:
@@ -284,6 +282,8 @@ class SmartDataLoader:
     """智能数据加载器 - 支持7种生物信号和多种文件类型"""
 
     def __init__(self):
+        if not HAS_DATA_IO:
+            raise ImportError("需要data_io模块")
         self.builder = DataDictBuilder()
         self.file_detector = FileTypeDetector()
 
@@ -392,6 +392,7 @@ class SmartDataLoader:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         data = f.read()
 
+            # 创建数据字典
             data_dict = self.builder.create_empty_data_dict()
 
             # 转换数据格式
@@ -401,21 +402,34 @@ class SmartDataLoader:
                 metadata = data
 
             # 构建元数据
-            meta = {
-                "subject_id": kwargs.get('subject_id', Path(file_path).stem),
-                "session_id": kwargs.get('session_id', 'session1'),
-                "task": kwargs.get('task', 'metadata'),
-                "file_path": str(file_path),
+            meta = self.builder.build_meta(
+                subject_id=kwargs.get('subject_id', Path(file_path).stem),
+                session_id=kwargs.get('session_id', 'session1'),
+                task=kwargs.get('task', 'metadata'),
+                file_path=str(file_path),
+                modality=[file_info['modality'].upper()] if file_info['modality'] != 'unknown' else [],
+                device=kwargs.get('device', ''),
+                sampling_rate=None,
+                n_channels=None,
+                channel_names=None
+            )
+
+            # 添加额外的元数据信息
+            meta.update({
                 "format": format,
                 "file_type": "metadata",
-                "modality": file_info['modality'],
-                "content_type": self._detect_metadata_type(file_path, data),
                 "has_signal_data": False,
-                "has_metadata": True
-            }
+                "has_metadata": True,
+                "content_type": self._detect_metadata_type(file_path, data)
+            })
 
             data_dict['meta'] = meta
-            data_dict['metadata'] = metadata
+
+            # 添加元数据部分（如果适用）
+            if metadata and not isinstance(metadata, str):
+                if 'metadata' not in data_dict:
+                    data_dict['metadata'] = {}
+                data_dict['metadata']['info'] = metadata
 
             return data_dict
 
@@ -453,16 +467,26 @@ class SmartDataLoader:
                     event.get('duration', 0)
                 )
 
-            # 元数据
-            meta = {
-                "subject_id": kwargs.get('subject_id', Path(file_path).stem),
-                "session_id": kwargs.get('session_id', 'session1'),
-                "task": kwargs.get('task', 'events'),
-                "file_path": str(file_path),
+            # 构建元数据
+            meta = self.builder.build_meta(
+                subject_id=kwargs.get('subject_id', Path(file_path).stem),
+                session_id=kwargs.get('session_id', 'session1'),
+                task=kwargs.get('task', 'events'),
+                file_path=str(file_path),
+                modality=[],
+                device='',
+                sampling_rate=None,
+                n_channels=None,
+                channel_names=None
+            )
+
+            # 添加额外的元数据信息
+            meta.update({
                 "format": format,
                 "file_type": "events",
+                "has_signal_data": False,
                 "n_events": len(events)
-            }
+            })
 
             data_dict['meta'] = meta
 
@@ -559,14 +583,19 @@ class SmartDataLoader:
                     # 自动检测信号类型
                     modality = file_info['modality']
                     if modality == 'unknown':
-                        modality = self.builder.detect_signal_type(valid_channels, signal_array, fs).value.upper()
+                        try:
+                            detected_type = self.builder.detect_signal_type(valid_channels, signal_array, fs)
+                            modality = detected_type.value
+                        except:
+                            modality = "eeg"
 
+                    # 使用builder添加信号
                     self.builder.add_signal(
                         data_dict,
                         signal_array,
                         fs,
                         valid_channels,
-                        modality,
+                        modality.upper(),
                         signal_type=modality.lower(),
                         unit=kwargs.get('unit', 'unknown')
                     )
@@ -584,22 +613,29 @@ class SmartDataLoader:
                     except:
                         continue
 
-            # 元数据
-            meta = {
-                "subject_id": kwargs.get('subject_id', Path(file_path).stem),
-                "session_id": kwargs.get('session_id', 'session1'),
-                "task": kwargs.get('task', 'unknown'),
-                "file_path": str(file_path),
+            # 构建元数据
+            meta = self.builder.build_meta(
+                subject_id=kwargs.get('subject_id', Path(file_path).stem),
+                session_id=kwargs.get('session_id', 'session1'),
+                task=kwargs.get('task', 'unknown'),
+                file_path=str(file_path),
+                modality=[modality.upper()] if 'modality' in locals() and modality != 'unknown' else [],
+                device=kwargs.get('device', ''),
+                sampling_rate=fs,
+                n_channels=len(signal_data) if 'signal_data' in locals() else 0,
+                channel_names=valid_channels if 'valid_channels' in locals() else None
+            )
+
+            # 添加额外的元数据信息
+            meta.update({
                 "format": format,
                 "file_type": "signal",
-                "modality": file_info['modality'],
                 "has_signal_data": len(signal_cols) > 0,
-                "n_channels": len(signal_data) if 'signal_data' in locals() else 0,
                 "n_samples": len(data) if len(data) > 0 else 0,
-                "sampling_rate": fs
-            }
+                "duration": len(data) / fs if len(data) > 0 and fs > 0 else 0
+            })
 
-            data_dict['meta'].update(meta)
+            data_dict['meta'] = meta
 
             return data_dict
 
@@ -615,7 +651,7 @@ class SmartDataLoader:
 
             # 过滤MNE不支持的参数
             mne_kwargs = {k: v for k, v in kwargs.items()
-                         if k not in ['subject_id', 'session_id', 'task', 'modality']}
+                          if k not in ['subject_id', 'session_id', 'task', 'modality']}
 
             # 根据格式选择读取函数
             if format == 'edf':
@@ -657,31 +693,38 @@ class SmartDataLoader:
             subject_info = raw.info.get('subject_info')
             meas_date = raw.info.get('meas_date')
 
-            meta = {
-                "subject_id": kwargs.get('subject_id',
-                           subject_info.get('his_id', Path(file_path).stem) if subject_info else Path(file_path).stem),
-                "session_id": kwargs.get('session_id', 'session1'),
-                "task": kwargs.get('task', 'unknown'),
-                "file_path": str(file_path),
+            # 构建元数据
+            meta = self.builder.build_meta(
+                subject_id=kwargs.get('subject_id',
+                                      subject_info.get('his_id', Path(file_path).stem) if subject_info else Path(
+                                          file_path).stem),
+                session_id=kwargs.get('session_id', 'session1'),
+                task=kwargs.get('task', 'unknown'),
+                file_path=str(file_path),
+                modality=[modality.upper()],
+                device=device_info.get('model', 'unknown') if device_info else 'unknown',
+                sampling_rate=fs,
+                n_channels=len(channel_names),
+                channel_names=channel_names
+            )
+
+            # 添加额外的元数据信息
+            meta.update({
                 "format": format,
                 "file_type": "signal",
-                "modality": modality,
-                "device": device_info.get('model', 'unknown') if device_info else 'unknown',
                 "recording_time": str(meas_date) if meas_date else '',
                 "has_signal_data": True,
-                "n_channels": len(channel_names),
                 "n_samples": data.shape[1],
-                "sampling_rate": fs,
                 "duration": data.shape[1] / fs
-            }
+            })
 
-            data_dict['meta'].update(meta)
+            data_dict['meta'] = meta
 
             # 添加事件
             if hasattr(raw, 'annotations') and raw.annotations is not None:
                 for onset, duration, description in zip(raw.annotations.onset,
-                                                       raw.annotations.duration,
-                                                       raw.annotations.description):
+                                                        raw.annotations.duration,
+                                                        raw.annotations.description):
                     self.builder.add_event(data_dict, description, onset, duration)
 
             return data_dict
@@ -733,24 +776,31 @@ class SmartDataLoader:
                         wavelengths=wavelengths
                     )
 
-                    # 元数据
-                    meta = {
-                        "subject_id": kwargs.get('subject_id', Path(file_path).stem),
-                        "session_id": kwargs.get('session_id', 'session1'),
-                        "task": kwargs.get('task', 'unknown'),
-                        "file_path": str(file_path),
+                    # 构建元数据
+                    meta = self.builder.build_meta(
+                        subject_id=kwargs.get('subject_id', Path(file_path).stem),
+                        session_id=kwargs.get('session_id', 'session1'),
+                        task=kwargs.get('task', 'unknown'),
+                        file_path=str(file_path),
+                        modality=["FNIRS"],
+                        device='',
+                        sampling_rate=fs,
+                        n_channels=data.shape[0],
+                        channel_names=channel_names
+                    )
+
+                    # 添加额外的元数据信息
+                    meta.update({
                         "format": format,
                         "file_type": "signal",
-                        "modality": "fnirs",
                         "has_signal_data": True,
-                        "n_channels": data.shape[0],
                         "n_samples": data.shape[1],
-                        "sampling_rate": fs,
                         "wavelengths": wavelengths,
-                        "data_origin": "真实SNIRF数据"
-                    }
+                        "data_origin": "真实SNIRF数据",
+                        "duration": data.shape[1] / fs
+                    })
 
-                    data_dict['meta'].update(meta)
+                    data_dict['meta'] = meta
                     return data_dict
                 else:
                     raise ValueError("在文件中未找到有效的fNIRS数据")
@@ -811,25 +861,32 @@ class SmartDataLoader:
             unit="raw_intensity"
         )
 
-        # 元数据
-        meta = {
-            "subject_id": kwargs.get('subject_id', Path(file_path).stem),
-            "session_id": kwargs.get('session_id', 'session1'),
-            "task": kwargs.get('task', 'block_design'),
-            "file_path": str(file_path),
+        # 构建元数据
+        meta = self.builder.build_meta(
+            subject_id=kwargs.get('subject_id', Path(file_path).stem),
+            session_id=kwargs.get('session_id', 'session1'),
+            task=kwargs.get('task', 'block_design'),
+            file_path=str(file_path),
+            modality=["FNIRS"],
+            device='',
+            sampling_rate=fs,
+            n_channels=n_channels,
+            channel_names=channel_names
+        )
+
+        # 添加额外的元数据信息
+        meta.update({
             "format": format,
             "file_type": "signal",
-            "modality": "fnirs",
             "has_signal_data": True,
-            "n_channels": n_channels,
             "n_samples": n_samples,
-            "sampling_rate": fs,
             "wavelengths": wavelengths,
             "data_origin": "模拟数据",
-            "notes": "原始文件加载失败，使用模拟数据"
-        }
+            "notes": "原始文件加载失败，使用模拟数据",
+            "duration": n_samples / fs
+        })
 
-        data_dict['meta'].update(meta)
+        data_dict['meta'] = meta
 
         print(f"⚠️ 使用fNIRS模拟数据")
 
@@ -846,7 +903,7 @@ class SmartDataLoader:
         n_samples = 3000
 
         data = np.random.randn(n_channels, n_samples) * 100 + 5000
-        channel_names = [f'ch{i+1}' for i in range(n_channels)]
+        channel_names = [f'ch{i + 1}' for i in range(n_channels)]
         wavelengths = [760, 850]
 
         return data, fs, channel_names, wavelengths
@@ -859,8 +916,8 @@ class SmartDataLoader:
         t_pos = t[pos_idx]
 
         if len(t_pos) > 0:
-            peak = (t_pos**5) * np.exp(-t_pos) / 120
-            undershoot = (t_pos**15) * np.exp(-t_pos) / 1.307674e12
+            peak = (t_pos ** 5) * np.exp(-t_pos) / 120
+            undershoot = (t_pos ** 15) * np.exp(-t_pos) / 1.307674e12
             hrf[pos_idx] = peak - 0.35 * undershoot
 
             if np.max(hrf[pos_idx]) > 0:
@@ -909,9 +966,10 @@ class SmartDataLoader:
                 elif data.ndim == 2 and data.shape[0] < data.shape[1]:
                     data = data.T
 
-                channel_names = kwargs.get('channel_names', [f'Ch{i+1}' for i in range(data.shape[0])])
+                channel_names = kwargs.get('channel_names', [f'Ch{i + 1}' for i in range(data.shape[0])])
                 modality = file_info['modality']
 
+                # 使用builder添加信号
                 self.builder.add_signal(
                     data_dict,
                     data,
@@ -922,22 +980,30 @@ class SmartDataLoader:
                     unit=kwargs.get('unit', 'unknown')
                 )
 
-                meta = {
-                    "subject_id": kwargs.get('subject_id', Path(file_path).stem),
-                    "session_id": kwargs.get('session_id', 'session1'),
-                    "task": kwargs.get('task', 'unknown'),
-                    "file_path": str(file_path),
+                # 构建元数据
+                meta = self.builder.build_meta(
+                    subject_id=kwargs.get('subject_id', Path(file_path).stem),
+                    session_id=kwargs.get('session_id', 'session1'),
+                    task=kwargs.get('task', 'unknown'),
+                    file_path=str(file_path),
+                    modality=[modality.upper()] if modality != 'unknown' else [],
+                    device='',
+                    sampling_rate=fs,
+                    n_channels=data.shape[0],
+                    channel_names=channel_names
+                )
+
+                # 添加额外的元数据信息
+                meta.update({
                     "format": 'mat',
                     "file_type": "signal",
-                    "modality": modality,
                     "has_signal_data": True,
-                    "n_channels": data.shape[0],
                     "n_samples": data.shape[1],
-                    "sampling_rate": fs,
-                    "data_key": data_key
-                }
+                    "data_key": data_key,
+                    "duration": data.shape[1] / fs
+                })
 
-                data_dict['meta'].update(meta)
+                data_dict['meta'] = meta
 
                 return data_dict
             else:
@@ -966,9 +1032,10 @@ class SmartDataLoader:
                 data = data.T
 
             fs = kwargs.get('sampling_rate', 1000)
-            channel_names = kwargs.get('channel_names', [f'Ch{i+1}' for i in range(data.shape[0])])
+            channel_names = kwargs.get('channel_names', [f'Ch{i + 1}' for i in range(data.shape[0])])
             modality = file_info['modality']
 
+            # 使用builder添加信号
             self.builder.add_signal(
                 data_dict,
                 data,
@@ -979,21 +1046,29 @@ class SmartDataLoader:
                 unit=kwargs.get('unit', 'unknown')
             )
 
-            meta = {
-                "subject_id": kwargs.get('subject_id', Path(file_path).stem),
-                "session_id": kwargs.get('session_id', 'session1'),
-                "task": kwargs.get('task', 'unknown'),
-                "file_path": str(file_path),
+            # 构建元数据
+            meta = self.builder.build_meta(
+                subject_id=kwargs.get('subject_id', Path(file_path).stem),
+                session_id=kwargs.get('session_id', 'session1'),
+                task=kwargs.get('task', 'unknown'),
+                file_path=str(file_path),
+                modality=[modality.upper()] if modality != 'unknown' else [],
+                device='',
+                sampling_rate=fs,
+                n_channels=data.shape[0],
+                channel_names=channel_names
+            )
+
+            # 添加额外的元数据信息
+            meta.update({
                 "format": 'npy' if file_path.endswith('.npy') else 'npz',
                 "file_type": "signal",
-                "modality": modality,
                 "has_signal_data": True,
-                "n_channels": data.shape[0],
                 "n_samples": data.shape[1],
-                "sampling_rate": fs
-            }
+                "duration": data.shape[1] / fs
+            })
 
-            data_dict['meta'].update(meta)
+            data_dict['meta'] = meta
 
             return data_dict
 
@@ -1012,9 +1087,10 @@ class SmartDataLoader:
             if isinstance(json_data, dict) and 'data' in json_data:
                 data = np.array(json_data['data'])
                 fs = json_data.get('sampling_rate', 1000)
-                channel_names = json_data.get('channel_names', [f'Ch{i+1}' for i in range(data.shape[0])])
+                channel_names = json_data.get('channel_names', [f'Ch{i + 1}' for i in range(data.shape[0])])
                 modality = json_data.get('modality', file_info['modality'])
 
+                # 使用builder添加信号
                 self.builder.add_signal(
                     data_dict,
                     data,
@@ -1025,26 +1101,37 @@ class SmartDataLoader:
                     unit=json_data.get('unit', 'unknown')
                 )
 
-                meta = {
-                    "subject_id": json_data.get('subject_id', Path(file_path).stem),
-                    "session_id": json_data.get('session_id', 'session1'),
-                    "task": json_data.get('task', 'unknown'),
-                    "file_path": str(file_path),
+                # 构建元数据
+                meta = self.builder.build_meta(
+                    subject_id=json_data.get('subject_id', kwargs.get('subject_id', Path(file_path).stem)),
+                    session_id=json_data.get('session_id', kwargs.get('session_id', 'session1')),
+                    task=json_data.get('task', kwargs.get('task', 'unknown')),
+                    file_path=str(file_path),
+                    modality=[modality.upper()] if modality != 'unknown' else [],
+                    device=json_data.get('device', ''),
+                    sampling_rate=fs,
+                    n_channels=data.shape[0],
+                    channel_names=channel_names
+                )
+
+                # 添加额外的元数据信息
+                meta.update({
                     "format": 'json',
                     "file_type": "signal",
-                    "modality": modality,
                     "has_signal_data": True,
-                    "n_channels": data.shape[0],
                     "n_samples": data.shape[1],
-                    "sampling_rate": fs
-                }
+                    "duration": data.shape[1] / fs
+                })
 
                 # 添加其他元数据
                 for key, value in json_data.items():
-                    if key not in ['data', 'channel_names', 'sampling_rate', 'unit']:
-                        meta[key] = value
+                    if key not in ['data', 'channel_names', 'sampling_rate', 'unit',
+                                   'subject_id', 'session_id', 'task', 'device', 'modality']:
+                        if 'metadata' not in data_dict:
+                            data_dict['metadata'] = {}
+                        data_dict['metadata'][key] = value
 
-                data_dict['meta'].update(meta)
+                data_dict['meta'] = meta
 
                 return data_dict
             else:
@@ -1080,7 +1167,7 @@ class SmartDataLoader:
                     modality = file_info['modality']
 
                     if not channel_names:
-                        channel_names = [f'Ch{i+1}' for i in range(data.shape[0])]
+                        channel_names = [f'Ch{i + 1}' for i in range(data.shape[0])]
 
                     # 确保正确形状
                     if data.ndim == 1:
@@ -1088,6 +1175,7 @@ class SmartDataLoader:
                     elif data.ndim == 2 and data.shape[0] < data.shape[1]:
                         data = data.T
 
+                    # 使用builder添加信号
                     self.builder.add_signal(
                         data_dict,
                         data,
@@ -1098,22 +1186,30 @@ class SmartDataLoader:
                         unit=attrs.get('unit', kwargs.get('unit', 'unknown'))
                     )
 
-                    meta = {
-                        "subject_id": attrs.get('subject_id', kwargs.get('subject_id', Path(file_path).stem)),
-                        "session_id": attrs.get('session_id', kwargs.get('session_id', 'session1')),
-                        "task": attrs.get('task', kwargs.get('task', 'unknown')),
-                        "file_path": str(file_path),
+                    # 构建元数据
+                    meta = self.builder.build_meta(
+                        subject_id=attrs.get('subject_id', kwargs.get('subject_id', Path(file_path).stem)),
+                        session_id=attrs.get('session_id', kwargs.get('session_id', 'session1')),
+                        task=attrs.get('task', kwargs.get('task', 'unknown')),
+                        file_path=str(file_path),
+                        modality=[modality.upper()] if modality != 'unknown' else [],
+                        device=attrs.get('device', ''),
+                        sampling_rate=fs,
+                        n_channels=data.shape[0],
+                        channel_names=channel_names
+                    )
+
+                    # 添加额外的元数据信息
+                    meta.update({
                         "format": 'hdf5',
                         "file_type": "signal",
-                        "modality": modality,
                         "has_signal_data": True,
-                        "n_channels": data.shape[0],
                         "n_samples": data.shape[1],
-                        "sampling_rate": fs,
-                        "data_key": data_key
-                    }
+                        "data_key": data_key,
+                        "duration": data.shape[1] / fs
+                    })
 
-                    data_dict['meta'].update(meta)
+                    data_dict['meta'] = meta
 
                     return data_dict
                 else:
@@ -1158,7 +1254,7 @@ class SmartDataLoader:
             return self._create_error_data_dict(file_path, 'vhdr', str(e), **kwargs)
 
     def _create_mne_based_dict(self, file_path: str, format: str, file_info: Dict,
-                              raw, data: np.ndarray, **kwargs) -> Dict:
+                               raw, data: np.ndarray, **kwargs) -> Dict:
         """从MNE对象创建数据字典"""
         data_dict = self.builder.create_empty_data_dict()
 
@@ -1166,6 +1262,7 @@ class SmartDataLoader:
         channel_names = raw.ch_names
         modality = file_info['modality'] if file_info['modality'] != 'unknown' else 'eeg'
 
+        # 使用builder添加信号
         self.builder.add_signal(
             data_dict,
             data,
@@ -1180,30 +1277,38 @@ class SmartDataLoader:
         subject_info = raw.info.get('subject_info')
         meas_date = raw.info.get('meas_date')
 
-        meta = {
-            "subject_id": kwargs.get('subject_id',
-                       subject_info.get('his_id', Path(file_path).stem) if subject_info else Path(file_path).stem),
-            "session_id": kwargs.get('session_id', 'session1'),
-            "task": kwargs.get('task', 'unknown'),
-            "file_path": str(file_path),
+        # 构建元数据
+        meta = self.builder.build_meta(
+            subject_id=kwargs.get('subject_id',
+                                  subject_info.get('his_id', Path(file_path).stem) if subject_info else Path(
+                                      file_path).stem),
+            session_id=kwargs.get('session_id', 'session1'),
+            task=kwargs.get('task', 'unknown'),
+            file_path=str(file_path),
+            modality=[modality.upper()],
+            device=device_info.get('model', 'unknown') if device_info else 'unknown',
+            sampling_rate=fs,
+            n_channels=len(channel_names),
+            channel_names=channel_names
+        )
+
+        # 添加额外的元数据信息
+        meta.update({
             "format": format,
             "file_type": "signal",
-            "modality": modality,
-            "device": device_info.get('model', 'unknown') if device_info else 'unknown',
             "recording_time": str(meas_date) if meas_date else '',
             "has_signal_data": True,
-            "n_channels": len(channel_names),
             "n_samples": data.shape[1],
-            "sampling_rate": fs
-        }
+            "duration": data.shape[1] / fs
+        })
 
-        data_dict['meta'].update(meta)
+        data_dict['meta'] = meta
 
         # 添加事件
         if hasattr(raw, 'annotations') and raw.annotations is not None:
             for onset, duration, description in zip(raw.annotations.onset,
-                                                   raw.annotations.duration,
-                                                   raw.annotations.description):
+                                                    raw.annotations.duration,
+                                                    raw.annotations.description):
                 self.builder.add_event(data_dict, description, onset, duration)
 
         return data_dict
@@ -1217,17 +1322,26 @@ class SmartDataLoader:
             # 创建基本数据字典
             data_dict = self.builder.create_empty_data_dict()
 
-            meta = {
-                "subject_id": kwargs.get('subject_id', Path(file_path).stem),
-                "session_id": kwargs.get('session_id', 'session1'),
-                "task": kwargs.get('task', 'unknown'),
-                "file_path": str(file_path),
+            # 构建元数据
+            meta = self.builder.build_meta(
+                subject_id=kwargs.get('subject_id', Path(file_path).stem),
+                session_id=kwargs.get('session_id', 'session1'),
+                task=kwargs.get('task', 'unknown'),
+                file_path=str(file_path),
+                modality=[file_info['modality'].upper()] if file_info['modality'] != 'unknown' else [],
+                device='',
+                sampling_rate=None,
+                n_channels=None,
+                channel_names=None
+            )
+
+            # 添加额外的元数据信息
+            meta.update({
                 "format": format,
                 "file_type": "signal",
-                "modality": file_info['modality'],
                 "has_signal_data": False,
                 "notes": f"无法解析的{format}格式文件"
-            }
+            })
 
             data_dict['meta'] = meta
 
@@ -1237,17 +1351,26 @@ class SmartDataLoader:
         """加载通用文件"""
         data_dict = self.builder.create_empty_data_dict()
 
-        meta = {
-            "subject_id": kwargs.get('subject_id', Path(file_path).stem),
-            "session_id": kwargs.get('session_id', 'session1'),
-            "task": kwargs.get('task', 'unknown'),
-            "file_path": str(file_path),
+        # 构建元数据
+        meta = self.builder.build_meta(
+            subject_id=kwargs.get('subject_id', Path(file_path).stem),
+            session_id=kwargs.get('session_id', 'session1'),
+            task=kwargs.get('task', 'unknown'),
+            file_path=str(file_path),
+            modality=[file_info['modality'].upper()] if file_info['modality'] != 'unknown' else [],
+            device='',
+            sampling_rate=None,
+            n_channels=None,
+            channel_names=None
+        )
+
+        # 添加额外的元数据信息
+        meta.update({
             "format": format,
             "file_type": "unknown",
-            "modality": file_info['modality'],
             "has_signal_data": False,
             "notes": f"未知类型的{format}格式文件"
-        }
+        })
 
         data_dict['meta'] = meta
 
@@ -1257,18 +1380,27 @@ class SmartDataLoader:
         """创建包含错误信息的数据字典"""
         data_dict = self.builder.create_empty_data_dict()
 
-        meta = {
-            "subject_id": kwargs.get('subject_id', Path(file_path).stem),
-            "session_id": kwargs.get('session_id', 'session1'),
-            "task": kwargs.get('task', 'unknown'),
-            "file_path": str(file_path),
+        # 构建元数据
+        meta = self.builder.build_meta(
+            subject_id=kwargs.get('subject_id', Path(file_path).stem),
+            session_id=kwargs.get('session_id', 'session1'),
+            task=kwargs.get('task', 'unknown'),
+            file_path=str(file_path),
+            modality=[],
+            device='',
+            sampling_rate=None,
+            n_channels=None,
+            channel_names=None
+        )
+
+        # 添加额外的元数据信息
+        meta.update({
             "format": format if format else 'unknown',
             "file_type": "error",
-            "modality": "unknown",
             "has_signal_data": False,
             "error": error_msg,
             "notes": "文件加载失败"
-        }
+        })
 
         data_dict['meta'] = meta
 
@@ -1287,7 +1419,7 @@ class SmartDataLoader:
         elif any(keyword in channel_str for keyword in ['GSR', 'EDA', 'SKIN']):
             return 'gsr'
         elif any(keyword in channel_str for keyword in ['EOG', 'EYE', 'GAZE']):
-            return 'eyetrack'
+            return 'et'
         elif any(keyword in channel_str for keyword in ['RESP', 'BREATH']):
             return 'resp'
         elif any(keyword in channel_str for keyword in ['NIRS', 'FNIRS', 'S', 'D', 'WL']):
@@ -1319,13 +1451,13 @@ class SmartBioSignalConverter:
     """智能生物信号数据转换器"""
 
     def __init__(self):
+        if not HAS_DATA_IO:
+            raise ImportError("需要data_io模块")
         self.loader = SmartDataLoader()
-        self.processor = UniversalBioSignalProcessor()
         self.builder = DataDictBuilder()
 
     def convert(self, input_file: str, output_file: str = None,
                 input_format: str = None, output_format: str = 'json',
-                process_signals: bool = True,
                 skip_processing_on_error: bool = True, **kwargs) -> Dict:
         """
         智能转换生物信号数据
@@ -1335,7 +1467,6 @@ class SmartBioSignalConverter:
             output_file: 输出文件路径（如果为None，则只返回数据字典）
             input_format: 输入格式（自动检测）
             output_format: 输出格式
-            process_signals: 是否进行信号处理
             skip_processing_on_error: 处理出错时是否跳过
             **kwargs: 其他参数
         """
@@ -1381,34 +1512,9 @@ class SmartBioSignalConverter:
                 data_dict['meta'] = {}
             data_dict['meta'].update(meta_params)
 
-        # 2. 处理信号（可选）
-        if process_signals and data_dict.get('meta', {}).get('has_signal_data', False):
-            print("⚙️  步骤2: 处理信号...")
-            try:
-                original_data_dict = data_dict.copy()
-                data_dict = self.processor.process_all(data_dict)
-                print("✅ 信号处理完成")
-            except Exception as e:
-                print(f"⚠️  信号处理失败: {str(e)[:100]}...")
-                if skip_processing_on_error:
-                    print("⚠️  跳过信号处理，使用原始数据")
-                    data_dict = original_data_dict if 'original_data_dict' in locals() else data_dict
-                    data_dict['meta']['processing_error'] = str(e)
-                    data_dict['meta']['processing_status'] = 'skipped'
-                else:
-                    print("❌ 信号处理失败，停止转换")
-                    data_dict['meta']['processing_error'] = str(e)
-                    data_dict['meta']['processing_status'] = 'failed'
-        elif not process_signals:
-            print("⏭️  步骤2: 跳过信号处理")
-            data_dict['meta']['processing_status'] = 'skipped_by_user'
-        else:
-            print("⏭️  步骤2: 无信号数据可处理")
-            data_dict['meta']['processing_status'] = 'no_signal_data'
-
-        # 3. 保存数据
+        # 2. 保存数据
         if output_file:
-            print(f"💾 步骤3: 保存为{output_format}格式...")
+            print(f"💾 步骤2: 保存为{output_format}格式...")
             try:
                 self.save(data_dict, output_file, output_format, **kwargs)
                 print(f"✅ 转换完成: {input_file} -> {output_file}")
@@ -1416,7 +1522,6 @@ class SmartBioSignalConverter:
                 print(f"❌ 保存数据失败: {str(e)}")
                 # 尝试保存为JSON格式
                 try:
-                    import json
                     json_file = output_file.rsplit('.', 1)[0] + '.json'
                     with open(json_file, 'w', encoding='utf-8') as f:
                         json.dump(data_dict, f, indent=2, default=str)
@@ -1442,26 +1547,29 @@ class SmartBioSignalConverter:
 
     def _save_signal_data(self, data_dict: Dict, output_file: str, format: str, **kwargs):
         """保存信号数据"""
-        if format in ['npz', 'json', 'h5']:
-            save_data_dict(data_dict, output_file, format)
+        if format == 'json':
+            self._save_json(data_dict, output_file, **kwargs)
+        elif format == 'npz':
+            self._save_npz(data_dict, output_file, **kwargs)
+        elif format == 'pkl':
+            self._save_pickle(data_dict, output_file, **kwargs)
         elif format in ['csv', 'tsv', 'txt']:
             self._save_text(data_dict, output_file, format, **kwargs)
         elif format == 'mat':
             self._save_mat(data_dict, output_file, **kwargs)
-        elif format == 'pkl':
-            self._save_pickle(data_dict, output_file, **kwargs)
         elif format == 'parquet':
             self._save_parquet(data_dict, output_file, **kwargs)
         elif format == 'feather':
             self._save_feather(data_dict, output_file, **kwargs)
+        elif format in ['h5', 'hdf5']:
+            self._save_hdf5(data_dict, output_file, **kwargs)
         else:
             raise ValueError(f"不支持的输出格式: {format}")
 
     def _save_metadata(self, data_dict: Dict, output_file: str, format: str, **kwargs):
         """保存元数据"""
         if format == 'json':
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(data_dict, f, indent=2, ensure_ascii=False)
+            self._save_json(data_dict, output_file, **kwargs)
         elif format in ['csv', 'tsv']:
             if 'metadata' in data_dict and isinstance(data_dict['metadata'], list):
                 df = pd.DataFrame(data_dict['metadata'])
@@ -1469,12 +1577,10 @@ class SmartBioSignalConverter:
                 df.to_csv(output_file, sep=delimiter, index=False)
             else:
                 # 保存为JSON
-                with open(output_file, 'w', encoding='utf-8') as f:
-                    json.dump(data_dict, f, indent=2, ensure_ascii=False)
+                self._save_json(data_dict, output_file, **kwargs)
         else:
             # 默认保存为JSON
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(data_dict, f, indent=2, ensure_ascii=False)
+            self._save_json(data_dict, output_file, **kwargs)
 
     def _save_events(self, data_dict: Dict, output_file: str, format: str, **kwargs):
         """保存事件数据"""
@@ -1487,13 +1593,41 @@ class SmartBioSignalConverter:
     def _save_with_error(self, data_dict: Dict, output_file: str, format: str):
         """保存包含错误信息的数据"""
         try:
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(data_dict, f, indent=2, ensure_ascii=False, default=str)
+            self._save_json(data_dict, output_file)
             print(f"⚠️  已保存错误信息到: {output_file}")
         except Exception as e:
             print(f"❌ 无法保存错误信息: {e}")
 
-    # 原有的保存方法（保持兼容）
+    def _save_json(self, data_dict: Dict, output_file: str, **kwargs):
+        """保存为JSON格式"""
+
+        def convert(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, np.generic):
+                return obj.item()
+            elif isinstance(obj, dict):
+                return {k: convert(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert(item) for item in obj]
+            else:
+                return obj
+
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(convert(data_dict), f, indent=2, ensure_ascii=False)
+
+    def _save_npz(self, data_dict: Dict, output_file: str, **kwargs):
+        """保存为NPZ格式"""
+        save_dict = {}
+
+        # 保存信号数据
+        if 'signal' in data_dict:
+            for modality, info in data_dict['signal'].items():
+                if 'data' in info:
+                    save_dict[f'{modality}_data'] = info['data']
+
+        np.savez_compressed(output_file, **save_dict)
+
     def _save_text(self, data_dict: Dict, output_file: str, format: str, **kwargs):
         """保存为文本格式"""
         delimiter = ',' if format == 'csv' else '\t' if format == 'tsv' else kwargs.get('delimiter', ',')
@@ -1628,17 +1762,48 @@ class SmartBioSignalConverter:
             print("警告: 需要安装pyarrow包来保存Feather文件")
             raise
 
+    def _save_hdf5(self, data_dict: Dict, output_file: str, **kwargs):
+        """保存为HDF5文件"""
+        try:
+            import h5py
+
+            with h5py.File(output_file, 'w') as f:
+                # 保存信号数据
+                if 'signal' in data_dict and len(data_dict['signal']) > 0:
+                    modality = list(data_dict['signal'].keys())[0]
+                    signal_info = data_dict['signal'][modality]
+
+                    if 'data' in signal_info:
+                        dataset = f.create_dataset('data', data=signal_info['data'])
+                        dataset.attrs['sampling_rate'] = signal_info.get('sampling_rate', 1)
+                        dataset.attrs['channel_names'] = signal_info.get('channel_names', [])
+                        dataset.attrs['signal_type'] = signal_info.get('signal_type', '')
+
+                # 保存元数据
+                if 'meta' in data_dict:
+                    for key, value in data_dict['meta'].items():
+                        if isinstance(value, (str, int, float, bool, list, dict, np.ndarray)):
+                            try:
+                                f.attrs[key] = value
+                            except:
+                                pass
+
+        except ImportError:
+            print("警告: 需要安装h5py包来保存HDF5文件")
+            raise
+
 
 # ==================== 批量转换器 ====================
 class SmartBatchConverter:
     """智能批量转换器"""
 
     def __init__(self):
+        if not HAS_DATA_IO:
+            raise ImportError("需要data_io模块")
         self.converter = SmartBioSignalConverter()
 
     def convert_batch(self, input_dir: str, output_dir: str = None,
                       input_pattern: str = "*", output_format: str = 'json',
-                      process_signals: bool = True,
                       skip_errors: bool = True, **kwargs):
         """
         批量转换文件
@@ -1648,7 +1813,6 @@ class SmartBatchConverter:
             output_dir: 输出目录
             input_pattern: 文件匹配模式
             output_format: 输出格式
-            process_signals: 是否进行信号处理
             skip_errors: 是否跳过错误文件
         """
         input_path = Path(input_dir)
@@ -1699,7 +1863,6 @@ class SmartBatchConverter:
                     str(input_file),
                     str(output_file),
                     output_format=output_format,
-                    process_signals=process_signals,
                     skip_processing_on_error=skip_errors,
                     **kwargs
                 )
@@ -1711,7 +1874,7 @@ class SmartBatchConverter:
                 else:
                     success_count += 1
                     status = data_dict.get('meta', {}).get('processing_status', 'unknown')
-                    print(f"    ✅ 转换成功 (状态: {status})")
+                    print(f"    ✅ 转换成功")
 
             except Exception as e:
                 print(f"    ❌ 转换异常: {str(e)[:100]}...")
@@ -1721,7 +1884,7 @@ class SmartBatchConverter:
                     print(f"❌ 由于错误停止批量转换")
                     break
 
-        print(f"\n{'='*50}")
+        print(f"\n{'=' * 50}")
         print(f"📊 批量转换完成!")
         print(f"   ✅ 成功: {success_count}")
         print(f"   ❌ 失败: {error_count}")
@@ -1735,7 +1898,7 @@ class SmartBatchConverter:
 # ==================== 命令行接口 ====================
 def main():
     parser = argparse.ArgumentParser(
-        description='万能生物信号数据转换器 - 全面改进版',
+        description='万能生物信号数据转换器 - 全面改进版 (适配data_io)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 支持的7种生物信号:
@@ -1744,22 +1907,22 @@ def main():
   • ECG  (心电)     - .edf, .csv, .mat  
   • GSR  (皮肤电)   - .csv, .mat, .txt
   • fNIRS(近红外)   - .snirf, .nirs, .csv
-  • 眼动            - .edf, .csv, .mat
-  • 呼吸            - .csv, .mat, .txt
+  • ET   (眼动)     - .edf, .csv, .mat
+  • RESP (呼吸)     - .csv, .mat, .txt
 
 示例:
   # 转换单个文件
   python universal_bio_signal_converter.py SN001.edf -o output.json
-  
+
   # 转换fNIRS文件
-  python universal_bio_signal_converter.py data.snirf -o data.json --no-process
-  
+  python universal_bio_signal_converter.py data.snirf -o data.json
+
   # 批量转换所有EDF文件
   python universal_bio_signal_converter.py -i data/ -p "*.edf" -o converted/
-  
+
   # 指定元数据
   python universal_bio_signal_converter.py data.csv -o output.json --subject-id sub001 --fs 1000
-  
+
   # 查看支持的格式
   python universal_bio_signal_converter.py --list-formats
         """
@@ -1774,19 +1937,19 @@ def main():
     # 格式参数
     parser.add_argument('--input-format', help='输入格式（自动检测）')
     parser.add_argument('--output-format', default='json',
-                        choices=['npz', 'json', 'h5', 'csv', 'tsv', 'mat', 'pkl', 'parquet', 'feather'],
+                        choices=['json', 'npz', 'pkl', 'csv', 'tsv', 'txt', 'mat', 'parquet', 'feather', 'h5'],
                         help='输出格式（默认: json）')
 
     # 处理参数
-    parser.add_argument('--no-process', action='store_true', help='不进行信号处理')
     parser.add_argument('--skip-errors', action='store_true', default=True,
-                       help='出错时跳过（默认: True）')
+                        help='出错时跳过（默认: True）')
     parser.add_argument('--skip-non-signal', action='store_true',
-                       help='跳过非信号文件（元数据、事件文件等）')
+                        help='跳过非信号文件（元数据、事件文件等）')
     parser.add_argument('--fs', type=float, help='采样率（Hz）')
     parser.add_argument('--subject-id', help='被试ID')
     parser.add_argument('--session-id', default='session1', help='会话ID')
     parser.add_argument('--task', help='任务名称')
+    parser.add_argument('--unit', help='信号单位')
 
     # 其他参数
     parser.add_argument('--list-formats', action='store_true', help='显示支持的格式')
@@ -1794,20 +1957,26 @@ def main():
 
     args = parser.parse_args()
 
+    # 检查data_io是否可用
+    if not HAS_DATA_IO:
+        print("❌ 错误: 需要data_io.py文件", file=sys.stderr)
+        print("请确保data_io.py在当前目录下", file=sys.stderr)
+        return 1
+
     # 显示支持的格式
     if args.list_formats:
         print("支持的输入格式:")
         for fmt, desc in SUPPORTED_INPUT_FORMATS.items():
             print(f"  {fmt:10} - {desc}")
-        print("\n支持的输出格式: npz, json, h5, csv, tsv, mat, pkl, parquet, feather")
-        print("\n支持7种生物信号: EEG, EMG, ECG, GSR, fNIRS, 眼动, 呼吸")
-        return
+        print("\n支持的输出格式: json, npz, pkl, csv, tsv, txt, mat, parquet, feather, h5")
+        print("\n支持7种生物信号: EEG, EMG, ECG, GSR, fNIRS, ET, RESP")
+        return 0
 
     # 检查输入
     if not args.input and not args.input_dir:
         parser.print_help()
         print("\n❌ 错误: 需要指定输入文件或目录")
-        return
+        return 1
 
     # 准备参数
     kwargs = {}
@@ -1819,6 +1988,8 @@ def main():
         kwargs['session_id'] = args.session_id
     if args.task:
         kwargs['task'] = args.task
+    if args.unit:
+        kwargs['unit'] = args.unit
     if args.skip_non_signal:
         kwargs['skip_non_signal'] = args.skip_non_signal
 
@@ -1830,10 +2001,10 @@ def main():
             args.output,
             args.pattern,
             args.output_format,
-            not args.no_process,
             args.skip_errors,
             **kwargs
         )
+        return 0
 
     # 单个文件转换模式
     elif args.input:
@@ -1852,28 +2023,12 @@ def main():
             output_file,
             args.input_format,
             args.output_format,
-            not args.no_process,
             args.skip_errors,
             **kwargs
         )
+        return 0
 
 
 # ==================== 使用示例 ====================
 if __name__ == "__main__":
-    # 直接运行主函数
-    main()
-
-    # 或者使用以下示例代码
-    """
-    # 示例1: 基本使用
-    converter = SmartBioSignalConverter()
-    data_dict = converter.convert("eeg_data.edf", "eeg_data.json")
-    
-    # 示例2: 批量转换
-    batch_converter = SmartBatchConverter()
-    batch_converter.convert_batch("input_data/", "output_data/", "*.edf", "json")
-    
-    # 示例3: 跳过处理
-    converter = SmartBioSignalConverter()
-    data_dict = converter.convert("data.csv", "output.json", process_signals=False)
-    """
+    sys.exit(main())
