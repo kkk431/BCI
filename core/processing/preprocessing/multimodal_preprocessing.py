@@ -1,1826 +1,1651 @@
+# -*- coding: utf-8 -*-
 """
-通用特征提取模块 (common_features.py)
-
-该模块提供了多模态脑机接口信号处理的通用特征提取方法。
-包括时域、频域、时频域和非线性特征提取功能。
-
-作者: 多模态脑机接口团队
-版本: 1.0.0
-日期: 2023-10-01
+多模态信号预处理主模块
+统一调度和管理EEG、fNIRS、ECG、EMG等多种生理信号的预处理
+支持四层数据格式结构，自动识别和并行处理多模态信号
 """
-
+import logger
 import numpy as np
-from scipy import stats, signal, fft, integrate
-from scipy.spatial.distance import pdist, squareform
-from scipy.signal import hilbert, butter, filtfilt
-from scipy.stats import entropy as scipy_entropy
-import pywt
-from typing import Union, List, Tuple, Dict, Optional, Callable
+from typing import Dict, List, Optional, Any, Union, Tuple
+import logging
+from dataclasses import dataclass, field
+from enum import Enum
+import concurrent.futures
 import warnings
+import copy
+import json
+
+# 导入各模态预处理模块
+try:
+    from eeg_preprocessing import EEGPreprocessor, EEGPreprocessingConfig, EEGConfigFactory
+    from fnirs_preprocessing import fNIRSPreprocessor, fNIRSConfig
+    from ecg_preprocessing import ECGPreprocessor, ECGConfig
+    from emg_preprocessing import EMGPreprocessor, EMGPreprocessingConfig, EMGConfigFactory
+    from preprocessing import GeneralPreprocessor, PreprocessingConfig
+
+    HAS_MODULES = True
+except ImportError as e:
+    logger.warning(f"某些预处理模块导入失败: {str(e)}")
+    HAS_MODULES = False
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# 禁用特定警告
+warnings.filterwarnings('ignore', category=RuntimeWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
 
 
-class SignalQualityWarning(Warning):
-    """信号质量警告"""
-    pass
+# ====================== 枚举和配置类 ======================
+
+class ProcessingMode(Enum):
+    """处理模式枚举"""
+    SEQUENTIAL = "sequential"  # 顺序处理
+    PARALLEL = "parallel"  # 并行处理
+    SELECTIVE = "selective"  # 选择处理
 
 
-class FeatureExtractor:
+class TimeSyncMethod(Enum):
+    """时间同步方法枚举"""
+    RESAMPLE = "resample"  # 重采样对齐
+    INTERPOLATE = "interpolate"  # 插值对齐
+    EVENT_ALIGN = "event_align"  # 事件对齐
+    NONE = "none"  # 不同步
+
+
+@dataclass
+class MultiModalConfig:
     """
-    通用特征提取器基类
+    多模态预处理配置类
+    """
+    # ========== 通用处理配置 ==========
+    processing_mode: ProcessingMode = ProcessingMode.SEQUENTIAL
+    time_sync_method: TimeSyncMethod = TimeSyncMethod.NONE
+    reference_sampling_rate: Optional[float] = None  # 参考采样率（用于同步）
+    max_workers: int = 4  # 并行处理最大线程数
 
-    提供各种信号处理中通用的特征提取方法，适用于EEG、fNIRS、ECG、EMG等时间序列信号。
+    # ========== 各模态配置 ==========
+    eeg_config: Optional[Any] = None  # EEG预处理配置
+    fnirs_config: Optional[Any] = None  # fNIRS预处理配置
+    ecg_config: Optional[Any] = None  # ECG预处理配置
+    emg_config: Optional[Any] = None  # EMG预处理配置
+    general_config: Optional[Any] = None  # 通用预处理配置
+
+    # ========== 模态选择配置 ==========
+    enabled_modalities: List[str] = field(default_factory=lambda: ["EEG", "EMG", "ECG", "fNIRS"])
+    process_all_modalities: bool = True  # 是否处理所有模态
+
+    # ========== 输出配置 ==========
+    save_intermediate_results: bool = False
+    save_processing_log: bool = True
+    visualize_results: bool = False
+    output_format: str = "dict"  # dict, numpy, pickle
+
+    # ========== 质量控制配置 ==========
+    quality_check_enabled: bool = True
+    min_signal_quality: float = 0.5  # 最低信号质量阈值（0-1）
+    auto_fix_issues: bool = True  # 自动修复问题
+
+
+@dataclass
+class ProcessingResult:
+    """
+    处理结果数据结构
+    """
+    success: bool = False
+    processed_data: Optional[Dict[str, Any]] = None
+    processing_stats: Dict[str, Any] = field(default_factory=dict)
+    error_message: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)
+    processing_time: float = 0.0
+
+
+# ====================== 多模态预处理器主类 ======================
+
+class MultiModalPreprocessor:
+    """
+    多模态信号预处理器
+    统一调度和管理多种生理信号的预处理流程
     """
 
-    def __init__(self,
-                 sampling_rate: float = 250.0,
-                 normalize: bool = True,
-                 verbose: bool = False):
+    def __init__(self, config: Optional[MultiModalConfig] = None):
         """
-        初始化特征提取器
+        初始化多模态预处理器
 
-        参数:
-        ----------
-        sampling_rate : float, 默认=250.0
-            信号的采样率(Hz)
-        normalize : bool, 默认=True
-            是否在特征提取前对信号进行z-score标准化
-        verbose : bool, 默认=False
-            是否打印详细处理信息
+        Args:
+            config: 多模态预处理配置，None则使用默认配置
         """
-        self.sampling_rate = sampling_rate
-        self.normalize = normalize
-        self.verbose = verbose
+        self.config = config if config is not None else MultiModalConfig()
+        self.modality_processors = {}
+        self.modality_configs = {}
+        self.processing_history = []
+        self._initialize_processors()
 
-        # 初始化缓存以提高性能
-        self._cache = {}
+    def _initialize_processors(self):
+        """初始化各模态预处理器"""
+        if not HAS_MODULES:
+            logger.error("未能导入必要的预处理模块")
+            return
 
-    def _validate_input(self, signal_data: np.ndarray) -> np.ndarray:
+        # 初始化各模态预处理器
+        try:
+            # EEG预处理器
+            if self.config.eeg_config is not None:
+                self.modality_processors["EEG"] = EEGPreprocessor(self.config.eeg_config)
+                self.modality_configs["EEG"] = self.config.eeg_config
+            else:
+                # 使用默认配置
+                self.modality_processors["EEG"] = EEGPreprocessor()
+                self.modality_configs["EEG"] = EEGPreprocessingConfig()
+
+            # fNIRS预处理器
+            if self.config.fnirs_config is not None:
+                self.modality_processors["fNIRS"] = fNIRSPreprocessor(self.config.fnirs_config)
+                self.modality_configs["fNIRS"] = self.config.fnirs_config
+            else:
+                self.modality_processors["fNIRS"] = fNIRSPreprocessor()
+                self.modality_configs["fNIRS"] = fNIRSConfig()
+
+            # ECG预处理器
+            if self.config.ecg_config is not None:
+                self.modality_processors["ECG"] = ECGPreprocessor(self.config.ecg_config)
+                self.modality_configs["ECG"] = self.config.ecg_config
+            else:
+                self.modality_processors["ECG"] = ECGPreprocessor()
+                self.modality_configs["ECG"] = ECGConfig()
+
+            # EMG预处理器
+            if self.config.emg_config is not None:
+                self.modality_processors["EMG"] = EMGPreprocessor(self.config.emg_config)
+                self.modality_configs["EMG"] = self.config.emg_config
+            else:
+                self.modality_processors["EMG"] = EMGPreprocessor()
+                self.modality_configs["EMG"] = EMGPreprocessingConfig()
+
+            # 通用预处理器
+            if self.config.general_config is not None:
+                self.modality_processors["GENERAL"] = GeneralPreprocessor(self.config.general_config)
+                self.modality_configs["GENERAL"] = self.config.general_config
+            else:
+                self.modality_processors["GENERAL"] = GeneralPreprocessor()
+                self.modality_configs["GENERAL"] = PreprocessingConfig()
+
+            logger.info("成功初始化所有模态预处理器")
+
+        except Exception as e:
+            logger.error(f"初始化预处理器失败: {str(e)}")
+
+    def process(self, data_dict: Dict[str, Any]) -> ProcessingResult:
         """
-        验证输入信号并返回处理后的信号
+        主处理函数：执行多模态信号预处理
 
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号，可以是1D或2D数组
+        Args:
+            data_dict: 四层结构的数据字典
 
-        返回:
-        ----------
-        np.ndarray: 验证并处理后的信号
+        Returns:
+            处理结果对象
         """
-        if signal_data is None:
-            raise ValueError("输入信号不能为None")
+        import time
+        start_time = time.time()
+        result = ProcessingResult()
 
-        # 确保是numpy数组
-        signal_data = np.asarray(signal_data, dtype=np.float64)
+        try:
+            # 1. 验证输入数据格式
+            self._validate_data_dict(data_dict)
 
-        # 确保至少是1D
-        if signal_data.ndim == 0:
-            raise ValueError("输入信号必须是至少1维的数组")
+            # 2. 备份原始数据
+            original_data = copy.deepcopy(data_dict)
 
-        # 如果是1D，转换为2D (1, n_samples)
-        if signal_data.ndim == 1:
-            signal_data = signal_data.reshape(1, -1)
+            # 3. 检测数据中的模态
+            detected_modalities = self._detect_modalities(data_dict)
+            logger.info(f"检测到模态: {detected_modalities}")
 
-        # 检查NaN和Inf
-        if np.any(np.isnan(signal_data)):
-            warnings.warn("输入信号包含NaN值，将用线性插值处理", SignalQualityWarning)
-            for i in range(signal_data.shape[0]):
-                nan_mask = np.isnan(signal_data[i])
-                if np.any(nan_mask):
-                    signal_data[i, nan_mask] = np.interp(
-                        np.where(nan_mask)[0],
-                        np.where(~nan_mask)[0],
-                        signal_data[i, ~nan_mask]
+            # 4. 选择要处理的模态
+            modalities_to_process = self._select_modalities_to_process(detected_modalities)
+            if not modalities_to_process:
+                raise ValueError("没有可处理的信号模态")
+
+            logger.info(f"将处理以下模态: {modalities_to_process}")
+
+            # 5. 时间同步（如果需要）
+            if self.config.time_sync_method != TimeSyncMethod.NONE:
+                data_dict = self._synchronize_modalities(data_dict, modalities_to_process)
+
+            # 6. 执行预处理
+            processed_data = self._execute_preprocessing(data_dict, modalities_to_process)
+
+            # 7. 质量检查
+            if self.config.quality_check_enabled:
+                quality_report = self._check_quality(processed_data, modalities_to_process)
+                processed_data["processed"]["quality_report"] = quality_report
+
+                # 自动修复问题
+                if self.config.auto_fix_issues and quality_report.get("has_issues", False):
+                    processed_data = self._auto_fix_issues(processed_data, quality_report)
+
+            # 8. 记录处理历史
+            processing_stats = self._collect_processing_stats(processed_data)
+            self._update_processing_history(processing_stats)
+
+            # 9. 生成处理结果
+            result.success = True
+            result.processed_data = processed_data
+            result.processing_stats = processing_stats
+            result.processing_time = time.time() - start_time
+
+            logger.info(f"多模态预处理完成，耗时: {result.processing_time:.2f}秒")
+
+        except Exception as e:
+            result.success = False
+            result.error_message = str(e)
+            logger.error(f"处理失败: {str(e)}")
+
+        return result
+
+    def _validate_data_dict(self, data_dict: Dict[str, Any]):
+        """
+        验证四层数据字典格式
+
+        Args:
+            data_dict: 数据字典
+
+        Raises:
+            ValueError: 如果数据格式不符合要求
+        """
+        required_layers = ["meta", "signal"]
+        for layer in required_layers:
+            if layer not in data_dict:
+                raise ValueError(f"数据字典必须包含'{layer}'层")
+
+        # 验证meta层
+        meta = data_dict["meta"]
+        required_meta_fields = ["subject_id", "task", "modality", "sampling_rate"]
+        for field in required_meta_fields:
+            if field not in meta:
+                raise ValueError(f"meta层必须包含'{field}'字段")
+
+        # 验证signal层
+        signal = data_dict["signal"]
+        if not isinstance(signal, dict) or len(signal) == 0:
+            raise ValueError("signal层必须是非空字典")
+
+        for modality, signal_info in signal.items():
+            required_signal_fields = ["data", "sampling_rate", "channel_names"]
+            for field in required_signal_fields:
+                if field not in signal_info:
+                    raise ValueError(f"{modality}信号必须包含'{field}'字段")
+
+            # 验证数据形状
+            data = signal_info["data"]
+            if not isinstance(data, np.ndarray):
+                raise ValueError(f"{modality}数据必须是numpy数组")
+
+            channel_names = signal_info["channel_names"]
+            if len(data.shape) != 2:
+                raise ValueError(f"{modality}数据必须是2维数组 (channels × samples)")
+
+            if data.shape[0] != len(channel_names):
+                raise ValueError(f"{modality}通道数量与数据维度不匹配")
+
+        logger.info("数据格式验证通过")
+
+    def _detect_modalities(self, data_dict: Dict[str, Any]) -> List[str]:
+        """
+        检测数据中存在的信号模态
+
+        Args:
+            data_dict: 数据字典
+
+        Returns:
+            检测到的模态列表
+        """
+        detected_modalities = []
+
+        # 从signal层检测
+        signal_modalities = list(data_dict["signal"].keys())
+
+        # 标准化模态名称
+        modality_mapping = {
+            "EEG": ["EEG", "eeg", "Electroencephalography"],
+            "fNIRS": ["fNIRS", "fnirs", "NIRS", "nir"],
+            "ECG": ["ECG", "ecg", "Electrocardiography"],
+            "EMG": ["EMG", "emg", "Electromyography"],
+            "EOG": ["EOG", "eog", "Electrooculography"],
+            "GSR": ["GSR", "gsr", "EDA", "eda"],
+            "RESP": ["RESP", "resp", "Respiration"],
+        }
+
+        for detected in signal_modalities:
+            detected_upper = detected.upper()
+            for standard_name, variants in modality_mapping.items():
+                if detected_upper in variants or detected_upper == standard_name:
+                    if standard_name not in detected_modalities:
+                        detected_modalities.append(standard_name)
+                    break
+
+        # 如果没有匹配到标准名称，直接添加原始名称
+        for detected in signal_modalities:
+            if detected not in detected_modalities:
+                detected_modalities.append(detected)
+
+        return detected_modalities
+
+    def _select_modalities_to_process(self, detected_modalities: List[str]) -> List[str]:
+        """
+        选择要处理的模态
+
+        Args:
+            detected_modalities: 检测到的模态列表
+
+        Returns:
+            要处理的模态列表
+        """
+        if self.config.process_all_modalities:
+            return detected_modalities
+
+        # 只处理启用列表中的模态
+        modalities_to_process = []
+        for modality in detected_modalities:
+            if modality in self.config.enabled_modalities:
+                modalities_to_process.append(modality)
+            elif modality.upper() in [m.upper() for m in self.config.enabled_modalities]:
+                # 大小写不敏感的匹配
+                modalities_to_process.append(modality)
+
+        return modalities_to_process
+
+    def _synchronize_modalities(self, data_dict: Dict[str, Any],
+                                modalities: List[str]) -> Dict[str, Any]:
+        """
+        同步多模态信号的时间
+
+        Args:
+            data_dict: 数据字典
+            modalities: 要同步的模态列表
+
+        Returns:
+            同步后的数据字典
+        """
+        if len(modalities) <= 1:
+            logger.info("只有一个模态，无需同步")
+            return data_dict
+
+        logger.info(f"开始时间同步，方法: {self.config.time_sync_method.value}")
+
+        if self.config.time_sync_method == TimeSyncMethod.RESAMPLE:
+            return self._synchronize_by_resampling(data_dict, modalities)
+        elif self.config.time_sync_method == TimeSyncMethod.INTERPOLATE:
+            return self._synchronize_by_interpolation(data_dict, modalities)
+        elif self.config.time_sync_method == TimeSyncMethod.EVENT_ALIGN:
+            return self._synchronize_by_event_alignment(data_dict, modalities)
+        else:
+            return data_dict
+
+    def _synchronize_by_resampling(self, data_dict: Dict[str, Any],
+                                   modalities: List[str]) -> Dict[str, Any]:
+        """
+        通过重采样进行时间同步
+
+        Args:
+            data_dict: 数据字典
+            modalities: 模态列表
+
+        Returns:
+            同步后的数据字典
+        """
+        if self.config.reference_sampling_rate is None:
+            # 使用最高采样率作为参考
+            max_fs = 0
+            for modality in modalities:
+                fs = data_dict["signal"][modality]["sampling_rate"]
+                if fs > max_fs:
+                    max_fs = fs
+            target_fs = max_fs
+        else:
+            target_fs = self.config.reference_sampling_rate
+
+        # 重要：记录重采样后的奈奎斯特频率
+        nyquist_freq = target_fs / 2
+        logger.info(f"重采样后奈奎斯特频率: {nyquist_freq} Hz")
+
+        for modality in modalities:
+            signal_info = data_dict["signal"][modality]
+            original_fs = signal_info["sampling_rate"]
+
+            if original_fs != target_fs:
+                # 对于EMG信号，需要特别处理滤波参数
+                if modality == "EMG":
+                    # 在重采样前检查并调整滤波参数
+                    self._adjust_emg_filter_for_resampling(signal_info, original_fs, target_fs)
+                # 使用通用预处理器进行重采样
+                data = signal_info["data"]
+
+                # 计算新的样本数
+                n_channels, n_samples = data.shape
+                new_n_samples = int(n_samples * target_fs / original_fs)
+
+                # 重采样
+                from scipy.signal import resample_poly
+                resampled_data = np.zeros((n_channels, new_n_samples))
+
+                for ch in range(n_channels):
+                    resampled_data[ch, :] = resample_poly(
+                        data[ch, :],
+                        int(target_fs),
+                        int(original_fs)
                     )
 
-        if np.any(np.isinf(signal_data)):
-            warnings.warn("输入信号包含无穷值，将用邻近值替换", SignalQualityWarning)
-            for i in range(signal_data.shape[0]):
-                inf_mask = np.isinf(signal_data[i])
-                if np.any(inf_mask):
-                    # 找到非无穷值的索引
-                    valid_indices = np.where(~inf_mask)[0]
-                    if len(valid_indices) > 0:
-                        for idx in np.where(inf_mask)[0]:
-                            # 找到最近的合法值
-                            nearest_idx = valid_indices[np.argmin(np.abs(valid_indices - idx))]
-                            signal_data[i, idx] = signal_data[i, nearest_idx]
-                    else:
-                        # 所有值都是无穷，设置为0
-                        signal_data[i, inf_mask] = 0.0
+                # 更新数据字典
+                signal_info["data"] = resampled_data
+                signal_info["sampling_rate"] = target_fs
+                signal_info["original_sampling_rate"] = original_fs  # 保存原始采样率
 
-        return signal_data
+                logger.info(f"{modality}: {original_fs} Hz -> {target_fs} Hz")
 
-    def _preprocess_signal(self, signal_data: np.ndarray) -> np.ndarray:
+        return data_dict
+
+    def _synchronize_by_interpolation(self, data_dict: Dict[str, Any],
+                                      modalities: List[str]) -> Dict[str, Any]:
         """
-        预处理信号
+        通过插值进行时间同步
 
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
+        Args:
+            data_dict: 数据字典
+            modalities: 模态列表
 
-        返回:
-        ----------
-        np.ndarray: 预处理后的信号
+        Returns:
+            同步后的数据字典
         """
-        processed_signal = self._validate_input(signal_data)
+        # 找出最长的信号作为时间基准
+        max_duration = 0
+        reference_modality = None
 
-        # 去趋势（移除线性趋势）
-        for i in range(processed_signal.shape[0]):
-            x = np.arange(len(processed_signal[i]))
-            slope, intercept = np.polyfit(x, processed_signal[i], 1)
-            processed_signal[i] = processed_signal[i] - (slope * x + intercept)
+        for modality in modalities:
+            signal_info = data_dict["signal"][modality]
+            n_samples = signal_info["data"].shape[1]
+            fs = signal_info["sampling_rate"]
+            duration = n_samples / fs
 
-        # 标准化
-        if self.normalize:
-            for i in range(processed_signal.shape[0]):
-                std = np.std(processed_signal[i])
-                if std > 1e-10:  # 避免除零
-                    processed_signal[i] = (processed_signal[i] - np.mean(processed_signal[i])) / std
+            if duration > max_duration:
+                max_duration = duration
+                reference_modality = modality
 
-        return processed_signal
+        if reference_modality is None:
+            return data_dict
 
-    def _get_cached_or_compute(self,
-                               key: str,
-                               compute_func: Callable,
-                               *args, **kwargs) -> np.ndarray:
-        """
-        获取缓存结果或计算并缓存
+        reference_fs = data_dict["signal"][reference_modality]["sampling_rate"]
+        reference_n_samples = data_dict["signal"][reference_modality]["data"].shape[1]
 
-        参数:
-        ----------
-        key : str
-            缓存键
-        compute_func : Callable
-            计算函数
-        *args, **kwargs :
-            传递给计算函数的参数
+        logger.info(f"使用{reference_modality}作为时间参考，采样率: {reference_fs} Hz")
 
-        返回:
-        ----------
-        np.ndarray: 计算结果
-        """
-        cache_key = f"{key}_{hash(str(args))}_{hash(str(kwargs))}"
+        # 创建统一的时间轴
+        time_axis = np.arange(reference_n_samples) / reference_fs
 
-        if cache_key in self._cache:
-            if self.verbose:
-                print(f"从缓存获取: {key}")
-            return self._cache[cache_key]
-        else:
-            result = compute_func(*args, **kwargs)
-            self._cache[cache_key] = result
-            return result
-
-    def clear_cache(self):
-        """清除缓存"""
-        self._cache.clear()
-
-
-class TimeDomainFeatures(FeatureExtractor):
-    """时域特征提取类"""
-
-    def compute_statistical_features(self,
-                                     signal_data: np.ndarray,
-                                     features: List[str] = None) -> Dict[str, np.ndarray]:
-        """
-        计算基本统计特征
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号，形状为(n_channels, n_samples)或(n_samples,)
-        features : List[str], 可选
-            要计算的特征列表，如果为None则计算所有特征
-
-        返回:
-        ----------
-        Dict[str, np.ndarray]: 特征字典，每个特征对应一个形状为(n_channels,)的数组
-        """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
-
-        # 默认特征列表
-        if features is None:
-            features = ['mean', 'variance', 'std', 'skewness', 'kurtosis',
-                        'min', 'max', 'peak_to_peak', 'rms', 'percentiles']
-
-        feature_dict = {}
-
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
-
-            # 确保信号长度足够
-            if len(channel_signal) < 10:
-                warnings.warn(f"信号长度({len(channel_signal)})可能不足以保证统计可靠性",
-                              SignalQualityWarning)
-
-            channel_features = {}
-
-            if 'mean' in features:
-                channel_features['mean'] = np.mean(channel_signal)
-
-            if 'variance' in features or 'std' in features:
-                variance = np.var(channel_signal)
-                if 'variance' in features:
-                    channel_features['variance'] = variance
-                if 'std' in features:
-                    channel_features['std'] = np.sqrt(variance)
-
-            if 'skewness' in features:
-                # 使用scipy的偏度计算，更稳定
-                channel_features['skewness'] = stats.skew(channel_signal)
-
-            if 'kurtosis' in features:
-                # 使用scipy的峰度计算，Fisher定义（正态分布为0）
-                channel_features['kurtosis'] = stats.kurtosis(channel_signal)
-
-            if 'min' in features:
-                channel_features['min'] = np.min(channel_signal)
-
-            if 'max' in features:
-                channel_features['max'] = np.max(channel_signal)
-
-            if 'peak_to_peak' in features:
-                channel_features['peak_to_peak'] = np.ptp(channel_signal)
-
-            if 'rms' in features:
-                channel_features['rms'] = np.sqrt(np.mean(channel_signal ** 2))
-
-            if 'percentiles' in features:
-                percentiles = [25, 50, 75]  # 25th, 50th(median), 75th
-                percentile_values = np.percentile(channel_signal, percentiles)
-                for p, val in zip(percentiles, percentile_values):
-                    channel_features[f'percentile_{p}'] = val
-
-            if 'iqr' in features:
-                q75, q25 = np.percentile(channel_signal, [75, 25])
-                channel_features['iqr'] = q75 - q25
-
-            # 将通道特征添加到总体字典中
-            for feat_name, feat_value in channel_features.items():
-                if feat_name not in feature_dict:
-                    feature_dict[feat_name] = np.zeros(n_channels)
-                feature_dict[feat_name][i] = feat_value
-
-        return feature_dict
-
-    def compute_rms(self, signal_data: np.ndarray) -> np.ndarray:
-        """
-        计算均方根值(Root Mean Square)
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-
-        返回:
-        ----------
-        np.ndarray: 每个通道的RMS值
-        """
-        processed_signal = self._preprocess_signal(signal_data)
-        return np.sqrt(np.mean(processed_signal ** 2, axis=1))
-
-    def compute_zcr(self,
-                    signal_data: np.ndarray,
-                    threshold: float = 0.0) -> np.ndarray:
-        """
-        计算过零点率(Zero-Crossing Rate)
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        threshold : float, 默认=0.0
-            过零点检测的阈值，用于减少噪声的影响
-
-        返回:
-        ----------
-        np.ndarray: 每个通道的过零点率
-        """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
-
-        zcr_values = np.zeros(n_channels)
-
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
-
-            # 计算过零点
-            zero_crossings = np.where(np.diff(np.sign(channel_signal - threshold)))[0]
-
-            # 计算过零点率（每秒钟的过零点数）
-            zcr_values[i] = len(zero_crossings) * self.sampling_rate / n_samples
-
-        return zcr_values
-
-    def compute_hjorth_parameters(self, signal_data: np.ndarray) -> Dict[str, np.ndarray]:
-        """
-        计算Hjorth参数：活动性、移动性、复杂性
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-
-        返回:
-        ----------
-        Dict[str, np.ndarray]: Hjorth参数字典
-        """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
-
-        activity = np.zeros(n_channels)
-        mobility = np.zeros(n_channels)
-        complexity = np.zeros(n_channels)
-
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
-
-            # 活动性：信号的方差
-            activity[i] = np.var(channel_signal)
-
-            if activity[i] > 1e-10:  # 避免除零
-                # 一阶导数
-                first_derivative = np.diff(channel_signal)
-                var_first_deriv = np.var(first_derivative)
-
-                # 移动性：一阶导数的标准差与原始信号标准差的比值
-                mobility[i] = np.sqrt(var_first_deriv / activity[i])
-
-                if var_first_deriv > 1e-10:
-                    # 二阶导数
-                    second_derivative = np.diff(first_derivative)
-                    var_second_deriv = np.var(second_derivative)
-
-                    # 复杂性：二阶导数的移动性与一阶导数的移动性的比值
-                    mobility_second = np.sqrt(var_second_deriv / var_first_deriv)
-                    complexity[i] = mobility_second / mobility[i]
-
-        return {
-            'hjorth_activity': activity,
-            'hjorth_mobility': mobility,
-            'hjorth_complexity': complexity
-        }
-
-    def compute_waveform_length(self, signal_data: np.ndarray) -> np.ndarray:
-        """
-        计算波形长度（信号绝对变化的总和）
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-
-        返回:
-        ----------
-        np.ndarray: 每个通道的波形长度
-        """
-        processed_signal = self._preprocess_signal(signal_data)
-        return np.sum(np.abs(np.diff(processed_signal, axis=1)), axis=1)
-
-    def compute_willison_amplitude(self,
-                                   signal_data: np.ndarray,
-                                   threshold: float = 0.01) -> np.ndarray:
-        """
-        计算Willison幅值（超过阈值的差分数量）
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        threshold : float, 默认=0.01
-            差分阈值
-
-        返回:
-        ----------
-        np.ndarray: 每个通道的Willison幅值
-        """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
-
-        willison_values = np.zeros(n_channels)
-
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
-            diff_signal = np.abs(np.diff(channel_signal))
-            willison_values[i] = np.sum(diff_signal > threshold)
-
-        return willison_values
-
-
-class FrequencyDomainFeatures(FeatureExtractor):
-    """频域特征提取类"""
-
-    def compute_spectral_features(self,
-                                  signal_data: np.ndarray,
-                                  nperseg: int = 256,
-                                  noverlap: int = None,
-                                  window: str = 'hann') -> Dict[str, np.ndarray]:
-        """
-        计算频谱特征
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        nperseg : int, 默认=256
-            Welch方法中每个段的长度
-        noverlap : int, 可选
-            段之间的重叠点数，默认为nperseg//2
-        window : str, 默认='hann'
-            窗函数类型
-
-        返回:
-        ----------
-        Dict[str, np.ndarray]: 频谱特征字典
-        """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
-
-        if noverlap is None:
-            noverlap = nperseg // 2
-
-        feature_dict = {}
-
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
-
-            # 使用Welch方法计算功率谱密度
-            freqs, psd = signal.welch(
-                channel_signal,
-                fs=self.sampling_rate,
-                nperseg=nperseg,
-                noverlap=noverlap,
-                window=window
-            )
-
-            # 总功率
-            total_power = np.trapz(psd, freqs)
-
-            # 频谱质心（加权平均频率）
-            if total_power > 1e-10:
-                spectral_centroid = np.trapz(freqs * psd, freqs) / total_power
-            else:
-                spectral_centroid = 0.0
-
-            # 频谱带宽（二阶矩）
-            if total_power > 1e-10:
-                spectral_bandwidth = np.sqrt(
-                    np.trapz((freqs - spectral_centroid) ** 2 * psd, freqs) / total_power
-                )
-            else:
-                spectral_bandwidth = 0.0
-
-            # 频谱滚降点（95%功率所在的频率）
-            cumulative_power = np.cumsum(psd)
-            cumulative_power_normalized = cumulative_power / cumulative_power[-1]
-            spectral_rolloff = freqs[np.where(cumulative_power_normalized >= 0.95)[0][0]]
-
-            # 频谱平坦度（维纳熵）
-            geometric_mean = np.exp(np.mean(np.log(psd + 1e-10)))
-            arithmetic_mean = np.mean(psd)
-            spectral_flatness = geometric_mean / arithmetic_mean if arithmetic_mean > 0 else 0
-
-            # 峰值频率
-            peak_freq = freqs[np.argmax(psd)]
-
-            # 频谱不对称性
-            half_idx = len(freqs) // 2
-            low_freq_power = np.trapz(psd[:half_idx], freqs[:half_idx])
-            high_freq_power = np.trapz(psd[half_idx:], freqs[half_idx:])
-            spectral_asymmetry = (high_freq_power - low_freq_power) / (high_freq_power + low_freq_power + 1e-10)
-
-            # 存储特征
-            channel_features = {
-                'spectral_centroid': spectral_centroid,
-                'spectral_bandwidth': spectral_bandwidth,
-                'spectral_rolloff': spectral_rolloff,
-                'spectral_flatness': spectral_flatness,
-                'peak_frequency': peak_freq,
-                'spectral_asymmetry': spectral_asymmetry,
-                'total_power': total_power
-            }
-
-            for feat_name, feat_value in channel_features.items():
-                if feat_name not in feature_dict:
-                    feature_dict[feat_name] = np.zeros(n_channels)
-                feature_dict[feat_name][i] = feat_value
-
-        return feature_dict
-
-    def compute_spectral_entropy(self,
-                                 signal_data: np.ndarray,
-                                 normalize: bool = True) -> np.ndarray:
-        """
-        计算谱熵（频谱功率分布的熵）
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        normalize : bool, 默认=True
-            是否归一化熵值（0-1之间）
-
-        返回:
-        ----------
-        np.ndarray: 每个通道的谱熵
-        """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
-
-        spectral_entropies = np.zeros(n_channels)
-
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
-
-            # 计算功率谱
-            freqs, psd = signal.welch(channel_signal, fs=self.sampling_rate)
-
-            # 归一化功率谱
-            psd_normalized = psd / (np.sum(psd) + 1e-10)
-
-            # 计算谱熵
-            entropy = -np.sum(psd_normalized * np.log2(psd_normalized + 1e-10))
-
-            if normalize:
-                # 最大熵（均匀分布）
-                max_entropy = np.log2(len(psd_normalized))
-                if max_entropy > 0:
-                    entropy = entropy / max_entropy
-
-            spectral_entropies[i] = entropy
-
-        return spectral_entropies
-
-    def compute_spectral_edge_frequency(self,
-                                        signal_data: np.ndarray,
-                                        percentiles: List[float] = [50, 75, 90, 95]) -> Dict[str, np.ndarray]:
-        """
-        计算频谱边缘频率（特定百分比功率所在的频率）
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        percentiles : List[float], 默认=[50, 75, 90, 95]
-            要计算的百分位数
-
-        返回:
-        ----------
-        Dict[str, np.ndarray]: 频谱边缘频率字典
-        """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
-
-        feature_dict = {}
-
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
-
-            # 计算功率谱
-            freqs, psd = signal.welch(channel_signal, fs=self.sampling_rate)
-
-            # 累积功率
-            cumulative_power = np.cumsum(psd)
-            total_power = cumulative_power[-1]
-
-            if total_power > 1e-10:
-                cumulative_power_normalized = cumulative_power / total_power
-
-                for percentile in percentiles:
-                    threshold = percentile / 100.0
-                    edge_idx = np.where(cumulative_power_normalized >= threshold)[0]
-
-                    if len(edge_idx) > 0:
-                        edge_freq = freqs[edge_idx[0]]
-                    else:
-                        edge_freq = freqs[-1]
-
-                    feat_name = f'sef_{percentile}'
-                    if feat_name not in feature_dict:
-                        feature_dict[feat_name] = np.zeros(n_channels)
-                    feature_dict[feat_name][i] = edge_freq
-
-        return feature_dict
-
-    def compute_band_power_ratio(self,
-                                 signal_data: np.ndarray,
-                                 band_edges: List[Tuple[float, float]] = None) -> Dict[str, np.ndarray]:
-        """
-        计算频带功率比
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        band_edges : List[Tuple[float, float]], 可选
-            频带边界列表，默认为EEG标准频带
-
-        返回:
-        ----------
-        Dict[str, np.ndarray]: 频带功率比字典
-        """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
-
-        # 默认频带（EEG频带）
-        if band_edges is None:
-            band_edges = [
-                (0.5, 4),  # Delta
-                (4, 8),  # Theta
-                (8, 13),  # Alpha
-                (13, 30),  # Beta
-                (30, 45)  # Gamma
-            ]
-
-        feature_dict = {}
-
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
-
-            # 计算功率谱
-            freqs, psd = signal.welch(channel_signal, fs=self.sampling_rate)
-
-            total_power = np.trapz(psd, freqs)
-
-            for band_idx, (low_freq, high_freq) in enumerate(band_edges):
-                # 找到频带内的频率索引
-                band_mask = (freqs >= low_freq) & (freqs <= high_freq)
-
-                if np.any(band_mask):
-                    band_power = np.trapz(psd[band_mask], freqs[band_mask])
-
-                    # 绝对功率
-                    abs_power_feat = f'band_{band_idx + 1}_abs_power'
-                    if abs_power_feat not in feature_dict:
-                        feature_dict[abs_power_feat] = np.zeros(n_channels)
-                    feature_dict[abs_power_feat][i] = band_power
-
-                    # 相对功率（占总功率的比例）
-                    if total_power > 1e-10:
-                        rel_power = band_power / total_power
-                        rel_power_feat = f'band_{band_idx + 1}_rel_power'
-                        if rel_power_feat not in feature_dict:
-                            feature_dict[rel_power_feat] = np.zeros(n_channels)
-                        feature_dict[rel_power_feat][i] = rel_power
-
-        return feature_dict
-
-
-class TimeFrequencyFeatures(FeatureExtractor):
-    """时频域特征提取类"""
-
-    def compute_wavelet_features(self,
-                                 signal_data: np.ndarray,
-                                 wavelet: str = 'db4',
-                                 max_level: int = 5,
-                                 features: List[str] = None) -> Dict[str, np.ndarray]:
-        """
-        计算小波变换特征
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        wavelet : str, 默认='db4'
-            小波基函数
-        max_level : int, 默认=5
-            最大分解层数
-        features : List[str], 可选
-            要计算的特征列表
-
-        返回:
-        ----------
-        Dict[str, np.ndarray]: 小波特征字典
-        """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
-
-        if features is None:
-            features = ['energy', 'entropy', 'std', 'mean']
-
-        feature_dict = {}
-
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
-
-            # 小波分解
-            coeffs = pywt.wavedec(channel_signal, wavelet, level=max_level)
-
-            # 计算近似系数和细节系数的特征
-            for level, coeff in enumerate(coeffs):
-                if len(coeff) == 0:
-                    continue
-
-                level_prefix = f'wavelet_level_{level}'
-
-                # 能量
-                if 'energy' in features:
-                    energy = np.sum(coeff ** 2)
-                    energy_key = f'{level_prefix}_energy'
-                    if energy_key not in feature_dict:
-                        feature_dict[energy_key] = np.zeros(n_channels)
-                    feature_dict[energy_key][i] = energy
-
-                # 熵
-                if 'entropy' in features:
-                    # 归一化系数
-                    coeff_normalized = coeff / (np.sum(np.abs(coeff)) + 1e-10)
-                    coeff_entropy = -np.sum(coeff_normalized * np.log2(coeff_normalized + 1e-10))
-                    entropy_key = f'{level_prefix}_entropy'
-                    if entropy_key not in feature_dict:
-                        feature_dict[entropy_key] = np.zeros(n_channels)
-                    feature_dict[entropy_key][i] = coeff_entropy
-
-                # 标准差
-                if 'std' in features:
-                    std_value = np.std(coeff)
-                    std_key = f'{level_prefix}_std'
-                    if std_key not in feature_dict:
-                        feature_dict[std_key] = np.zeros(n_channels)
-                    feature_dict[std_key][i] = std_value
-
-                # 均值
-                if 'mean' in features:
-                    mean_value = np.mean(coeff)
-                    mean_key = f'{level_prefix}_mean'
-                    if mean_key not in feature_dict:
-                        feature_dict[mean_key] = np.zeros(n_channels)
-                    feature_dict[mean_key][i] = mean_value
-
-                # 能量比（相对于总能量）
-                if 'energy_ratio' in features:
-                    total_energy = np.sum(channel_signal ** 2)
-                    if total_energy > 1e-10:
-                        coeff_energy = np.sum(coeff ** 2)
-                        energy_ratio = coeff_energy / total_energy
-                        energy_ratio_key = f'{level_prefix}_energy_ratio'
-                        if energy_ratio_key not in feature_dict:
-                            feature_dict[energy_ratio_key] = np.zeros(n_channels)
-                        feature_dict[energy_ratio_key][i] = energy_ratio
-
-        return feature_dict
-
-    def compute_stft_features(self,
-                              signal_data: np.ndarray,
-                              nperseg: int = 256,
-                              noverlap: int = None,
-                              window: str = 'hann',
-                              features: List[str] = None) -> Dict[str, np.ndarray]:
-        """
-        计算短时傅里叶变换特征
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        nperseg : int, 默认=256
-            每个段的长度
-        noverlap : int, 可选
-            段之间的重叠点数
-        window : str, 默认='hann'
-            窗函数类型
-        features : List[str], 可选
-            要计算的特征列表
-
-        返回:
-        ----------
-        Dict[str, np.ndarray]: STFT特征字典
-        """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
-
-        if noverlap is None:
-            noverlap = nperseg // 2
-
-        if features is None:
-            features = ['mean_spectrum', 'std_spectrum', 'spectral_flux']
-
-        feature_dict = {}
-
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
-
-            # 计算STFT
-            f, t, Zxx = signal.stft(
-                channel_signal,
-                fs=self.sampling_rate,
-                nperseg=nperseg,
-                noverlap=noverlap,
-                window=window
-            )
-
-            # 幅度谱
-            magnitude = np.abs(Zxx)
-
-            # 时频谱的统计特征
-            if 'mean_spectrum' in features:
-                mean_spec = np.mean(magnitude, axis=1)
-                mean_key = 'stft_mean_spectrum'
-                if mean_key not in feature_dict:
-                    # 存储整个频谱，而不仅仅是标量
-                    feature_dict[mean_key] = np.zeros((n_channels, len(f)))
-                feature_dict[mean_key][i, :] = mean_spec
-
-            if 'std_spectrum' in features:
-                std_spec = np.std(magnitude, axis=1)
-                std_key = 'stft_std_spectrum'
-                if std_key not in feature_dict:
-                    feature_dict[std_key] = np.zeros((n_channels, len(f)))
-                feature_dict[std_key][i, :] = std_spec
-
-            if 'spectral_flux' in features:
-                # 谱通量：相邻时间帧之间的频谱变化
-                spectral_flux = np.mean(np.diff(magnitude, axis=1) ** 2, axis=0)
-                flux_key = 'stft_spectral_flux'
-                if flux_key not in feature_dict:
-                    feature_dict[flux_key] = np.zeros((n_channels, len(t) - 1))
-                feature_dict[flux_key][i, :] = spectral_flux
-
-            # 时频谱的能量
-            if 'total_energy' in features:
-                total_energy = np.sum(magnitude ** 2)
-                energy_key = 'stft_total_energy'
-                if energy_key not in feature_dict:
-                    feature_dict[energy_key] = np.zeros(n_channels)
-                feature_dict[energy_key][i] = total_energy
-
-        return feature_dict
-
-    def compute_hilbert_huang_features(self,
-                                       signal_data: np.ndarray,
-                                       n_imfs: int = 5) -> Dict[str, np.ndarray]:
-        """
-        计算希尔伯特-黄变换特征（基于经验模态分解）
-
-        注意：这里使用简单的Hilbert变换作为替代，完整的EMD实现较复杂
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        n_imfs : int, 默认=5
-            期望的IMF数量
-
-        返回:
-        ----------
-        Dict[str, np.ndarray]: HHT特征字典
-        """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
-
-        feature_dict = {}
-
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
-
-            # 使用Hilbert变换计算瞬时频率和幅度
-            analytic_signal = hilbert(channel_signal)
-            amplitude_envelope = np.abs(analytic_signal)
-            instantaneous_phase = np.unwrap(np.angle(analytic_signal))
-            instantaneous_frequency = np.diff(instantaneous_phase) / (2.0 * np.pi) * self.sampling_rate
-
-            # 确保长度匹配
-            if len(instantaneous_frequency) < len(amplitude_envelope):
-                instantaneous_frequency = np.append(instantaneous_frequency, instantaneous_frequency[-1])
-
-            # 计算统计特征
-            feature_dict.setdefault('hilbert_mean_amplitude', np.zeros(n_channels))
-            feature_dict['hilbert_mean_amplitude'][i] = np.mean(amplitude_envelope)
-
-            feature_dict.setdefault('hilbert_std_amplitude', np.zeros(n_channels))
-            feature_dict['hilbert_std_amplitude'][i] = np.std(amplitude_envelope)
-
-            feature_dict.setdefault('hilbert_mean_frequency', np.zeros(n_channels))
-            feature_dict['hilbert_mean_frequency'][i] = np.mean(instantaneous_frequency)
-
-            feature_dict.setdefault('hilbert_std_frequency', np.zeros(n_channels))
-            feature_dict['hilbert_std_frequency'][i] = np.std(instantaneous_frequency)
-
-            # 幅度调制深度
-            if np.mean(amplitude_envelope) > 1e-10:
-                modulation_depth = np.std(amplitude_envelope) / np.mean(amplitude_envelope)
-                feature_dict.setdefault('hilbert_modulation_depth', np.zeros(n_channels))
-                feature_dict['hilbert_modulation_depth'][i] = modulation_depth
-
-        return feature_dict
-
-
-class NonlinearFeatures(FeatureExtractor):
-    """非线性特征提取类"""
-
-    def compute_entropy_features(self,
-                                 signal_data: np.ndarray,
-                                 entropy_types: List[str] = None,
-                                 m: int = 2,
-                                 r: float = 0.2,
-                                 delay: int = 1) -> Dict[str, np.ndarray]:
-        """
-        计算各种熵特征
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        entropy_types : List[str], 可选
-            要计算的熵类型列表
-        m : int, 默认=2
-            嵌入维数
-        r : float, 默认=0.2
-            相似度阈值（通常为标准差的倍数）
-        delay : int, 默认=1
-            时间延迟
-
-        返回:
-        ----------
-        Dict[str, np.ndarray]: 熵特征字典
-        """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
-
-        if entropy_types is None:
-            entropy_types = ['sample_entropy', 'approximate_entropy', 'permutation_entropy']
-
-        feature_dict = {}
-
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
-
-            # 确保信号长度足够
-            min_length = 10 * m * delay
-            if len(channel_signal) < min_length:
-                warnings.warn(f"信号长度({len(channel_signal)})可能不足以保证熵计算的可靠性",
-                              SignalQualityWarning)
-                # 使用默认值
-                for entropy_type in entropy_types:
-                    feat_name = f'{entropy_type}'
-                    if feat_name not in feature_dict:
-                        feature_dict[feat_name] = np.zeros(n_channels)
-                    feature_dict[feat_name][i] = np.nan
+        for modality in modalities:
+            if modality == reference_modality:
                 continue
 
-            # 样本熵
-            if 'sample_entropy' in entropy_types:
-                sample_entropy_value = self._compute_sample_entropy(channel_signal, m, r)
-                feature_dict.setdefault('sample_entropy', np.zeros(n_channels))
-                feature_dict['sample_entropy'][i] = sample_entropy_value
+            signal_info = data_dict["signal"][modality]
+            original_data = signal_info["data"]
+            original_fs = signal_info["sampling_rate"]
+            original_n_samples = original_data.shape[1]
 
-            # 近似熵
-            if 'approximate_entropy' in entropy_types:
-                approx_entropy_value = self._compute_approximate_entropy(channel_signal, m, r)
-                feature_dict.setdefault('approximate_entropy', np.zeros(n_channels))
-                feature_dict['approximate_entropy'][i] = approx_entropy_value
+            # 原始时间轴
+            original_time = np.arange(original_n_samples) / original_fs
 
-            # 排列熵
-            if 'permutation_entropy' in entropy_types:
-                perm_entropy_value = self._compute_permutation_entropy(channel_signal, m, delay)
-                feature_dict.setdefault('permutation_entropy', np.zeros(n_channels))
-                feature_dict['permutation_entropy'][i] = perm_entropy_value
+            # 插值到参考时间轴
+            from scipy.interpolate import interp1d
+            interpolated_data = np.zeros((original_data.shape[0], reference_n_samples))
 
-            # 模糊熵
-            if 'fuzzy_entropy' in entropy_types:
-                fuzzy_entropy_value = self._compute_fuzzy_entropy(channel_signal, m, r)
-                feature_dict.setdefault('fuzzy_entropy', np.zeros(n_channels))
-                feature_dict['fuzzy_entropy'][i] = fuzzy_entropy_value
+            for ch in range(original_data.shape[0]):
+                interp_func = interp1d(original_time, original_data[ch, :],
+                                       kind='cubic', fill_value="extrapolate")
+                interpolated_data[ch, :] = interp_func(time_axis)
 
-            # 多尺度熵（简化版本）
-            if 'multiscale_entropy' in entropy_types:
-                mse_values = self._compute_multiscale_entropy(channel_signal, m, r, max_scale=5)
-                for scale, mse_val in enumerate(mse_values, 1):
-                    feat_name = f'multiscale_entropy_scale_{scale}'
-                    if feat_name not in feature_dict:
-                        feature_dict[feat_name] = np.zeros(n_channels)
-                    feature_dict[feat_name][i] = mse_val
+            # 更新数据字典
+            signal_info["data"] = interpolated_data
+            signal_info["sampling_rate"] = reference_fs
+            signal_info["original_sampling_rate"] = original_fs
+            signal_info["interpolated"] = True
 
-        return feature_dict
+            logger.info(f"{modality}: 插值到{reference_fs} Hz")
 
-    def _compute_sample_entropy(self, signal_data: np.ndarray, m: int, r: float) -> float:
-        """计算样本熵"""
-        N = len(signal_data)
+        return data_dict
 
-        # 分割序列
-        def _get_vectors(m):
-            return np.array([signal_data[i:i + m] for i in range(N - m + 1)])
-
-        # 计算距离
-        def _phi(m):
-            vectors = _get_vectors(m)
-            C = np.zeros(len(vectors))
-
-            for i in range(len(vectors)):
-                # 排除自比较
-                distances = np.max(np.abs(vectors[i + 1:] - vectors[i]), axis=1)
-                C[i] = np.sum(distances <= r * np.std(signal_data)) / (N - m)
-
-            return np.sum(C) / (N - m + 1)
-
-        if N <= m:
-            return 0
-
-        phi_m = _phi(m)
-        phi_m1 = _phi(m + 1)
-
-        if phi_m1 == 0 or phi_m == 0:
-            return 0
-
-        return -np.log(phi_m1 / phi_m)
-
-    def _compute_approximate_entropy(self, signal_data: np.ndarray, m: int, r: float) -> float:
-        """计算近似熵"""
-        N = len(signal_data)
-
-        def _phi(m):
-            vectors = np.array([signal_data[i:i + m] for i in range(N - m + 1)])
-            C = np.zeros(len(vectors))
-
-            for i in range(len(vectors)):
-                distances = np.max(np.abs(vectors - vectors[i]), axis=1)
-                C[i] = np.sum(distances <= r * np.std(signal_data)) / (N - m + 1)
-
-            return np.mean(np.log(C + 1e-10))
-
-        if N <= m:
-            return 0
-
-        return _phi(m) - _phi(m + 1)
-
-    def _compute_permutation_entropy(self, signal_data: np.ndarray, m: int, delay: int) -> float:
-        """计算排列熵"""
-        N = len(signal_data)
-
-        # 生成排列模式
-        permutations = []
-        for i in range(N - (m - 1) * delay):
-            segment = signal_data[i:i + m * delay:delay]
-            permutations.append(tuple(np.argsort(segment)))
-
-        # 计算每种排列的概率
-        unique_perms, counts = np.unique(permutations, return_counts=True, axis=0)
-        probs = counts / len(permutations)
-
-        # 计算排列熵
-        perm_entropy = -np.sum(probs * np.log2(probs + 1e-10))
-
-        # 归一化（除以最大可能熵）
-        max_entropy = np.log2(np.math.factorial(m))
-        if max_entropy > 0:
-            perm_entropy = perm_entropy / max_entropy
-
-        return perm_entropy
-
-    def _compute_fuzzy_entropy(self, signal_data: np.ndarray, m: int, r: float) -> float:
-        """计算模糊熵（简化实现）"""
-        N = len(signal_data)
-        std = np.std(signal_data)
-
-        def _get_vectors(m):
-            vectors = np.array([signal_data[i:i + m] for i in range(N - m + 1)])
-            # 去除基线
-            vectors = vectors - np.mean(vectors, axis=1, keepdims=True)
-            return vectors
-
-        vectors_m = _get_vectors(m)
-        vectors_m1 = _get_vectors(m + 1)
-
-        # 模糊隶属度函数
-        def _fuzzy_membership(d, r):
-            return np.exp(-(d ** 2) / r)
-
-        # 计算相似度
-        phi_m = 0
-        for i in range(len(vectors_m)):
-            distances = np.max(np.abs(vectors_m - vectors_m[i]), axis=1)
-            similarity = _fuzzy_membership(distances, r * std)
-            # 排除自相似
-            similarity = np.delete(similarity, i)
-            phi_m += np.mean(similarity)
-        phi_m /= len(vectors_m)
-
-        phi_m1 = 0
-        for i in range(len(vectors_m1)):
-            distances = np.max(np.abs(vectors_m1 - vectors_m1[i]), axis=1)
-            similarity = _fuzzy_membership(distances, r * std)
-            similarity = np.delete(similarity, i)
-            phi_m1 += np.mean(similarity)
-        phi_m1 /= len(vectors_m1)
-
-        if phi_m1 == 0 or phi_m == 0:
-            return 0
-
-        return np.log(phi_m) - np.log(phi_m1)
-
-    def _compute_multiscale_entropy(self,
-                                    signal_data: np.ndarray,
-                                    m: int,
-                                    r: float,
-                                    max_scale: int = 5) -> np.ndarray:
-        """计算多尺度熵（简化版本）"""
-        mse_values = []
-
-        for scale in range(1, max_scale + 1):
-            # 粗粒化
-            coarse_grained = []
-            for i in range(0, len(signal_data) - scale + 1, scale):
-                coarse_grained.append(np.mean(signal_data[i:i + scale]))
-
-            if len(coarse_grained) > 10 * m:  # 确保足够长度
-                se = self._compute_sample_entropy(np.array(coarse_grained), m, r)
-                mse_values.append(se)
-            else:
-                mse_values.append(np.nan)
-
-        return np.array(mse_values)
-
-    def compute_fractal_dimension(self,
-                                  signal_data: np.ndarray,
-                                  method: str = 'higuchi',
-                                  kmax: int = 10) -> np.ndarray:
+    def _synchronize_by_event_alignment(self, data_dict: Dict[str, Any],
+                                        modalities: List[str]) -> Dict[str, Any]:
         """
-        计算分形维数
+        通过事件对齐进行时间同步
 
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        method : str, 默认='higuchi'
-            计算方法：'higuchi'或'box'
-        kmax : int, 默认=10
-            Higuchi方法中的最大k值
+        Args:
+            data_dict: 数据字典
+            modalities: 模态列表
 
-        返回:
-        ----------
-        np.ndarray: 分形维数值
+        Returns:
+            同步后的数据字典
         """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
+        # 简化实现：基于事件时间戳调整信号
+        # 实际应用中需要根据具体实验设计实现
+        logger.warning("事件对齐同步是简化实现，实际应用需要完整事件对齐逻辑")
 
-        fd_values = np.zeros(n_channels)
+        if "event" not in data_dict:
+            logger.warning("没有事件信息，跳过事件对齐")
+            return data_dict
 
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
+        # 这里可以添加具体的事件对齐逻辑
+        # 例如：根据事件时间戳截取相同时间段的数据
 
-            if method.lower() == 'higuchi':
-                fd_values[i] = self._compute_higuchi_fd(channel_signal, kmax)
-            elif method.lower() == 'box':
-                fd_values[i] = self._compute_box_counting_fd(channel_signal)
-            else:
-                raise ValueError(f"未知的分形维数计算方法: {method}")
+        return data_dict
 
-        return fd_values
+    def _execute_preprocessing(self, data_dict: Dict[str, Any],
+                               modalities: List[str]) -> Dict[str, Any]:
+        """
+        执行各模态的预处理
 
-    def _compute_higuchi_fd(self, signal_data: np.ndarray, kmax: int) -> float:
-        """计算Higuchi分形维数"""
-        N = len(signal_data)
-        L = []
-        x = []
+        Args:
+            data_dict: 数据字典
+            modalities: 要处理的模态列表
 
-        for k in range(1, kmax + 1):
-            Lk = 0
-            for m in range(k):
-                # 创建子序列
-                indices = np.arange(m, N, k)
-                if len(indices) > 1:
-                    Lmk = np.sum(np.abs(np.diff(signal_data[indices])))
-                    Lmk = Lmk * (N - 1) / (len(indices) - 1) / k
-                    Lk += Lmk
+        Returns:
+            处理后的数据字典
+        """
+        processed_data = copy.deepcopy(data_dict)
 
-            L.append(np.log(Lk / k))
-            x.append(np.log(1.0 / k))
+        # 确保processed层存在
+        if "processed" not in processed_data:
+            processed_data["processed"] = {}
 
-        # 线性拟合
-        if len(x) > 1:
-            slope, _ = np.polyfit(x, L, 1)
-            return -slope
+        if "multimodal_preprocessing" not in processed_data["processed"]:
+            processed_data["processed"]["multimodal_preprocessing"] = {
+                "modalities_processed": [],
+                "processing_timeline": [],
+                "config": self.config.__dict__
+            }
+
+        # 根据处理模式选择执行方式
+        if self.config.processing_mode == ProcessingMode.PARALLEL:
+            return self._execute_parallel_preprocessing(processed_data, modalities)
         else:
-            return 1.0
+            return self._execute_sequential_preprocessing(processed_data, modalities)
 
-    def _compute_box_counting_fd(self, signal_data: np.ndarray) -> float:
-        """计算盒计数分形维数"""
-        N = len(signal_data)
-
-        # 归一化信号到[0,1]区间
-        signal_min, signal_max = np.min(signal_data), np.max(signal_data)
-        if signal_max - signal_min > 1e-10:
-            signal_norm = (signal_data - signal_min) / (signal_max - signal_min)
-        else:
-            signal_norm = signal_data
-
-        # 不同尺度下的盒子计数
-        scales = np.logspace(0, np.log10(N / 2), 20, dtype=int)
-        scales = scales[scales > 1]
-
-        counts = []
-        for scale in scales:
-            # 将信号分成scale个区间
-            x_bins = np.linspace(0, N, scale + 1)
-            y_bins = np.linspace(0, 1, scale + 1)
-
-            # 计数覆盖信号的盒子数
-            box_count = 0
-            for i in range(scale):
-                x_start, x_end = x_bins[i], x_bins[i + 1]
-                indices = np.where((np.arange(N) >= x_start) & (np.arange(N) < x_end))[0]
-
-                if len(indices) > 0:
-                    y_min = np.min(signal_norm[indices])
-                    y_max = np.max(signal_norm[indices])
-
-                    # 找出覆盖y范围的盒子索引
-                    y_idx_min = int(y_min * scale)
-                    y_idx_max = int(y_max * scale)
-                    box_count += (y_idx_max - y_idx_min + 1)
-
-            counts.append(box_count)
-
-        # 线性拟合log(1/scale) vs log(counts)
-        if len(scales) > 1:
-            x = np.log(1.0 / scales)
-            y = np.log(counts)
-            slope, _ = np.polyfit(x, y, 1)
-            return slope
-        else:
-            return 1.0
-
-    def compute_detrended_fluctuation_analysis(self,
-                                               signal_data: np.ndarray,
-                                               scale_ranges: List[Tuple[int, int]] = None) -> Dict[str, np.ndarray]:
+    def _execute_sequential_preprocessing(self, data_dict: Dict[str, Any],
+                                          modalities: List[str]) -> Dict[str, Any]:
         """
-        计算去趋势波动分析(DFA)
+        顺序执行预处理
 
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        scale_ranges : List[Tuple[int, int]], 可选
-            尺度范围列表
+        Args:
+            data_dict: 数据字典
+            modalities: 模态列表
 
-        返回:
-        ----------
-        Dict[str, np.ndarray]: DFA特征字典
+        Returns:
+            处理后的数据字典
         """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
+        import time
 
-        if scale_ranges is None:
-            scale_ranges = [(10, 50), (50, 200), (200, 1000)]  # 短程、中程、长程
+        for modality in modalities:
+            logger.info(f"开始处理 {modality} 信号")
 
-        feature_dict = {}
+            start_time = time.time()
 
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
-            N = len(channel_signal)
+            try:
+                # 检查是否有专门的预处理器
+                if modality in self.modality_processors:
+                    processor = self.modality_processors[modality]
 
-            # 累积和
-            y = np.cumsum(channel_signal - np.mean(channel_signal))
+                    # 调用对应的处理函数
+                    if modality == "EEG":
+                        data_dict = processor.process(data_dict, modality="EEG")
+                    elif modality == "fNIRS":
+                        data_dict = processor.process_fNIRS(data_dict, modality="fnirs")
+                    elif modality == "ECG":
+                        data_dict = processor.process_ECG(data_dict, modality="ECG")
+                    elif modality == "EMG":
+                        data_dict = processor.process(data_dict, modality="EMG")
+                    else:
+                        # 使用通用预处理器
+                        data_dict = self.modality_processors["GENERAL"].process(
+                            data_dict, modality=modality
+                        )
 
-            # 不同尺度下的波动
-            scales = np.unique(np.logspace(np.log10(4), np.log10(N / 4), 20, dtype=int))
-            scales = scales[scales < N / 4]  # 确保有足够的段
+                    # 记录处理信息
+                    processing_time = time.time() - start_time
+                    data_dict["processed"]["multimodal_preprocessing"]["modalities_processed"].append(modality)
+                    data_dict["processed"]["multimodal_preprocessing"]["processing_timeline"].append({
+                        "modality": modality,
+                        "processor": processor.__class__.__name__,
+                        "processing_time": processing_time,
+                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                    })
 
-            fluctuations = []
+                    logger.info(f"{modality} 处理完成，耗时: {processing_time:.2f}秒")
 
-            for scale in scales:
-                # 分段
-                n_segments = int(N / scale)
-                if n_segments < 2:
-                    continue
+                else:
+                    logger.warning(f"没有找到 {modality} 的预处理器，跳过")
 
-                # 每段进行去趋势
-                F = np.zeros(n_segments)
-                for j in range(n_segments):
-                    segment = y[j * scale:(j + 1) * scale]
-                    x = np.arange(len(segment))
+            except Exception as e:
+                logger.error(f"{modality} 处理失败: {str(e)}")
+                if self.config.auto_fix_issues:
+                    logger.info(f"尝试使用通用处理器处理 {modality}")
+                    try:
+                        data_dict = self.modality_processors["GENERAL"].process(
+                            data_dict, modality=modality
+                        )
+                        logger.info(f"通用处理器成功处理 {modality}")
+                    except Exception as e2:
+                        logger.error(f"通用处理器也失败: {str(e2)}")
 
-                    # 线性拟合去趋势
-                    coeff = np.polyfit(x, segment, 1)
-                    trend = np.polyval(coeff, x)
+        return data_dict
 
-                    F[j] = np.sqrt(np.mean((segment - trend) ** 2))
-
-                fluctuations.append(np.mean(F))
-
-            if len(scales) > 1 and len(fluctuations) > 1:
-                # 对每个尺度范围进行拟合
-                scales_log = np.log10(scales)
-                fluct_log = np.log10(fluctuations)
-
-                for range_idx, (min_scale, max_scale) in enumerate(scale_ranges):
-                    mask = (scales >= min_scale) & (scales <= max_scale)
-
-                    if np.sum(mask) >= 3:  # 至少3个点才能拟合
-                        x_range = scales_log[mask]
-                        y_range = fluct_log[mask]
-
-                        slope, intercept = np.polyfit(x_range, y_range, 1)
-
-                        feat_name = f'dfa_alpha_range_{range_idx + 1}'
-                        feature_dict.setdefault(feat_name, np.zeros(n_channels))
-                        feature_dict[feat_name][i] = slope
-
-                        # 拟合质量（R^2）
-                        y_pred = slope * x_range + intercept
-                        ss_res = np.sum((y_range - y_pred) ** 2)
-                        ss_tot = np.sum((y_range - np.mean(y_range)) ** 2)
-                        r_squared = 1 - (ss_res / (ss_tot + 1e-10))
-
-                        rsq_name = f'dfa_r2_range_{range_idx + 1}'
-                        feature_dict.setdefault(rsq_name, np.zeros(n_channels))
-                        feature_dict[rsq_name][i] = r_squared
-
-        return feature_dict
-
-    def compute_recurrence_quantification_analysis(self,
-                                                   signal_data: np.ndarray,
-                                                   m: int = 1,
-                                                   delay: int = 1,
-                                                   threshold: float = 0.1) -> Dict[str, np.ndarray]:
+    def _execute_parallel_preprocessing(self, data_dict: Dict[str, Any],
+                                        modalities: List[str]) -> Dict[str, Any]:
         """
-        计算递归定量分析(RQA)特征
+        并行执行预处理
 
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        m : int, 默认=1
-            嵌入维数
-        delay : int, 默认=1
-            时间延迟
-        threshold : float, 默认=0.1
-            递归阈值
+        Args:
+            data_dict: 数据字典
+            modalities: 模态列表
 
-        返回:
-        ----------
-        Dict[str, np.ndarray]: RQA特征字典
+        Returns:
+            处理后的数据字典
         """
-        processed_signal = self._preprocess_signal(signal_data)
-        n_channels, n_samples = processed_signal.shape
+        import time
+        from concurrent.futures import ThreadPoolExecutor
 
-        feature_dict = {}
+        logger.info(f"开始并行处理 {len(modalities)} 个模态")
 
-        for i in range(n_channels):
-            channel_signal = processed_signal[i]
-            N = len(channel_signal)
+        # 创建数据副本用于并行处理
+        data_copies = {modality: copy.deepcopy(data_dict) for modality in modalities}
+        results = {}
 
-            # 相空间重构（简化版本，使用时间延迟嵌入）
-            if m > 1:
-                embedded = np.array([channel_signal[j:j + (m - 1) * delay + 1:delay]
-                                     for j in range(N - (m - 1) * delay)])
-            else:
-                embedded = channel_signal.reshape(-1, 1)
+        def process_single_modality(modality, data_copy):
+            """处理单个模态的辅助函数"""
+            start_time = time.time()
 
-            # 计算距离矩阵
-            if embedded.ndim == 2:
-                distances = squareform(pdist(embedded, metric='euclidean'))
-            else:
-                distances = np.abs(embedded[:, None] - embedded)
+            try:
+                if modality in self.modality_processors:
+                    processor = self.modality_processors[modality]
 
-            # 递归矩阵
-            recurrence_matrix = distances <= (threshold * np.std(channel_signal))
+                    if modality == "EEG":
+                        result = processor.process(data_copy, modality="EEG")
+                    elif modality == "fNIRS":
+                        result = processor.process_fNIRS(data_copy, modality="fnirs")
+                    elif modality == "ECG":
+                        result = processor.process_ECG(data_copy, modality="ECG")
+                    elif modality == "EMG":
+                        result = processor.process(data_copy, modality="EMG")
+                    else:
+                        result = self.modality_processors["GENERAL"].process(
+                            data_copy, modality=modality
+                        )
 
-            # 对角线设为False（排除自递归）
-            np.fill_diagonal(recurrence_matrix, False)
+                    processing_time = time.time() - start_time
 
-            # RQA特征
-            N_points = recurrence_matrix.size - len(recurrence_matrix)  # 排除对角线
+                    return {
+                        "modality": modality,
+                        "data": result,
+                        "success": True,
+                        "processing_time": processing_time,
+                        "processor": processor.__class__.__name__
+                    }
+                else:
+                    return {
+                        "modality": modality,
+                        "data": data_copy,
+                        "success": False,
+                        "error": f"没有找到 {modality} 的预处理器",
+                        "processing_time": time.time() - start_time
+                    }
 
-            if N_points > 0:
-                # 递归率
-                recurrence_rate = np.sum(recurrence_matrix) / N_points
-                feature_dict.setdefault('rqa_recurrence_rate', np.zeros(n_channels))
-                feature_dict['rqa_recurrence_rate'][i] = recurrence_rate
+            except Exception as e:
+                return {
+                    "modality": modality,
+                    "data": data_copy,
+                    "success": False,
+                    "error": str(e),
+                    "processing_time": time.time() - start_time
+                }
 
-                # 确定性
-                diagonal_lines = []
-                for d in range(-len(recurrence_matrix) + 1, len(recurrence_matrix)):
-                    diagonal = np.diag(recurrence_matrix, d)
-                    if len(diagonal) > 1:
-                        # 寻找对角线上的线段
-                        in_line = False
-                        line_length = 0
-                        for val in diagonal:
-                            if val and not in_line:
-                                in_line = True
-                                line_length = 1
-                            elif val and in_line:
-                                line_length += 1
-                            elif not val and in_line:
-                                if line_length >= 2:  # 最小对角线长度
-                                    diagonal_lines.append(line_length)
-                                in_line = False
-                                line_length = 0
+        # 并行执行
+        with ThreadPoolExecutor(max_workers=min(self.config.max_workers, len(modalities))) as executor:
+            future_to_modality = {
+                executor.submit(process_single_modality, modality, data_copies[modality]): modality
+                for modality in modalities
+            }
 
-                        if in_line and line_length >= 2:
-                            diagonal_lines.append(line_length)
+            for future in concurrent.futures.as_completed(future_to_modality):
+                modality = future_to_modality[future]
+                try:
+                    result = future.result()
+                    results[modality] = result
 
-                if diagonal_lines:
-                    diagonal_lines = np.array(diagonal_lines)
-                    determinism = np.sum(diagonal_lines) / np.sum(recurrence_matrix)
-                    feature_dict.setdefault('rqa_determinism', np.zeros(n_channels))
-                    feature_dict['rqa_determinism'][i] = determinism
+                    if result["success"]:
+                        logger.info(f"{modality} 处理完成，耗时: {result['processing_time']:.2f}秒")
+                    else:
+                        logger.warning(f"{modality} 处理失败: {result.get('error', '未知错误')}")
 
-                    # 平均对角线长度
-                    mean_diag_length = np.mean(diagonal_lines)
-                    feature_dict.setdefault('rqa_mean_diag_length', np.zeros(n_channels))
-                    feature_dict['rqa_mean_diag_length'][i] = mean_diag_length
+                except Exception as e:
+                    logger.error(f"{modality} 处理异常: {str(e)}")
+                    results[modality] = {
+                        "modality": modality,
+                        "success": False,
+                        "error": str(e)
+                    }
 
-                    # 最大对角线长度
-                    max_diag_length = np.max(diagonal_lines)
-                    feature_dict.setdefault('rqa_max_diag_length', np.zeros(n_channels))
-                    feature_dict['rqa_max_diag_length'][i] = max_diag_length
+        # 合并结果
+        merged_data = copy.deepcopy(data_dict)
 
-                # 层流性（垂直线段）
-                vertical_lines = []
-                for col in range(len(recurrence_matrix)):
-                    column = recurrence_matrix[:, col]
-                    in_line = False
-                    line_length = 0
-                    for val in column:
-                        if val and not in_line:
-                            in_line = True
-                            line_length = 1
-                        elif val and in_line:
-                            line_length += 1
-                        elif not val and in_line:
-                            if line_length >= 2:
-                                vertical_lines.append(line_length)
-                            in_line = False
-                            line_length = 0
+        if "processed" not in merged_data:
+            merged_data["processed"] = {}
 
-                    if in_line and line_length >= 2:
-                        vertical_lines.append(line_length)
+        if "multimodal_preprocessing" not in merged_data["processed"]:
+            merged_data["processed"]["multimodal_preprocessing"] = {
+                "modalities_processed": [],
+                "processing_timeline": [],
+                "parallel_results": {}
+            }
 
-                if vertical_lines:
-                    vertical_lines = np.array(vertical_lines)
-                    laminarity = np.sum(vertical_lines) / np.sum(recurrence_matrix)
-                    feature_dict.setdefault('rqa_laminarity', np.zeros(n_channels))
-                    feature_dict['rqa_laminarity'][i] = laminarity
+        # 更新signal层和处理历史
+        for modality, result in results.items():
+            if result["success"]:
+                # 更新signal层
+                if modality in result["data"]["signal"]:
+                    merged_data["signal"][modality] = result["data"]["signal"][modality]
 
-        return feature_dict
+                # 更新processed层
+                if "processed" in result["data"]:
+                    for key, value in result["data"]["processed"].items():
+                        if key not in merged_data["processed"]:
+                            merged_data["processed"][key] = {}
+                        merged_data["processed"][key][modality] = value
 
+                # 记录处理信息
+                merged_data["processed"]["multimodal_preprocessing"]["modalities_processed"].append(modality)
+                merged_data["processed"]["multimodal_preprocessing"]["processing_timeline"].append({
+                    "modality": modality,
+                    "processor": result.get("processor", "Unknown"),
+                    "processing_time": result["processing_time"],
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "parallel": True
+                })
 
-class CommonFeatureExtractor(TimeDomainFeatures,
-                             FrequencyDomainFeatures,
-                             TimeFrequencyFeatures,
-                             NonlinearFeatures):
-    """
-    通用特征提取器综合类
+        return merged_data
 
-    集成了所有通用特征提取方法，提供统一的接口
-    """
-
-    def __init__(self, **kwargs):
-        """初始化综合特征提取器"""
-        super().__init__(**kwargs)
-
-    def extract_all_features(self,
-                             signal_data: np.ndarray,
-                             feature_groups: List[str] = None,
-                             config: Dict = None) -> Dict[str, np.ndarray]:
+    def _check_quality(self, data_dict: Dict[str, Any],
+                       modalities: List[str]) -> Dict[str, Any]:
         """
-        提取所有通用特征
+        检查处理后的信号质量
 
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        feature_groups : List[str], 可选
-            要提取的特征组列表，可选值：
-            ['time', 'frequency', 'time_frequency', 'nonlinear']
-        config : Dict, 可选
-            各特征组的配置参数
+        Args:
+            data_dict: 数据字典
+            modalities: 模态列表
 
-        返回:
-        ----------
-        Dict[str, np.ndarray]: 所有特征的字典
+        Returns:
+            质量报告字典
         """
-        if feature_groups is None:
-            feature_groups = ['time', 'frequency', 'time_frequency', 'nonlinear']
-
-        if config is None:
-            config = {}
-
-        all_features = {}
-
-        # 时域特征
-        if 'time' in feature_groups:
-            time_config = config.get('time', {})
-
-            # 统计特征
-            stat_features = self.compute_statistical_features(
-                signal_data,
-                features=time_config.get('stat_features')
-            )
-            all_features.update(stat_features)
-
-            # Hjorth参数
-            hjorth_features = self.compute_hjorth_parameters(signal_data)
-            all_features.update(hjorth_features)
-
-            # 其他时域特征
-            all_features['rms'] = self.compute_rms(signal_data)
-            all_features['zcr'] = self.compute_zcr(
-                signal_data,
-                threshold=time_config.get('zcr_threshold', 0.0)
-            )
-            all_features['waveform_length'] = self.compute_waveform_length(signal_data)
-            all_features['willison_amplitude'] = self.compute_willison_amplitude(
-                signal_data,
-                threshold=time_config.get('willison_threshold', 0.01)
-            )
-
-        # 频域特征
-        if 'frequency' in feature_groups:
-            freq_config = config.get('frequency', {})
-
-            # 频谱特征
-            spectral_features = self.compute_spectral_features(
-                signal_data,
-                nperseg=freq_config.get('nperseg', 256),
-                noverlap=freq_config.get('noverlap'),
-                window=freq_config.get('window', 'hann')
-            )
-            all_features.update(spectral_features)
-
-            # 谱熵
-            all_features['spectral_entropy'] = self.compute_spectral_entropy(
-                signal_data,
-                normalize=freq_config.get('normalize_entropy', True)
-            )
-
-            # 频谱边缘频率
-            sef_features = self.compute_spectral_edge_frequency(
-                signal_data,
-                percentiles=freq_config.get('sef_percentiles', [50, 75, 90, 95])
-            )
-            all_features.update(sef_features)
-
-            # 频带功率比
-            band_features = self.compute_band_power_ratio(
-                signal_data,
-                band_edges=freq_config.get('band_edges')
-            )
-            all_features.update(band_features)
-
-        # 时频域特征
-        if 'time_frequency' in feature_groups:
-            tf_config = config.get('time_frequency', {})
-
-            # 小波特征
-            wavelet_features = self.compute_wavelet_features(
-                signal_data,
-                wavelet=tf_config.get('wavelet', 'db4'),
-                max_level=tf_config.get('max_level', 5),
-                features=tf_config.get('wavelet_features')
-            )
-            all_features.update(wavelet_features)
-
-            # STFT特征
-            stft_features = self.compute_stft_features(
-                signal_data,
-                nperseg=tf_config.get('stft_nperseg', 256),
-                noverlap=tf_config.get('stft_noverlap'),
-                window=tf_config.get('stft_window', 'hann'),
-                features=tf_config.get('stft_features')
-            )
-            all_features.update(stft_features)
-
-            # Hilbert-Huang特征
-            hht_features = self.compute_hilbert_huang_features(
-                signal_data,
-                n_imfs=tf_config.get('n_imfs', 5)
-            )
-            all_features.update(hht_features)
-
-        # 非线性特征
-        if 'nonlinear' in feature_groups:
-            nonlinear_config = config.get('nonlinear', {})
-
-            # 熵特征
-            entropy_features = self.compute_entropy_features(
-                signal_data,
-                entropy_types=nonlinear_config.get('entropy_types'),
-                m=nonlinear_config.get('m', 2),
-                r=nonlinear_config.get('r', 0.2),
-                delay=nonlinear_config.get('delay', 1)
-            )
-            all_features.update(entropy_features)
-
-            # 分形维数
-            all_features['fractal_dimension'] = self.compute_fractal_dimension(
-                signal_data,
-                method=nonlinear_config.get('fd_method', 'higuchi'),
-                kmax=nonlinear_config.get('kmax', 10)
-            )
-
-            # DFA特征
-            dfa_features = self.compute_detrended_fluctuation_analysis(
-                signal_data,
-                scale_ranges=nonlinear_config.get('dfa_scale_ranges')
-            )
-            all_features.update(dfa_features)
-
-            # RQA特征（可选，计算量较大）
-            if nonlinear_config.get('compute_rqa', False):
-                rqa_features = self.compute_recurrence_quantification_analysis(
-                    signal_data,
-                    m=nonlinear_config.get('rqa_m', 1),
-                    delay=nonlinear_config.get('rqa_delay', 1),
-                    threshold=nonlinear_config.get('rqa_threshold', 0.1)
-                )
-                all_features.update(rqa_features)
-
-        return all_features
-
-    def extract_features_by_config(self,
-                                   signal_data: np.ndarray,
-                                   config: Dict) -> Dict[str, np.ndarray]:
-        """
-        根据配置文件提取特征
-
-        参数:
-        ----------
-        signal_data : np.ndarray
-            输入信号
-        config : Dict
-            特征提取配置字典
-
-        返回:
-        ----------
-        Dict[str, np.ndarray]: 提取的特征字典
-        """
-        return self.extract_all_features(signal_data, config=config)
-
-    def get_feature_names(self, feature_dict: Dict[str, np.ndarray]) -> List[str]:
-        """
-        获取特征名称列表
-
-        参数:
-        ----------
-        feature_dict : Dict[str, np.ndarray]
-            特征字典
-
-        返回:
-        ----------
-        List[str]: 特征名称列表
-        """
-        return list(feature_dict.keys())
-
-    def flatten_features(self, feature_dict: Dict[str, np.ndarray]) -> np.ndarray:
-        """
-        将特征字典展平为特征向量
-
-        参数:
-        ----------
-        feature_dict : Dict[str, np.ndarray]
-            特征字典
-
-        返回:
-        ----------
-        np.ndarray: 展平的特征向量
-        """
-        feature_list = []
-
-        for feat_name, feat_values in feature_dict.items():
-            # 处理标量特征
-            if feat_values.ndim == 1:
-                feature_list.extend(feat_values.tolist())
-            # 处理向量特征（如频谱）
-            elif feat_values.ndim == 2:
-                # 展平每个通道的向量特征
-                for i in range(feat_values.shape[0]):
-                    feature_list.extend(feat_values[i].tolist())
-
-        return np.array(feature_list)
-
-
-# 实用函数
-def create_feature_extractor(sampling_rate: float = 250.0, **kwargs) -> CommonFeatureExtractor:
-    """
-    创建特征提取器实例的工厂函数
-
-    参数:
-    ----------
-    sampling_rate : float, 默认=250.0
-        采样率
-    **kwargs :
-        传递给CommonFeatureExtractor的额外参数
-
-    返回:
-    ----------
-    CommonFeatureExtractor: 特征提取器实例
-    """
-    return CommonFeatureExtractor(sampling_rate=sampling_rate, **kwargs)
-
-
-def batch_extract_features(signal_batch: np.ndarray,
-                           feature_extractor: CommonFeatureExtractor,
-                           config: Dict = None) -> List[Dict[str, np.ndarray]]:
-    """
-    批量提取特征
-
-    参数:
-    ----------
-    signal_batch : np.ndarray
-        信号批次，形状为(n_samples, n_channels, n_timesteps)
-    feature_extractor : CommonFeatureExtractor
-        特征提取器实例
-    config : Dict, 可选
-        特征提取配置
-
-    返回:
-    ----------
-    List[Dict[str, np.ndarray]]: 每个样本的特征字典列表
-    """
-    if signal_batch.ndim == 2:
-        # (n_timesteps, n_channels) -> 单个样本
-        signal_batch = signal_batch[np.newaxis, ...]
-    elif signal_batch.ndim == 3:
-        # (n_samples, n_channels, n_timesteps)
-        pass
-    else:
-        raise ValueError(f"输入信号维度不正确: {signal_batch.ndim}，应为2或3维")
-
-    features_list = []
-
-    for i in range(signal_batch.shape[0]):
-        # 转置为(n_channels, n_timesteps)
-        signal_sample = signal_batch[i].T
-
-        # 提取特征
-        features = feature_extractor.extract_all_features(signal_sample, config=config)
-        features_list.append(features)
-
-    return features_list
-
-
-# 测试函数
-def test_feature_extraction():
-    """测试特征提取功能"""
-    print("测试通用特征提取模块...")
-
-    # 生成测试信号
-    fs = 250.0  # 采样率
-    t = np.arange(0, 5, 1 / fs)  # 5秒信号
-    n_channels = 2
-
-    # 创建测试信号：正弦波 + 噪声
-    signals = []
-    for i in range(n_channels):
-        freq = 10 + i * 5  # 不同频率
-        signal = np.sin(2 * np.pi * freq * t)
-        signal += 0.1 * np.random.randn(len(t))  # 添加噪声
-        signals.append(signal)
-
-    signal_data = np.array(signals)  # 形状: (n_channels, n_samples)
-
-    # 创建特征提取器
-    extractor = create_feature_extractor(sampling_rate=fs, verbose=True)
-
-    # 测试时域特征
-    print("\n1. 测试时域特征...")
-    time_features = extractor.compute_statistical_features(signal_data)
-    print(f"提取的时域特征: {list(time_features.keys())[:5]}...")
-
-    # 测试频域特征
-    print("\n2. 测试频域特征...")
-    freq_features = extractor.compute_spectral_features(signal_data)
-    print(f"提取的频域特征: {list(freq_features.keys())[:5]}...")
-
-    # 测试熵特征
-    print("\n3. 测试非线性特征...")
-    entropy_features = extractor.compute_entropy_features(signal_data)
-    print(f"提取的熵特征: {list(entropy_features.keys())}")
-
-    # 测试综合特征提取
-    print("\n4. 测试综合特征提取...")
-    all_features = extractor.extract_all_features(
-        signal_data,
-        feature_groups=['time', 'frequency'],
-        config={
-            'time': {'stat_features': ['mean', 'std', 'skewness']},
-            'frequency': {'nperseg': 128}
+        quality_report = {
+            "overall_quality": 1.0,
+            "modality_quality": {},
+            "issues": [],
+            "has_issues": False,
+            "timestamp": np.datetime64('now').astype(str)
         }
+
+        for modality in modalities:
+            if modality not in data_dict["signal"]:
+                quality_report["issues"].append(f"{modality}: 信号缺失")
+                quality_report["has_issues"] = True
+                continue
+
+            signal_info = data_dict["signal"][modality]
+            data = signal_info["data"]
+
+            # 基本质量检查
+            modality_report = {
+                "n_channels": data.shape[0],
+                "n_samples": data.shape[1],
+                "sampling_rate": signal_info.get("sampling_rate", 0),
+                "quality_score": 1.0,
+                "checks_passed": 0,
+                "checks_total": 0,
+                "issues": []
+            }
+
+            # 检查1: 数据是否全为0
+            if np.all(data == 0):
+                modality_report["issues"].append("数据全为0")
+                modality_report["quality_score"] *= 0.1
+
+            # 检查2: 数据是否包含NaN或Inf
+            if np.any(np.isnan(data)) or np.any(np.isinf(data)):
+                modality_report["issues"].append("数据包含NaN或Inf")
+                modality_report["quality_score"] *= 0.5
+
+            # 检查3: 数据范围是否合理
+            data_range = np.ptp(data, axis=1)
+            median_range = np.median(data_range)
+
+            # 基于模态的经验范围阈值
+            range_thresholds = {
+                "EEG": (1e-6, 0.1),  # V
+                "EMG": (0.001, 0.5),  # V
+                "ECG": (0.5e-3, 5e-3),  # V
+                "fNIRS": (0.01, 10.0),  # 光学密度或浓度
+            }
+
+            if modality in range_thresholds:
+                min_th, max_th = range_thresholds[modality]
+                if median_range < min_th or median_range > max_th:
+                    modality_report["issues"].append(f"数据范围异常: {median_range:.2e}")
+                    modality_report["quality_score"] *= 0.7
+
+            # 检查4: 信噪比估计
+            if data.shape[1] > 100:
+                # 简单信噪比估计：低频功率 vs 高频功率
+                from scipy.signal import welch
+                _, psd = welch(data[0, :], fs=signal_info.get("sampling_rate", 1000))
+                low_freq_power = np.mean(psd[:len(psd) // 4])
+                high_freq_power = np.mean(psd[3 * len(psd) // 4:])
+
+                if high_freq_power > 0:
+                    snr_estimate = low_freq_power / high_freq_power
+                    if snr_estimate < 1.0:
+                        modality_report["issues"].append(f"信噪比较低: {snr_estimate:.2f}")
+                        modality_report["quality_score"] *= 0.8
+
+            # 更新质量报告
+            if modality_report["issues"]:
+                quality_report["has_issues"] = True
+
+            modality_report["checks_total"] = 4
+            modality_report["checks_passed"] = 4 - len(modality_report["issues"])
+
+            quality_report["modality_quality"][modality] = modality_report
+
+        # 计算总体质量
+        if quality_report["modality_quality"]:
+            quality_scores = [r["quality_score"] for r in quality_report["modality_quality"].values()]
+            quality_report["overall_quality"] = np.mean(quality_scores)
+
+        logger.info(f"质量检查完成，总体质量: {quality_report['overall_quality']:.2f}")
+
+        return quality_report
+
+    def _auto_fix_issues(self, data_dict: Dict[str, Any],
+                         quality_report: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        自动修复质量问题
+
+        Args:
+            data_dict: 数据字典
+            quality_report: 质量报告
+
+        Returns:
+            修复后的数据字典
+        """
+        logger.info("开始自动修复质量问题")
+
+        fixed_data = copy.deepcopy(data_dict)
+
+        for modality, modality_report in quality_report.get("modality_quality", {}).items():
+            if not modality_report.get("issues"):
+                continue
+
+            if modality not in fixed_data["signal"]:
+                continue
+
+            signal_info = fixed_data["signal"][modality]
+            data = signal_info["data"]
+
+            for issue in modality_report["issues"]:
+                if "数据包含NaN或Inf" in issue:
+                    # 修复NaN和Inf
+                    data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+                    signal_info["data"] = data
+                    logger.info(f"{modality}: 修复了NaN和Inf值")
+
+                elif "数据全为0" in issue:
+                    # 如果数据全为0，尝试从原始数据恢复
+                    if "original_data" in signal_info:
+                        signal_info["data"] = signal_info["original_data"].copy()
+                        logger.info(f"{modality}: 从原始数据恢复")
+
+                elif "数据范围异常" in issue:
+                    # 重新标准化数据
+                    from scipy import stats
+                    for ch in range(data.shape[0]):
+                        if np.std(data[ch, :]) > 0:
+                            data[ch, :] = stats.zscore(data[ch, :])
+                        else:
+                            data[ch, :] = 0
+                    logger.info(f"{modality}: 重新标准化数据")
+
+        return fixed_data
+
+    def _collect_processing_stats(self, data_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        收集处理统计信息
+
+        Args:
+            data_dict: 数据字典
+
+        Returns:
+            统计信息字典
+        """
+        stats = {
+            "modalities_processed": [],
+            "processing_times": {},
+            "data_shapes": {},
+            "quality_scores": {},
+            "timestamp": np.datetime64('now').astype(str)
+        }
+
+        if "processed" in data_dict and "multimodal_preprocessing" in data_dict["processed"]:
+            mp_info = data_dict["processed"]["multimodal_preprocessing"]
+
+            if "modalities_processed" in mp_info:
+                stats["modalities_processed"] = mp_info["modalities_processed"]
+
+            if "processing_timeline" in mp_info:
+                for timeline in mp_info["processing_timeline"]:
+                    modality = timeline.get("modality", "unknown")
+                    processing_time = timeline.get("processing_time", 0)
+                    stats["processing_times"][modality] = processing_time
+
+        # 收集各模态的数据形状
+        for modality, signal_info in data_dict["signal"].items():
+            if "data" in signal_info:
+                data = signal_info["data"]
+                stats["data_shapes"][modality] = {
+                    "n_channels": data.shape[0],
+                    "n_samples": data.shape[1],
+                    "sampling_rate": signal_info.get("sampling_rate", 0)
+                }
+
+        # 收集质量分数
+        if "processed" in data_dict and "quality_report" in data_dict["processed"]:
+            quality_report = data_dict["processed"]["quality_report"]
+            stats["overall_quality"] = quality_report.get("overall_quality", 0)
+
+            if "modality_quality" in quality_report:
+                for modality, modality_report in quality_report["modality_quality"].items():
+                    stats["quality_scores"][modality] = modality_report.get("quality_score", 0)
+
+        return stats
+
+    def _update_processing_history(self, stats: Dict[str, Any]):
+        """
+        更新处理历史
+
+        Args:
+            stats: 统计信息
+        """
+        self.processing_history.append(stats)
+
+        # 限制历史记录数量
+        if len(self.processing_history) > 100:
+            self.processing_history = self.processing_history[-100:]
+
+    def get_processing_summary(self) -> Dict[str, Any]:
+        """
+        获取处理摘要
+
+        Returns:
+            处理摘要字典
+        """
+        summary = {
+            "total_processes": len(self.processing_history),
+            "recent_processes": self.processing_history[-5:] if self.processing_history else [],
+            "config": self.config.__dict__,
+            "available_processors": list(self.modality_processors.keys()),
+            "processor_status": "OK" if HAS_MODULES else "Missing modules"
+        }
+
+        return summary
+
+    def save_config(self, filepath: str):
+        """
+        保存配置到文件
+
+        Args:
+            filepath: 文件路径
+        """
+        import json
+
+        config_dict = self.config.__dict__
+
+        # 处理枚举类型
+        for key, value in config_dict.items():
+            if isinstance(value, Enum):
+                config_dict[key] = value.value
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(config_dict, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"配置已保存到: {filepath}")
+
+    def load_config(self, filepath: str):
+        """
+        从文件加载配置
+
+        Args:
+            filepath: 文件路径
+        """
+        import json
+
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                config_dict = json.load(f)
+
+            # 重新创建配置对象
+            self.config = MultiModalConfig(**config_dict)
+
+            # 重新初始化处理器
+            self._initialize_processors()
+
+            logger.info(f"配置已从 {filepath} 加载")
+
+        except Exception as e:
+            logger.error(f"加载配置失败: {str(e)}")
+
+    def _adjust_emg_filter_for_resampling(self, signal_info: Dict, original_fs: float, target_fs: float):
+        """
+        调整EMG滤波参数以适应重采样
+        """
+        # 计算奈奎斯特频率
+        nyquist_original = original_fs / 2
+        nyquist_target = target_fs / 2
+
+        # 获取EMG配置
+        if hasattr(self.config, 'emg_config') and self.config.emg_config:
+            emg_config = self.config.emg_config
+
+            # 检查高截止频率是否超过目标奈奎斯特频率
+            if hasattr(emg_config, 'emg_bandpass_high'):
+                if emg_config.emg_bandpass_high > nyquist_target:
+                    old_value = emg_config.emg_bandpass_high
+                    # 调整为安全值（80%奈奎斯特频率）
+                    safe_value = nyquist_target * 0.8
+                    emg_config.emg_bandpass_high = safe_value
+                    logger.warning(
+                        f"EMG高截止频率从{old_value}Hz调整到{safe_value}Hz "
+                        f"(奈奎斯特频率: {nyquist_target}Hz)"
+                    )
+
+            # 检查低截止频率
+            if hasattr(emg_config, 'emg_bandpass_low'):
+                if emg_config.emg_bandpass_low >= emg_config.emg_bandpass_high:
+                    # 如果低截止频率大于等于高截止频率，调整低截止频率
+                    emg_config.emg_bandpass_low = emg_config.emg_bandpass_high * 0.1
+                    logger.warning(
+                        f"EMG低截止频率调整到{emg_config.emg_bandpass_low}Hz"
+                    )
+
+
+# ====================== 配置工厂 ======================
+
+class MultiModalConfigFactory:
+    """
+    多模态配置工厂
+    提供不同实验范式的推荐配置
+    """
+
+    @staticmethod
+    def create_motor_imagery_config() -> MultiModalConfig:
+        """
+        创建运动想象实验的多模态配置
+        （通常包含EEG、EMG、ECG）
+        """
+        from eeg_preprocessing import EEGConfigFactory
+        from emg_preprocessing import EMGConfigFactory
+
+        # 创建EEG配置
+        eeg_config = EEGConfigFactory.create_motor_imagery_config()
+
+        # 创建EMG配置 - 特别注意高截止频率
+        emg_config = EMGConfigFactory.create_surface_emg_config()
+        # 修改EMG高截止频率，确保在重采样到250Hz后仍有效
+        emg_config.emg_bandpass_high = 100.0  # 250Hz采样率的奈奎斯特频率是125Hz，这里设为100Hz更安全
+
+        return MultiModalConfig(
+            processing_mode=ProcessingMode.PARALLEL,
+            time_sync_method=TimeSyncMethod.RESAMPLE,
+            reference_sampling_rate=250.0,  # 注意：这个值会影响EMG滤波！
+            max_workers=3,
+
+            eeg_config=eeg_config,
+            emg_config=emg_config,
+            ecg_config=None,  # 使用默认配置
+
+            enabled_modalities=["EEG", "EMG", "ECG"],
+            process_all_modalities=False,
+
+            quality_check_enabled=True,
+            min_signal_quality=0.6,
+            auto_fix_issues=True
+        )
+
+    @staticmethod
+    def create_affective_computing_config() -> MultiModalConfig:
+        """
+        创建情感计算实验的多模态配置
+        （通常包含EEG、ECG、GSR、RESP）
+        """
+        return MultiModalConfig(
+            processing_mode=ProcessingMode.SEQUENTIAL,
+            time_sync_method=TimeSyncMethod.INTERPOLATE,
+            reference_sampling_rate=100.0,
+            max_workers=4,
+
+            enabled_modalities=["EEG", "ECG", "GSR", "RESP"],
+            process_all_modalities=True,
+
+            quality_check_enabled=True,
+            min_signal_quality=0.7,
+            auto_fix_issues=True,
+
+            save_intermediate_results=True,
+            visualize_results=True
+        )
+
+    @staticmethod
+    def create_cognitive_load_config() -> MultiModalConfig:
+        """
+        创建认知负荷实验的多模态配置
+        （通常包含EEG、fNIRS、Eye Tracking）
+        """
+        return MultiModalConfig(
+            processing_mode=ProcessingMode.PARALLEL,
+            time_sync_method=TimeSyncMethod.EVENT_ALIGN,
+            reference_sampling_rate=50.0,
+            max_workers=3,
+
+            enabled_modalities=["EEG", "fNIRS"],
+            process_all_modalities=True,
+
+            quality_check_enabled=True,
+            min_signal_quality=0.65,
+            auto_fix_issues=True
+        )
+
+    @staticmethod
+    def create_resting_state_config() -> MultiModalConfig:
+        """
+        创建静息态实验的多模态配置
+        """
+        return MultiModalConfig(
+            processing_mode=ProcessingMode.SEQUENTIAL,
+            time_sync_method=TimeSyncMethod.NONE,
+            max_workers=2,
+
+            enabled_modalities=["EEG", "ECG", "RESP"],
+            process_all_modalities=True,
+
+            quality_check_enabled=True,
+            min_signal_quality=0.5,
+            auto_fix_issues=True
+        )
+
+    @staticmethod
+    def create_realtime_config() -> MultiModalConfig:
+        """
+        创建实时处理的配置
+        （优化处理速度）
+        """
+        return MultiModalConfig(
+            processing_mode=ProcessingMode.SEQUENTIAL,
+            time_sync_method=TimeSyncMethod.NONE,
+            max_workers=1,
+
+            enabled_modalities=["EEG", "EMG"],
+            process_all_modalities=False,
+
+            quality_check_enabled=False,
+            auto_fix_issues=False,
+
+            save_intermediate_results=False,
+            save_processing_log=False
+        )
+
+
+# ====================== 数据加载和保存工具 ======================
+
+class DataIO:
+    """
+    数据输入输出工具类
+    """
+
+    @staticmethod
+    def load_data(filepath: str, format: str = "auto") -> Dict[str, Any]:
+        """
+        加载数据文件
+
+        Args:
+            filepath: 文件路径
+            format: 文件格式 (auto, numpy, matlab, pickle, csv, json)
+
+        Returns:
+            四层结构的数据字典
+        """
+        import os
+
+        if format == "auto":
+            # 根据文件扩展名自动判断格式
+            _, ext = os.path.splitext(filepath)
+            ext = ext.lower()
+
+            if ext == '.npy' or ext == '.npz':
+                format = "numpy"
+            elif ext == '.mat':
+                format = "matlab"
+            elif ext == '.pkl' or ext == '.pickle':
+                format = "pickle"
+            elif ext == '.csv':
+                format = "csv"
+            elif ext == '.json':
+                format = "json"
+            else:
+                raise ValueError(f"无法识别的文件格式: {ext}")
+
+        if format == "numpy":
+            return DataIO._load_numpy(filepath)
+        elif format == "matlab":
+            return DataIO._load_matlab(filepath)
+        elif format == "pickle":
+            return DataIO._load_pickle(filepath)
+        elif format == "csv":
+            return DataIO._load_csv(filepath)
+        elif format == "json":
+            return DataIO._load_json(filepath)
+        else:
+            raise ValueError(f"不支持的格式: {format}")
+
+    @staticmethod
+    def _load_numpy(filepath: str) -> Dict[str, Any]:
+        """加载NumPy格式数据"""
+        data = np.load(filepath, allow_pickle=True)
+
+        if isinstance(data, np.ndarray):
+            # 简单数组，转换为四层结构
+            return DataIO._array_to_data_dict(data)
+        else:
+            # .npz文件
+            return dict(data)
+
+    @staticmethod
+    def _load_matlab(filepath: str) -> Dict[str, Any]:
+        """加载MATLAB格式数据"""
+        try:
+            import scipy.io as sio
+            data = sio.loadmat(filepath)
+
+            # 清理MATLAB特定字段
+            for key in list(data.keys()):
+                if key.startswith('__'):
+                    del data[key]
+
+            return data
+        except ImportError:
+            raise ImportError("需要scipy库来加载MATLAB文件")
+
+    @staticmethod
+    def _load_pickle(filepath: str) -> Dict[str, Any]:
+        """加载Pickle格式数据"""
+        import pickle
+
+        with open(filepath, 'rb') as f:
+            data = pickle.load(f)
+
+        return data
+
+    @staticmethod
+    def _load_csv(filepath: str) -> Dict[str, Any]:
+        """加载CSV格式数据（简化实现）"""
+        import pandas as pd
+
+        df = pd.read_csv(filepath)
+
+        # 将DataFrame转换为四层结构
+        # 这是一个简化实现，实际应用需要更复杂的解析
+        data_dict = {
+            "meta": {
+                "source": filepath,
+                "format": "csv",
+                "n_channels": len(df.columns) - 1 if "time" in df.columns else len(df.columns),
+                "n_samples": len(df)
+            },
+            "signal": {
+                "data": {
+                    "data": df.values.T if "time" in df.columns else df.values,
+                    "sampling_rate": 1.0,  # 默认值
+                    "channel_names": list(df.columns)
+                }
+            },
+            "event": {},
+            "processed": {}
+        }
+
+        return data_dict
+
+    @staticmethod
+    def _load_json(filepath: str) -> Dict[str, Any]:
+        """加载JSON格式数据"""
+        import json
+
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        return data
+
+    @staticmethod
+    def _array_to_data_dict(array: np.ndarray) -> Dict[str, Any]:
+        """
+        将NumPy数组转换为四层数据字典
+
+        Args:
+            array: 输入数组
+
+        Returns:
+            四层数据字典
+        """
+        if array.ndim == 1:
+            # 一维数组：单通道信号
+            n_channels = 1
+            n_samples = len(array)
+            data = array.reshape(1, -1)
+        elif array.ndim == 2:
+            # 二维数组：多通道信号
+            n_channels, n_samples = array.shape
+            data = array
+        else:
+            raise ValueError(f"不支持的数组维度: {array.ndim}")
+
+        data_dict = {
+            "meta": {
+                "subject_id": "unknown",
+                "task": "unknown",
+                "modality": ["EEG"],
+                "device": "unknown",
+                "sampling_rate": 1000,
+                "n_channels": n_channels,
+                "channel_names": [f"CH{i}" for i in range(n_channels)]
+            },
+            "signal": {
+                "EEG": {
+                    "data": data,
+                    "sampling_rate": 1000,
+                    "unit": "uV",
+                    "channel_names": [f"CH{i}" for i in range(n_channels)],
+                    "reference": "unknown"
+                }
+            },
+            "event": {},
+            "processed": {}
+        }
+
+        return data_dict
+
+    @staticmethod
+    def save_data(data_dict: Dict[str, Any], filepath: str, format: str = "pickle"):
+        """
+        保存数据到文件
+
+        Args:
+            data_dict: 数据字典
+            filepath: 文件路径
+            format: 文件格式 (pickle, numpy, json, matlab)
+        """
+        import os
+
+        os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else '.', exist_ok=True)
+
+        if format == "pickle":
+            DataIO._save_pickle(data_dict, filepath)
+        elif format == "numpy":
+            DataIO._save_numpy(data_dict, filepath)
+        elif format == "json":
+            DataIO._save_json(data_dict, filepath)
+        elif format == "matlab":
+            DataIO._save_matlab(data_dict, filepath)
+        else:
+            raise ValueError(f"不支持的格式: {format}")
+
+    @staticmethod
+    def _save_pickle(data_dict: Dict[str, Any], filepath: str):
+        """保存为Pickle格式"""
+        import pickle
+
+        with open(filepath, 'wb') as f:
+            pickle.dump(data_dict, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        logger.info(f"数据已保存为Pickle格式: {filepath}")
+
+    @staticmethod
+    def _save_numpy(data_dict: Dict[str, Any], filepath: str):
+        """保存为NumPy格式"""
+        # 只保存signal层的数据
+        signal_data = {}
+        for modality, info in data_dict["signal"].items():
+            if "data" in info:
+                signal_data[f"{modality}_data"] = info["data"]
+                signal_data[f"{modality}_sampling_rate"] = info["sampling_rate"]
+
+        np.savez(filepath, **signal_data)
+        logger.info(f"数据已保存为NumPy格式: {filepath}")
+
+    @staticmethod
+    def _save_json(data_dict: Dict[str, Any], filepath: str):
+        """保存为JSON格式"""
+        import json
+
+        # 转换NumPy数组为列表
+        def convert_numpy(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, np.generic):
+                return obj.item()
+            elif isinstance(obj, dict):
+                return {k: convert_numpy(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_numpy(item) for item in obj]
+            else:
+                return obj
+
+        json_dict = convert_numpy(data_dict)
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(json_dict, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"数据已保存为JSON格式: {filepath}")
+
+    @staticmethod
+    def _save_matlab(data_dict: Dict[str, Any], filepath: str):
+        """保存为MATLAB格式"""
+        try:
+            import scipy.io as sio
+
+            # 准备MATLAB兼容的数据
+            mat_data = {}
+            for modality, info in data_dict["signal"].items():
+                if "data" in info:
+                    mat_data[f"{modality.lower()}_data"] = info["data"]
+
+            sio.savemat(filepath, mat_data)
+            logger.info(f"数据已保存为MATLAB格式: {filepath}")
+        except ImportError:
+            raise ImportError("需要scipy库来保存MATLAB文件")
+
+
+# ====================== 使用示例 ======================
+
+def example_usage():
+    """
+    多模态预处理器使用示例
+    """
+    print("=" * 70)
+    print("多模态信号预处理器 - 使用示例")
+    print("=" * 70)
+
+    # 1. 创建模拟的多模态数据
+    print("\n1. 创建模拟的多模态数据...")
+
+    # 模拟参数
+    sampling_rate = 1000
+    n_samples = 5000  # 5秒数据
+    n_eeg_channels = 32
+    n_emg_channels = 4
+    n_ecg_channels = 2
+
+    # 创建模拟EEG数据
+    eeg_data = np.random.randn(n_eeg_channels, n_samples) * 1e-6
+    # 添加模拟alpha波
+    time = np.arange(n_samples) / sampling_rate
+    for ch in range(min(8, n_eeg_channels)):
+        eeg_data[ch, :] += 20e-6 * np.sin(2 * np.pi * 10 * time)  # 10Hz alpha波
+
+    # 创建模拟EMG数据
+    emg_data = np.random.randn(n_emg_channels, n_samples) * 1e-3
+    # 添加模拟肌肉收缩
+    contraction_start = int(2.0 * sampling_rate)
+    contraction_end = int(3.5 * sampling_rate)
+    emg_data[:, contraction_start:contraction_end] += 5e-3 * np.random.randn(
+        n_emg_channels, contraction_end - contraction_start
     )
-    print(f"总共提取了 {len(all_features)} 个特征")
 
-    # 测试特征展平
-    print("\n5. 测试特征展平...")
-    flat_features = extractor.flatten_features(all_features)
-    print(f"展平后的特征向量维度: {flat_features.shape}")
+    # 创建模拟ECG数据
+    ecg_data = np.random.randn(n_ecg_channels, n_samples) * 1e-4
+    # 添加模拟心搏
+    heart_rate = 72  # BPM
+    rr_interval = 60 / heart_rate  # 秒
+    for i in range(0, n_samples, int(rr_interval * sampling_rate)):
+        if i + 100 < n_samples:
+            # 模拟QRS波
+            qrs_wave = np.hanning(100) * 2e-3
+            emg_data[0, i:i + 100] += qrs_wave
 
-    # 清除缓存
-    extractor.clear_cache()
+    # 构建四层数据字典
+    data_dict = {
+        "meta": {
+            "subject_id": "S01",
+            "session_id": "2024_01_15_01",
+            "task": "motor_imagery",
+            "modality": ["EEG", "EMG", "ECG"],
+            "device": "Simulated",
+            "sampling_rate": sampling_rate,
+            "n_channels": n_eeg_channels,
+            "channel_names": [f"EEG_{i}" for i in range(n_eeg_channels)]
+        },
+        "signal": {
+            "EEG": {
+                "data": eeg_data,
+                "sampling_rate": sampling_rate,
+                "unit": "V",
+                "channel_names": [f"EEG_{i}" for i in range(n_eeg_channels)],
+                "reference": "average"
+            },
+            "EMG": {
+                "data": emg_data,
+                "sampling_rate": sampling_rate,
+                "unit": "V",
+                "channel_names": ["Biceps", "Triceps", "Flexor", "Extensor"],
+                "time_offset": 0.0
+            },
+            "ECG": {
+                "data": ecg_data,
+                "sampling_rate": sampling_rate,
+                "unit": "V",
+                "channel_names": ["ECG1", "ECG2"],
+                "time_offset": 0.0
+            }
+        },
+        # 修改事件时间，确保分段不会越界
+            "event": {
+                "event_id": [1, 2],
+                "event_label": ["left", "right"],
+                "event_time": [1.5, 3.0],  # 将4.0改为3.0，确保分段在数据范围内
+                "event_sample": [1500, 3000],
+                "duration": [2.0, 2.0]
+            },
+        "processed": {}
+    }
 
-    print("\n测试完成!")
-    return all_features
+    print(f"创建了包含 {len(data_dict['signal'])} 个模态的数据:")
+    for modality, info in data_dict["signal"].items():
+        print(f"  - {modality}: {info['data'].shape[0]}通道, {info['data'].shape[1]}样本点")
 
+    # 2. 创建多模态预处理器
+    print("\n2. 创建多模态预处理器...")
+
+    # 使用运动想象配置
+    config = MultiModalConfigFactory.create_motor_imagery_config()
+    preprocessor = MultiModalPreprocessor(config)
+
+    print(f"处理模式: {config.processing_mode.value}")
+    print(f"时间同步: {config.time_sync_method.value}")
+    print(f"启用模态: {config.enabled_modalities}")
+
+    # 3. 执行预处理
+    print("\n3. 执行预处理...")
+
+    result = preprocessor.process(data_dict)
+
+    # 4. 显示结果
+    print("\n4. 处理结果:")
+
+    if result.success:
+        print(f"✓ 处理成功，耗时: {result.processing_time:.2f}秒")
+
+        processed_data = result.processed_data
+
+        print(f"处理后的模态: {processed_data['processed']['multimodal_preprocessing']['modalities_processed']}")
+
+        # 显示各模态处理时间
+        print("\n各模态处理时间:")
+        for timeline in processed_data['processed']['multimodal_preprocessing']['processing_timeline']:
+            print(f"  - {timeline['modality']}: {timeline.get('processing_time', 0):.2f}秒")
+
+        # 显示质量报告
+        if 'quality_report' in processed_data['processed']:
+            quality = processed_data['processed']['quality_report']
+            print(f"\n信号质量: {quality.get('overall_quality', 0):.2f}")
+
+            if quality.get('has_issues', False):
+                print(f"发现问题: {len(quality.get('issues', []))}个")
+
+    else:
+        print(f"✗ 处理失败: {result.error_message}")
+
+    # 5. 获取处理摘要
+    print("\n5. 处理摘要:")
+    summary = preprocessor.get_processing_summary()
+    print(f"总处理次数: {summary['total_processes']}")
+    print(f"可用处理器: {summary['available_processors']}")
+
+    print("\n" + "=" * 70)
+    print("示例完成!")
+    print("=" * 70)
+
+    return result if result.success else None
+
+
+# ====================== 主程序入口 ======================
 
 if __name__ == "__main__":
-    # 运行测试
-    test_results = test_feature_extraction()
+    """
+    主程序：直接运行此文件将执行使用示例
+    """
+    print("多模态信号预处理器 v1.0")
+    print("=" * 50)
 
-    # 显示示例特征值
-    print("\n示例特征值:")
-    for feat_name, feat_value in list(test_results.items())[:10]:
-        print(f"{feat_name}: {feat_value[:2] if feat_value.ndim == 1 else feat_value.shape}")
+    try:
+        # 运行示例
+        example_usage()
+
+    except Exception as e:
+        print(f"运行示例时出错: {str(e)}")
+        import traceback
+
+        traceback.print_exc()
