@@ -1,530 +1,180 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
+#! /usr/bin/env python
+#  -*- coding:utf-8 -*-
 """
-高级事件管理器
-支持事件映射、时序控制、性能监控
+trigger_manager.py：触发事件管理层
+核心功能：
+1. 解析触发核心/模拟器的原始触发历史，过滤无效触发
+2. 自定义触发值→BCI任务事件标签的映射（如1=握拳、2=张开）
+3. 时间戳校准：将秒级触发时间转成脑电/EMG数据的采样点索引（关键同步步骤）
+4. 输出标准化事件字典，可直接嵌入标准化数据字典的event字段
 """
-
-import time
-from typing import Dict, List, Optional, Any, Callable
-from dataclasses import dataclass, field
-from enum import IntEnum
-import threading
-import queue
-import json
-from datetime import datetime
 import numpy as np
-from collections import deque
+from typing import List, Dict, Optional, Union
+from datetime import datetime
 
 
-# ==================== 事件定义 ====================
-class EventPriority(IntEnum):
-    """事件优先级"""
-    CRITICAL = 0  # 关键事件（实验开始/结束）
-    HIGH = 1  # 重要事件（刺激呈现）
-    NORMAL = 2  # 普通事件（反应记录）
-    LOW = 3  # 低优先级事件（调试信息）
-
-
-@dataclass
-class TriggerEvent:
-    """触发事件数据结构"""
-    value: int  # 事件值
-    timestamp: float  # 发送时间戳
-    description: str  # 事件描述
-    priority: EventPriority  # 事件优先级
-    metadata: Dict[str, Any] = field(default_factory=dict)  # 附加元数据
-    sample_index: Optional[int] = None  # 对应的样本索引（事后填充）
-    hardware_sent: bool = False  # 是否已发送到硬件
-    id: str = None  # 事件唯一ID
-
-    def __post_init__(self):
-        if self.id is None:
-            self.id = f"event_{int(self.timestamp * 1000)}_{self.value}"
-
-
-# ==================== 事件缓冲队列 ====================
-class EventBuffer:
-    """高性能事件缓冲队列"""
-
-    def __init__(self, max_size: int = 10000):
-        self.buffer = deque(maxlen=max_size)
-        self.lock = threading.RLock()
-        self.event_counter = 0
-        self._index_map = {}  # ID -> 位置索引（快速查找）
-
-    def add_event(self, event: TriggerEvent) -> str:
-        """添加事件到缓冲区"""
-        with self.lock:
-            self.buffer.append(event)
-            self._index_map[event.id] = len(self.buffer) - 1
-            self.event_counter += 1
-            return event.id
-
-    def get_event(self, event_id: str) -> Optional[TriggerEvent]:
-        """根据ID获取事件"""
-        with self.lock:
-            idx = self._index_map.get(event_id)
-            if idx is not None and idx < len(self.buffer):
-                return self.buffer[idx]
-            return None
-
-    def get_events_in_range(self, start_time: float, end_time: float) -> List[TriggerEvent]:
-        """获取时间范围内的事件"""
-        with self.lock:
-            return [
-                event for event in self.buffer
-                if start_time <= event.timestamp <= end_time
-            ]
-
-    def get_recent_events(self, count: int = 100) -> List[TriggerEvent]:
-        """获取最近的事件"""
-        with self.lock:
-            return list(self.buffer)[-count:] if self.buffer else []
-
-    def clear(self):
-        """清空缓冲区"""
-        with self.lock:
-            self.buffer.clear()
-            self._index_map.clear()
-            self.event_counter = 0
-
-
-# ==================== 事件映射配置 ====================
-class EventMapping:
-    """智能事件映射管理器"""
-
-    def __init__(self, config_file: str = None):
-        self.mappings: Dict[int, Dict] = {}
-        self.reverse_mappings: Dict[str, int] = {}
-        self.category_groups: Dict[str, List[int]] = {}
-
-        if config_file:
-            self.load_config(config_file)
-        else:
-            self._load_default_mappings()
-
-    def _load_default_mappings(self):
-        """加载默认事件映射"""
-        # 实验控制
-        self.add_mapping(255, "实验开始", "experiment_control")
-        self.add_mapping(254, "实验结束", "experiment_control")
-        self.add_mapping(253, "试次开始", "experiment_control")
-        self.add_mapping(252, "试次结束", "experiment_control")
-
-        # 视觉刺激
-        for i in range(1, 51):
-            self.add_mapping(100 + i, f"视觉刺激_{i}", "visual_stimulus")
-
-        # 听觉刺激
-        for i in range(1, 51):
-            self.add_mapping(200 + i, f"听觉刺激_{i}", "auditory_stimulus")
-
-        # 被试反应
-        self.add_mapping(301, "反应正确", "response")
-        self.add_mapping(302, "反应错误", "response")
-        self.add_mapping(303, "反应超时", "response")
-
-        # 系统事件
-        self.add_mapping(401, "数据记录开始", "system")
-        self.add_mapping(402, "数据记录结束", "system")
-
-    def add_mapping(self, value: int, description: str, category: str = "custom"):
-        """添加事件映射"""
-        self.mappings[value] = {
-            'description': description,
-            'category': category,
-            'value': value
-        }
-        self.reverse_mappings[description] = value
-
-        if category not in self.category_groups:
-            self.category_groups[category] = []
-        self.category_groups[category].append(value)
-
-    def get_description(self, value: int) -> str:
-        """获取事件描述"""
-        mapping = self.mappings.get(value)
-        if mapping:
-            return mapping['description']
-        return f"未定义事件_{value}"
-
-    def get_value(self, description: str) -> Optional[int]:
-        """根据描述获取事件值"""
-        return self.reverse_mappings.get(description)
-
-    def get_events_by_category(self, category: str) -> List[int]:
-        """获取指定类别的事件值列表"""
-        return self.category_groups.get(category, []).copy()
-
-    def save_config(self, filepath: str):
-        """保存配置到文件"""
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump({
-                'mappings': self.mappings,
-                'category_groups': self.category_groups
-            }, f, indent=2, ensure_ascii=False)
-
-    def load_config(self, filepath: str):
-        """从文件加载配置"""
-        with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            self.mappings = data['mappings']
-            self.category_groups = data['category_groups']
-
-            # 重建反向映射
-            self.reverse_mappings.clear()
-            for value, info in self.mappings.items():
-                self.reverse_mappings[info['description']] = int(value)
-
-
-# ==================== 高性能事件管理器 ====================
-class HighPerformanceTriggerManager:
-    """
-    高性能事件管理器
-    特性：
-    1. 多线程安全
-    2. 事件缓冲
-    3. 性能监控
-    4. 错误恢复
-    5. 实时统计
-    """
-
-    def __init__(self, trigger_box=None, data_server=None):
-        self.trigger_box = trigger_box
-        self.data_server = data_server
-
-        # 事件管理组件
-        self.event_mapping = EventMapping()
-        self.event_buffer = EventBuffer(max_size=50000)
-
-        # 异步发送队列
-        self.send_queue = queue.PriorityQueue(maxsize=1000)
-        self._send_thread = None
-        self._stop_sending = threading.Event()
-
-        # 统计信息
-        self.stats = {
-            'total_events_sent': 0,
-            'total_hardware_events': 0,
-            'total_software_events': 0,
-            'hardware_errors': 0,
-            'avg_latency_ms': 0.0,
-            'peak_latency_ms': 0.0,
-            'events_by_category': {},
-            'recent_latencies': deque(maxlen=100)
-        }
-
-        # 时序控制
-        self._last_event_time = 0
-        self._min_event_interval = 0.001  # 1ms最小间隔
-
-        # 启动发送线程
-        self._start_send_thread()
-
-    def _start_send_thread(self):
-        """启动异步发送线程"""
-        if self._send_thread is None:
-            self._stop_sending.clear()
-            self._send_thread = threading.Thread(
-                target=self._send_worker,
-                daemon=True,
-                name="TriggerSendThread"
-            )
-            self._send_thread.start()
-
-    def _send_worker(self):
-        """发送工作线程"""
-        while not self._stop_sending.is_set():
-            try:
-                # 从优先队列获取事件（阻塞但可超时）
-                priority, (timestamp, event) = self.send_queue.get(timeout=0.1)
-
-                # 检查时间间隔
-                current_time = time.time()
-                time_since_last = current_time - self._last_event_time
-
-                if time_since_last < self._min_event_interval:
-                    # 等待最小间隔
-                    time.sleep(self._min_event_interval - time_since_last)
-
-                # 发送事件
-                self._send_event_internal(event)
-                self._last_event_time = time.time()
-
-                self.send_queue.task_done()
-
-            except queue.Empty:
-                continue
-            except Exception as e:
-                print(f"发送线程错误: {e}")
-                time.sleep(0.01)
-
-    def _send_event_internal(self, event: TriggerEvent):
-        """内部发送事件（线程安全）"""
-        start_time = time.time()
-
-        try:
-            # 发送到硬件（如果可用）
-            hardware_success = False
-            if self.trigger_box:
-                hardware_success = self.trigger_box.send_event(event.value)
-                event.hardware_sent = hardware_success
-
-                if hardware_success:
-                    self.stats['total_hardware_events'] += 1
-                else:
-                    self.stats['hardware_errors'] += 1
-
-            # 记录到数据服务器（如果可用）
-            if self.data_server:
-                event.sample_index = self.data_server.total_samples
-
-                self.data_server.add_event_manually(
-                    event_type="TRIGGER",
-                    value=event.value,
-                    description=event.description
-                )
-
-            # 添加到缓冲区
-            self.event_buffer.add_event(event)
-
-            # 更新统计
-            self.stats['total_events_sent'] += 1
-            self.stats['total_software_events'] += 1
-
-            # 计算延迟
-            latency = (time.time() - start_time) * 1000  # 转毫秒
-            self.stats['recent_latencies'].append(latency)
-            self.stats['avg_latency_ms'] = np.mean(self.stats['recent_latencies'])
-            self.stats['peak_latency_ms'] = max(
-                self.stats['peak_latency_ms'],
-                latency
-            )
-
-            # 按类别统计
-            category = self.event_mapping.mappings.get(event.value, {}).get('category', 'unknown')
-            if category not in self.stats['events_by_category']:
-                self.stats['events_by_category'][category] = 0
-            self.stats['events_by_category'][category] += 1
-
-        except Exception as e:
-            print(f"发送事件失败: {e}")
-
-    def send_event(self,
-                   value: int,
-                   description: str = None,
-                   priority: EventPriority = EventPriority.NORMAL,
-                   metadata: Dict = None,
-                   async_send: bool = True) -> str:
+class TriggerManager:
+    def __init__(self, sampling_rate: float = 2000.0, custom_trigger_map: Optional[Dict[int, str]] = None):
         """
-        发送事件
-
-        参数:
-            value: 事件值
-            description: 事件描述（如为None则从映射获取）
-            priority: 事件优先级
-            metadata: 附加元数据
-            async_send: 是否异步发送
-
-        返回:
-            事件ID
+        初始化触发事件管理器
+        :param sampling_rate: 脑电/EMG数据的采样率（默认2000Hz适配NinaPro EMG，EEG可设256/512）
+        :param custom_trigger_map: 自定义触发值→事件标签映射，如{1:'握拳',2:'张开'}，不传则用默认映射
         """
-        # 获取描述
-        if description is None:
-            description = self.event_mapping.get_description(value)
-
-        # 创建事件对象
-        event = TriggerEvent(
-            value=value,
-            timestamp=time.time(),
-            description=description,
-            priority=priority,
-            metadata=metadata or {}
-        )
-
-        if async_send:
-            # 添加到异步队列
-            self.send_queue.put((priority.value, (event.timestamp, event)))
-            return event.id
-        else:
-            # 同步发送
-            self._send_event_internal(event)
-            return event.id
-
-    def send_event_by_description(self,
-                                  description: str,
-                                  priority: EventPriority = EventPriority.NORMAL,
-                                  **kwargs) -> Optional[str]:
-        """通过描述发送事件"""
-        value = self.event_mapping.get_value(description)
-        if value is not None:
-            return self.send_event(value, description, priority, **kwargs)
-        return None
-
-    def send_stimulus(self,
-                      stimulus_type: str,
-                      stimulus_id: int,
-                      category: str = "visual_stimulus",
-                      **kwargs) -> str:
-        """发送刺激事件"""
-        base_values = {
-            'visual': 100,
-            'auditory': 200,
-            'tactile': 300,
-            'response': 400
+        # 修复语法错误：先校验采样率，再赋值
+        if sampling_rate <= 0:
+            raise ValueError("采样率必须大于0！")
+        self.sampling_rate = sampling_rate
+        # 触发值-事件标签映射（默认适配NinaPro手部运动，支持用户自定义覆盖）
+        self.trigger_map = custom_trigger_map if custom_trigger_map else self._get_default_trigger_map()
+        # 解析后的标准化事件字典（最终输出格式）
+        self.standard_event = {
+            "event_count": 0,  # 有效触发事件数量
+            "event_timestamp": [],  # 触发事件的绝对时间戳（秒，UTC）
+            "event_rel_time": [],  # 触发事件的相对时间（秒，以第一个事件为0点，贴合数据采集时序）
+            "event_sample": [],  # 触发事件对应的数采采样点索引（核心，用于数据同步）
+            "event_value": [],  # 原始触发值（如1/2/3）
+            "event_label": []  # 解析后的事件标签（如握拳/张开/休息，贴合业务）
         }
 
-        base_value = base_values.get(stimulus_type, 0)
-        event_value = base_value + stimulus_id
-
-        description = f"{stimulus_type}_刺激_{stimulus_id}"
-
-        # 确保有映射
-        if event_value not in self.event_mapping.mappings:
-            self.event_mapping.add_mapping(event_value, description, category)
-
-        return self.send_event(event_value, description, **kwargs)
-
-    def start_experiment(self, experiment_name: str = None) -> str:
-        """开始实验"""
-        metadata = {
-            'experiment_name': experiment_name,
-            'start_time': datetime.now().isoformat()
-        }
-        return self.send_event(
-            255,
-            "实验开始",
-            EventPriority.CRITICAL,
-            metadata
-        )
-
-    def end_experiment(self) -> str:
-        """结束实验"""
-        return self.send_event(
-            254,
-            "实验结束",
-            EventPriority.CRITICAL
-        )
-
-    def start_trial(self, trial_number: int) -> str:
-        """开始试次"""
-        metadata = {'trial_number': trial_number}
-        return self.send_event(
-            253,
-            f"试次开始_{trial_number}",
-            EventPriority.HIGH,
-            metadata
-        )
-
-    def end_trial(self, trial_number: int) -> str:
-        """结束试次"""
-        metadata = {'trial_number': trial_number}
-        return self.send_event(
-            252,
-            f"试次结束_{trial_number}",
-            EventPriority.HIGH,
-            metadata
-        )
-
-    def record_response(self,
-                        correct: bool,
-                        reaction_time: float = None,
-                        trial_number: int = None) -> str:
-        """记录反应"""
-        event_value = 301 if correct else 302
-        description = "反应正确" if correct else "反应错误"
-
-        metadata = {
-            'correct': correct,
-            'reaction_time': reaction_time,
-            'trial_number': trial_number
+    def _get_default_trigger_map(self) -> Dict[int, str]:
+        """
+        默认触发值-事件标签映射（适配NinaPro手部运动数据集，可直接修改/自定义覆盖）
+        可根据你的实际任务场景调整：如EEG运动想象（1=左手/2=右手/3=脚）
+        """
+        return {
+            0: "无动作",
+            1: "握拳",
+            2: "手掌张开",
+            3: "捏指（食指+拇指）",
+            4: "捏指（中指+拇指）",
+            5: "捏指（无名指+拇指）",
+            6: "捏指（小指+拇指）",
+            7: "休息",
+            8: "手腕上抬",
+            9: "手腕下压"
         }
 
-        return self.send_event(
-            event_value,
-            description,
-            EventPriority.NORMAL,
-            metadata
-        )
+    def update_trigger_map(self, new_trigger_map: Dict[int, str]):
+        """更新触发值-事件标签映射，适配不同任务场景"""
+        if not isinstance(new_trigger_map, dict) or not all(isinstance(k, int) for k in new_trigger_map.keys()):
+            raise TypeError("触发映射表必须是「int:str」的字典（如{1:'握拳'}）")
+        self.trigger_map.update(new_trigger_map)
+        print(f"✅ 触发映射表更新成功，当前映射：{self.trigger_map}")
 
-    def get_performance_stats(self) -> Dict:
-        """获取性能统计"""
-        stats = self.stats.copy()
-
-        # 添加实时信息
-        stats['queue_size'] = self.send_queue.qsize()
-        stats['buffer_size'] = len(self.event_buffer.buffer)
-        stats['is_hardware_connected'] = self.trigger_box is not None
-
-        if self.trigger_box:
-            box_stats = self.trigger_box.get_performance_stats()
-            stats['hardware_stats'] = box_stats
-
-        return stats
-
-    def get_recent_events(self, count: int = 20) -> List[Dict]:
-        """获取最近事件"""
-        events = self.event_buffer.get_recent_events(count)
-        return [
-            {
-                'id': e.id,
-                'value': e.value,
-                'description': e.description,
-                'timestamp': e.timestamp,
-                'hardware_sent': e.hardware_sent,
-                'sample_index': e.sample_index
-            }
-            for e in events
+    def _filter_invalid_triggers(self, trigger_history: List[Dict]) -> List[Dict]:
+        """过滤无效触发历史（空值/无event_data/触发值不在映射表的记录）"""
+        if not isinstance(trigger_history, list) or len(trigger_history) == 0:
+            raise ValueError("触发历史必须是非空列表！")
+        # 过滤规则：有event_data字段 + 触发值是整数 + 触发值在映射表中
+        valid_triggers = [
+            t for t in trigger_history
+            if "event_data" in t and isinstance(t["event_data"], int) and t["event_data"] in self.trigger_map
         ]
+        invalid_count = len(trigger_history) - len(valid_triggers)
+        if invalid_count > 0:
+            print(f"⚠️  过滤{invalid_count}条无效触发记录，剩余{len(valid_triggers)}条有效记录")
+        return valid_triggers
 
-    def wait_for_queue_empty(self, timeout: float = 5.0) -> bool:
-        """等待发送队列清空"""
-        start_time = time.time()
-        while not self.send_queue.empty():
-            if time.time() - start_time > timeout:
-                return False
-            time.sleep(0.01)
-        return True
+    def parse_trigger_history(self, trigger_history: List[Dict], reset: bool = True):
+        """
+        核心方法：解析触发历史，生成标准化事件字典
+        :param trigger_history: trigger_core/trigger_emulator的trigger_history触发历史列表
+        :param reset: 是否重置之前的解析结果（默认True，每次解析生成新结果）
+        """
+        # 重置标准化事件字典（避免多次解析数据叠加）
+        if reset:
+            self.standard_event = self.standard_event.fromkeys(self.standard_event, [])
 
-    def shutdown(self):
-        """关闭管理器"""
-        # 停止发送线程
-        self._stop_sending.set()
-        if self._send_thread:
-            self._send_thread.join(timeout=2.0)
+        # 步骤1：过滤无效触发记录
+        valid_triggers = self._filter_invalid_triggers(trigger_history)
+        if len(valid_triggers) == 0:
+            print("⚠️  无有效触发记录，标准化事件字典为空")
+            return self.standard_event
 
-        # 等待队列清空
-        self.wait_for_queue_empty(timeout=2.0)
+        # 步骤2：提取有效触发的核心字段
+        event_timestamps = [t["timestamp"] for t in valid_triggers]  # 绝对时间戳
+        event_values = [t["event_data"] for t in valid_triggers]  # 原始触发值
+        # 步骤3：计算相对时间（以第一个事件为0点，贴合数据采集的时序起点）
+        base_time = event_timestamps[0]
+        event_rel_times = [round(ts - base_time, 3) for ts in event_timestamps]
+        # 步骤4：时间戳→采样点索引（核心同步步骤：采样点=相对时间×采样率，取整）
+        event_samples = [int(round(rt * self.sampling_rate)) for rt in event_rel_times]
+        # 步骤5：解析触发值为业务标签
+        event_labels = [self.trigger_map[v] for v in event_values]
 
-        # 断开硬件连接
-        if self.trigger_box:
-            self.trigger_box.disconnect()
+        # 步骤6：填充标准化事件字典
+        self.standard_event.update({
+            "event_count": len(valid_triggers),
+            "event_timestamp": event_timestamps,
+            "event_rel_time": event_rel_times,
+            "event_sample": event_samples,
+            "event_value": event_values,
+            "event_label": event_labels
+        })
+
+        # 打印解析结果摘要（方便调试）
+        print("\n" + "=" * 60)
+        print(f"✅ 触发历史解析完成，共解析{len(valid_triggers)}条有效事件")
+        print(f"📌 数据采样率：{self.sampling_rate}Hz | 时间戳精度：3位小数")
+        print(f"📌 首个事件：{event_labels[0]}（相对时间：{event_rel_times[0]}s，采样点：{event_samples[0]}）")
+        print("=" * 60)
+        return self.standard_event
+
+    def get_standard_event(self) -> Dict:
+        """获取解析后的标准化事件字典（可直接嵌入BCI标准化数据字典）"""
+        return self.standard_event
+
+    def save_event_to_txt(self, save_path: str, encoding: str = "utf-8"):
+        """将标准化事件字典保存为TXT文件，方便后续分析/查看"""
+        if self.standard_event["event_count"] == 0:
+            raise RuntimeError("无解析后的事件数据，无法保存！")
+        with open(save_path, "w", encoding=encoding) as f:
+            f.write(f"BCI触发事件解析结果 | 采样率：{self.sampling_rate}Hz | 生成时间：{datetime.now()}\n")
+            f.write("=" * 80 + "\n")
+            f.write(f"事件数量\t相对时间(s)\t采样点索引\t原始触发值\t事件标签\n")
+            f.write("=" * 80 + "\n")
+            for i in range(self.standard_event["event_count"]):
+                f.write(f"{i + 1}\t\t{self.standard_event['event_rel_time'][i]}\t\t")
+                f.write(f"{self.standard_event['event_sample'][i]}\t\t{self.standard_event['event_value'][i]}\t\t")
+                f.write(f"{self.standard_event['event_label'][i]}\n")
+        print(f"✅ 标准化事件数据已保存至：{save_path}")
 
 
-# ==================== 上下文管理器 ====================
-class TriggerManagerContext:
-    """触发管理器上下文"""
+# ===================== 测试代码（联动前两个文件，完整验证解析流程） =====================
+if __name__ == "__main__":
+    # 步骤1：导入模拟器（硬件层同理，只需替换为TriggerCore）
+    from trigger_emulator import TriggerEmulator
+    import time
 
-    def __init__(self, port: str = None, data_server=None):
-        self.port = port
-        self.data_server = data_server
-        self.manager: Optional[HighPerformanceTriggerManager] = None
+    # 步骤2：初始化模拟器，生成触发历史
+    SERIAL_NAME = "COM3"
+    emulator = TriggerEmulator(serial_name=SERIAL_NAME)
+    # 模拟发送贴合NinaPro的手部运动触发事件
+    emulator.output_event_data(event_data=1, trigger_to_be_out=1)  # 握拳
+    time.sleep(2)
+    emulator.output_event_data(event_data=2, trigger_to_be_out=1)  # 手掌张开
+    time.sleep(2)
+    emulator.output_event_data(event_data=7, trigger_to_be_out=1)  # 休息
+    time.sleep(2)
+    emulator.output_event_data(event_data=8, trigger_to_be_out=1)  # 手腕上抬
 
-    def __enter__(self) -> HighPerformanceTriggerManager:
-        from trigger_core import create_trigger_box
+    # 步骤3：初始化触发管理器（默认2000Hz适配NinaPro，可自定义映射）
+    # 自定义映射示例：适配EEG运动想象
+    # custom_map = {1:'左手运动', 2:'右手运动', 3:'脚部运动', 7:'休息'}
+    # manager = TriggerManager(sampling_rate=256.0, custom_trigger_map=custom_map)
+    manager = TriggerManager(sampling_rate=2000.0)
 
-        # 创建触发盒
-        trigger_box = create_trigger_box(self.port)
+    # 步骤4：解析模拟器的触发历史
+    manager.parse_trigger_history(emulator.trigger_history)
 
-        # 创建管理器
-        self.manager = HighPerformanceTriggerManager(
-            trigger_box=trigger_box,
-            data_server=self.data_server
-        )
+    # 步骤5：获取标准化事件字典（可直接嵌入你的BCI标准化数据字典）
+    standard_event = manager.get_standard_event()
+    print("\n📋 解析后的标准化事件字典：")
+    for k, v in standard_event.items():
+        print(f"  {k}: {v}")
 
-        return self.manager
+    # 步骤6：（可选）保存事件数据到TXT
+    manager.save_event_to_txt("bci_trigger_events.txt")
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.manager:
-            self.manager.shutdown()
+    # 步骤7：关闭模拟器
+    emulator.close_serial()
