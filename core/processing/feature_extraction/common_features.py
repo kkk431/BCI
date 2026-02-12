@@ -16,6 +16,7 @@ Common Feature Extraction Library for Multimodal BCI
 版本: 1.0.0
 """
 
+import math
 import numpy as np
 import scipy.stats
 import scipy.signal
@@ -300,7 +301,7 @@ class CommonFeatureExtractor:
         pe = -np.multiply(p, np.log2(p)).sum()
         
         # 归一化
-        return pe / np.log2(np.math.factorial(order))
+        return pe / np.log2(math.factorial(order))
 
     def _sample_entropy(self, L, m, r):
         """
