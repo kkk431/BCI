@@ -1,470 +1,375 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
+#! /usr/bin/env python
+#  -*- coding:utf-8 -*-
 """
-极致优化的触发盒硬件控制层
-使用异步IO、零拷贝、内存池优化
+trigger_core.py：触发盒硬件控制核心层
+参考BRAINFUSION TriggerBox源码（Neuracle触发盒驱动），保留核心硬件交互逻辑，简化冗余代码
+核心功能：串口连接、设备校验、触发信号发送/读取、传感器参数配置
 """
-
 import serial
 import serial.tools.list_ports
-import asyncio
-import threading
-from dataclasses import dataclass
-from typing import Optional, Dict, List, Tuple
-import struct
-import time
-from enum import IntEnum
-from functools import lru_cache
-import numpy as np
+from ctypes import *
+from typing import Optional, Dict, List
 
 
-# ==================== 内存优化结构 ====================
-@dataclass(frozen=True)
-class TriggerConfig:
-    """不可变配置类，优化内存使用"""
-    port: str
-    baudrate: int = 115200
-    timeout: float = 2.0
-    write_timeout: float = 2.0
-    retry_count: int = 3
-    retry_delay: float = 0.1
+# ===================== 1. 数据帧结构定义（完全参考BRAINFUSION源码） =====================
+class PackageTriggerBoxBaseFrame(Structure):
+    """参考原代码：触发盒基础帧结构（设备ID+功能ID+有效载荷长度）"""
+    _fields_ = [('deviceID', c_ubyte), ('functionID', c_ubyte), ('payload', c_ushort)]
+    _pack_ = 1  # 1字节对齐，匹配硬件协议
 
 
-class SensorType(IntEnum):
-    """传感器类型枚举"""
-    DIGITAL_IN = 1
-    LIGHT = 2
-    LINE_IN = 3
-    MIC = 4
-    KEY = 5
-    TEMPERATURE = 6
-    HUMIDITY = 7
-    AMBIENT_LIGHT = 8
-    DEBUG = 9
-    ALL = 255
+class PackageSensorInfo(Structure):
+    """参考原代码：传感器信息结构（类型+编号）"""
+    _fields_ = [('sensorType', c_ubyte), ('sensorNum', c_ubyte)]
+    _pack_ = 1
 
 
-class FunctionID(IntEnum):
-    """功能ID枚举"""
-    SENSOR_PARA_GET = 1
-    SENSOR_PARA_SET = 2
-    DEVICE_INFO_GET = 3
-    DEVICE_NAME_GET = 4
-    SENSOR_SAMPLE_GET = 5
-    SENSOR_INFO_GET = 6
-    OUTPUT_EVENT_DATA = 225
-    ERROR = 131
+class PackageSensorPara(Structure):
+    """参考原代码：传感器参数结构（触发边沿、输出通道、触发值、阈值、事件数据）"""
+    _fields_ = [('Edge', c_ubyte), ('OutputChannel', c_ubyte), ('TriggerToBeOut', c_ushort),
+                ('Threshold', c_ushort), ('EventData', c_ushort)]
+    _pack_ = 1
 
 
-# ==================== 零拷贝协议解析器 ====================
-class TriggerProtocol:
-    """二进制协议解析器，避免内存分配"""
-
-    # 预编译结构体格式
-    _FRAME_FORMAT = struct.Struct('<BBH')  # deviceID, functionID, payload
-    _SENSOR_INFO_FORMAT = struct.Struct('<BB')  # sensorType, sensorNum
-    _SENSOR_PARA_FORMAT = struct.Struct('<BBHHH')  # Edge, OutputChannel, TriggerToBeOut, Threshold, EventData
-
-    @staticmethod
-    def pack_frame(device_id: int, function_id: int, payload: int) -> bytes:
-        """打包帧头，零内存分配"""
-        return TriggerProtocol._FRAME_FORMAT.pack(device_id, function_id, payload)
-
-    @staticmethod
-    def unpack_frame(data: bytes) -> Tuple[int, int, int]:
-        """解包帧头，零内存分配"""
-        return TriggerProtocol._FRAME_FORMAT.unpack(data)
-
-    @staticmethod
-    def pack_sensor_info(sensor_type: int, sensor_num: int) -> bytes:
-        """打包传感器信息"""
-        return TriggerProtocol._SENSOR_INFO_FORMAT.pack(sensor_type, sensor_num)
-
-    @staticmethod
-    def pack_sensor_para(edge: int, output_channel: int,
-                         trigger_to_be_out: int, threshold: int,
-                         event_data: int) -> bytes:
-        """打包传感器参数"""
-        return TriggerProtocol._SENSOR_PARA_FORMAT.pack(
-            edge, output_channel, trigger_to_be_out, threshold, event_data
-        )
+class PackageGetDeviceInfo(Structure):
+    """参考原代码：获取设备信息指令结构"""
+    _fields_ = [('frame', PackageTriggerBoxBaseFrame), ('command', c_ubyte)]
+    _pack_ = 1
 
 
-# ==================== 连接池管理器 ====================
-class ConnectionPool:
-    """串口连接池，避免频繁开关"""
-
-    _pool: Dict[str, serial.Serial] = {}
-    _lock = threading.RLock()
-
-    @classmethod
-    def get_connection(cls, config: TriggerConfig) -> Optional[serial.Serial]:
-        """从连接池获取连接"""
-        with cls._lock:
-            if config.port in cls._pool:
-                conn = cls._pool[config.port]
-                if conn.is_open:
-                    return conn
-                else:
-                    del cls._pool[config.port]
-
-            # 创建新连接
-            try:
-                conn = serial.Serial(
-                    port=config.port,
-                    baudrate=config.baudrate,
-                    timeout=config.timeout,
-                    write_timeout=config.write_timeout,
-                    exclusive=True
-                )
-                cls._pool[config.port] = conn
-                return conn
-            except Exception:
-                return None
-
-    @classmethod
-    def release_connection(cls, port: str):
-        """释放连接（不关闭，保持连接池）"""
-        pass  # 连接池保持打开
-
-    @classmethod
-    def close_all(cls):
-        """关闭所有连接"""
-        with cls._lock:
-            for port, conn in cls._pool.items():
-                try:
-                    conn.close()
-                except:
-                    pass
-            cls._pool.clear()
+class PackageGetSensorPara(Structure):
+    """参考原代码：读取传感器参数指令结构"""
+    _fields_ = [('frame', PackageTriggerBoxBaseFrame), ('sensorInfo', PackageSensorInfo)]
+    _pack_ = 1
 
 
-# ==================== 极致优化的触发盒核心 ====================
-class OptimizedTriggerBox:
-    """
-    极致优化的触发盒控制类
-    特性：
-    1. 连接池管理
-    2. 零拷贝协议处理
-    3. 异步IO支持
-    4. 智能重试机制
-    5. 内存池缓存
-    """
+class PackageSetSensorPara(Structure):
+    """参考原代码：设置传感器参数指令结构"""
+    _fields_ = [('frame', PackageTriggerBoxBaseFrame), ('sensorInfo', PackageSensorInfo),
+                ('sensorPara', PackageSensorPara)]
+    _pack_ = 1
 
-    def __init__(self, config: TriggerConfig):
-        self.config = config
-        self._conn: Optional[serial.Serial] = None
-        self._lock = threading.RLock()
-        self._device_id = 1
-        self._device_info_cache: Optional[Dict] = None
-        self._sensor_info_cache: Optional[List] = None
-        self._last_error: Optional[str] = None
-        self._stats = {
-            'requests': 0,
-            'errors': 0,
-            'avg_response_time': 0.0,
-            'last_request_time': 0.0
-        }
 
-        # 预计算常用命令
-        self._cached_commands = self._precompute_commands()
+# ===================== 2. 核心触发盒控制类（参考+优化原代码TriggerBox类） =====================
+class TriggerCore:
+    # 参考原代码：功能ID常量（触发盒指令类型）
+    FUNCTION_ID_SENSOR_PARA_GET = 1  # 读取传感器参数
+    FUNCTION_ID_SENSOR_PARA_SET = 2  # 设置传感器参数
+    FUNCTION_ID_DEVICE_INFO_GET = 3  # 读取设备信息
+    FUNCTION_ID_DEVICE_NAME_GET = 4  # 读取设备名称
+    FUNCTION_ID_SENSOR_SAMPLE_GET = 5  # 读取传感器采样值
+    FUNCTION_ID_SENSOR_INFO_GET = 6  # 读取传感器信息
+    FUNCTION_ID_OUTPUT_EVENT_DATA = 225  # 输出事件数据（核心触发功能）
+    FUNCTION_ID_ERROR = 131  # 错误响应
 
-    def _precompute_commands(self) -> Dict:
-        """预计算常用命令，减少运行时计算"""
-        return {
-            'get_device_name': TriggerProtocol.pack_frame(
-                self._device_id, FunctionID.DEVICE_NAME_GET, 0
-            ),
-            'get_device_info': TriggerProtocol.pack_frame(
-                self._device_id, FunctionID.DEVICE_INFO_GET, 1
-            ) + bytes([1]),  # command=1
-            'get_sensor_info': TriggerProtocol.pack_frame(
-                self._device_id, FunctionID.SENSOR_INFO_GET, 0
+    # 参考原代码：传感器类型常量+映射（数字→可读名称）
+    SENSOR_TYPE_DIGITAL_IN = 1
+    SENSOR_TYPE_LIGHT = 2
+    SENSOR_TYPE_LINE_IN = 3
+    SENSOR_TYPE_MIC = 4
+    SENSOR_TYPE_KEY = 5
+    SENSOR_TYPE_TEMPERATURE = 6
+    SENSOR_TYPE_HUMIDITY = 7
+    SENSOR_TYPE_AMBIENT_LIGHT = 8
+    SENSOR_TYPE_DEBUG = 9
+    SENSOR_TYPE_ALL = 255
+
+    SENSOR_TYPE_MAP = {
+        SENSOR_TYPE_DIGITAL_IN: 'DigitalIN',
+        SENSOR_TYPE_LIGHT: 'Light',
+        SENSOR_TYPE_LINE_IN: 'LineIN',
+        SENSOR_TYPE_MIC: 'Mic',
+        SENSOR_TYPE_KEY: 'Key',
+        SENSOR_TYPE_TEMPERATURE: 'Temperature',
+        SENSOR_TYPE_HUMIDITY: 'Humidity',
+        SENSOR_TYPE_AMBIENT_LIGHT: 'Ambientlight',
+        SENSOR_TYPE_DEBUG: 'Debug'
+    }
+
+    def __init__(self, serial_name: str, baudrate: int = 115200, timeout: float = 60):
+        """
+        初始化触发盒（参考原代码__init__，优化为可配置参数）
+        :param serial_name: 串口名（如COM3、/dev/ttyUSB0）
+        :param baudrate: 波特率（原代码固定115200，此处可配置）
+        :param timeout: 串口超时时间（原代码固定60s，此处可配置）
+        """
+        self.serial_name = serial_name
+        self.baudrate = baudrate
+        self.timeout = timeout
+        self._device_id = 1  # 触发盒设备ID（原代码固定为1）
+        self._serial_handle: Optional[serial.Serial] = None  # 串口句柄
+        self._device_name: Optional[str] = None  # 设备名称
+        self._device_info: Optional[Dict] = None  # 设备信息（版本、传感器数量等）
+        self._sensor_info: List[Dict] = []  # 传感器信息列表
+
+        # 参考原代码：初始化时自动校验设备、读取基础信息
+        self._init_device()
+
+    def _init_device(self):
+        """参考原代码validate_device，封装初始化流程"""
+        if not self.check_online():
+            raise RuntimeError(f"触发盒串口{self.serial_name}未在线！")
+
+        # 打开串口（参考原代码validate_device）
+        try:
+            self._serial_handle = serial.Serial(
+                port=self.serial_name,
+                baudrate=self.baudrate,
+                timeout=self.timeout
             )
-        }
+        except Exception as e:
+            raise RuntimeError(f"打开串口{self.serial_name}失败：{str(e)}")
 
-    def _update_stats(self, start_time: float, success: bool = True):
-        """更新性能统计"""
-        response_time = time.time() - start_time
-        self._stats['requests'] += 1
-        self._stats['last_request_time'] = time.time()
+        if not self._serial_handle.is_open:
+            raise RuntimeError(f"串口{self.serial_name}打开后未处于就绪状态！")
 
-        # 指数移动平均更新响应时间
-        if self._stats['avg_response_time'] == 0:
-            self._stats['avg_response_time'] = response_time
-        else:
-            alpha = 0.1  # 平滑因子
-            self._stats['avg_response_time'] = (
-                    alpha * response_time +
-                    (1 - alpha) * self._stats['avg_response_time']
-            )
+        print(f"✅ 串口{self.serial_name}打开成功")
 
-        if not success:
-            self._stats['errors'] += 1
+        # 读取设备基础信息（参考原代码__init__）
+        self._device_name = self.get_device_name()
+        self._device_info = self.get_device_info()
+        self._sensor_info = self.get_sensor_info()
+        print(f"📌 设备名称：{self._device_name}")
+        print(f"📌 设备信息：{self._device_info}")
 
-    def connect(self) -> bool:
-        """连接触发盒（使用连接池）"""
-        with self._lock:
-            self._conn = ConnectionPool.get_connection(self.config)
-            if self._conn and self._conn.is_open:
-                # 清空缓冲区
-                self._conn.reset_input_buffer()
-                self._conn.reset_output_buffer()
-                return True
+    def refresh_serial_list(self) -> List:
+        """参考原代码：刷新串口列表"""
+        return list(serial.tools.list_ports.comports())
+
+    def check_online(self) -> bool:
+        """参考原代码：检查目标串口是否在线"""
+        port_list = self.refresh_serial_list()
+        if not port_list:
+            print("❌ 未检测到任何在线串口！")
             return False
 
-    def disconnect(self):
-        """断开连接（释放到连接池）"""
-        with self._lock:
-            if self._conn:
-                ConnectionPool.release_connection(self.config.port)
-                self._conn = None
+        for port in port_list:
+            if port.device == self.serial_name:
+                print(f"✅ 目标串口[{self.serial_name}]在线（描述：{port.description}）")
+                return True
 
-    def _send_command(self, command: bytes, expected_function_id: int) -> Optional[bytes]:
-        """发送命令并读取响应（带重试机制）"""
-        if not self._conn or not self._conn.is_open:
-            if not self.connect():
-                return None
+        print(f"❌ 目标串口[{self.serial_name}]未在线！")
+        print("📋 在线串口列表：")
+        for port in port_list:
+            print(f"  - {port.device} : {port.description}")
+        return False
 
-        start_time = time.time()
+    def get_device_name(self) -> str:
+        """参考原代码：读取触发盒设备名称"""
+        cmd = PackageTriggerBoxBaseFrame()
+        cmd.deviceID = self._device_id
+        cmd.functionID = self.FUNCTION_ID_DEVICE_NAME_GET
+        cmd.payload = 0
 
-        for attempt in range(self.config.retry_count):
-            try:
-                # 发送命令
-                self._conn.write(command)
+        self.send(cmd)
+        data = self.read(cmd.functionID)
+        device_name = str(data).strip()
+        return device_name
 
-                # 读取响应头
-                header = self._conn.read(4)
-                if len(header) < 4:
-                    continue
+    def get_device_info(self) -> Dict:
+        """参考原代码：读取触发盒硬件信息（版本、传感器数量、设备ID）"""
+        cmd = PackageGetDeviceInfo()
+        cmd.command = 1
+        cmd.frame.deviceID = self._device_id
+        cmd.frame.functionID = self.FUNCTION_ID_DEVICE_INFO_GET
+        cmd.frame.payload = 1
 
-                device_id, function_id, payload = TriggerProtocol.unpack_frame(header)
+        self.send(cmd)
+        data = self.read(cmd.frame.functionID)
 
-                # 验证响应
-                if device_id != self._device_id:
-                    self._last_error = f"设备ID不匹配: {device_id}"
-                    continue
+        # 参考原代码解析逻辑，修复原代码索引错误（原代码data[0]实际应为data[4]）
+        hardware_version = data[4] if len(data) >= 8 else 0
+        firmware_version = data[5] if len(data) >= 8 else 0
+        sensor_sum = data[6] if len(data) >= 8 else 0
+        device_id = (data[8] << 24) | (data[9] << 16) | (data[10] << 8) | data[11] if len(data) >= 12 else 0
 
-                if function_id == FunctionID.ERROR:
-                    error_data = self._conn.read(1)
-                    error_map = {
-                        0: '无错误',
-                        1: '帧头错误',
-                        2: '负载错误',
-                        3: '通道不存在',
-                        4: '设备ID错误',
-                        5: '功能ID错误',
-                        6: '传感器类型错误'
-                    }
-                    self._last_error = error_map.get(error_data[0], '未知错误')
-                    continue
-
-                if function_id != expected_function_id:
-                    self._last_error = f"功能ID不匹配: {function_id}"
-                    continue
-
-                # 读取负载数据
-                if payload > 0:
-                    data = self._conn.read(payload)
-                    if len(data) == payload:
-                        self._update_stats(start_time, success=True)
-                        return data
-
-            except Exception as e:
-                self._last_error = str(e)
-                time.sleep(self.config.retry_delay)
-
-        self._update_stats(start_time, success=False)
-        return None
-
-    @lru_cache(maxsize=32)
-    def get_device_name(self) -> Optional[str]:
-        """获取设备名（带缓存）"""
-        data = self._send_command(
-            self._cached_commands['get_device_name'],
-            FunctionID.DEVICE_NAME_GET
-        )
-        return data.decode('utf-8', errors='ignore') if data else None
-
-    def get_device_info(self, force_refresh: bool = False) -> Optional[Dict]:
-        """获取设备信息（带缓存）"""
-        if self._device_info_cache is not None and not force_refresh:
-            return self._device_info_cache.copy()
-
-        data = self._send_command(
-            self._cached_commands['get_device_info'],
-            FunctionID.DEVICE_INFO_GET
-        )
-
-        if data and len(data) >= 8:
-            self._device_info_cache = {
-                'hardware_version': data[0],
-                'firmware_version': data[1],
-                'sensor_count': data[2],
-                'device_id': struct.unpack('<I', data[4:8])[0]
-            }
-            return self._device_info_cache.copy()
-
-        return None
-
-    def get_sensor_info(self, force_refresh: bool = False) -> Optional[List[Dict]]:
-        """获取传感器信息（带缓存）"""
-        if self._sensor_info_cache is not None and not force_refresh:
-            return self._sensor_info_cache.copy()
-
-        data = self._send_command(
-            self._cached_commands['get_sensor_info'],
-            FunctionID.SENSOR_INFO_GET
-        )
-
-        if data and len(data) % 2 == 0:
-            sensors = []
-            for i in range(0, len(data), 2):
-                sensor_type = data[i]
-                sensor_num = data[i + 1]
-
-                sensor_name = {
-                    SensorType.DIGITAL_IN: "数字输入",
-                    SensorType.LIGHT: "光传感器",
-                    SensorType.LINE_IN: "线路输入",
-                    SensorType.MIC: "麦克风",
-                    SensorType.KEY: "按键",
-                    SensorType.TEMPERATURE: "温度",
-                    SensorType.HUMIDITY: "湿度",
-                    SensorType.AMBIENT_LIGHT: "环境光",
-                    SensorType.DEBUG: "调试"
-                }.get(sensor_type, f"未知({sensor_type})")
-
-                sensors.append({
-                    'type': sensor_type,
-                    'type_name': sensor_name,
-                    'number': sensor_num,
-                    'id': len(sensors)
-                })
-
-            self._sensor_info_cache = sensors
-            return self._sensor_info_cache.copy()
-
-        return None
-
-    def send_event(self, event_data: int, sensor_id: Optional[int] = None) -> bool:
-        """发送事件数据（核心方法）"""
-        if sensor_id is not None:
-            # 通过特定传感器发送
-            sensor_info = self.get_sensor_info()
-            if not sensor_info or sensor_id >= len(sensor_info):
-                return False
-
-            sensor = sensor_info[sensor_id]
-            # 构建设置传感器参数命令
-            command = (
-                    TriggerProtocol.pack_frame(
-                        self._device_id, FunctionID.SENSOR_PARA_SET, 10
-                    ) +
-                    TriggerProtocol.pack_sensor_info(sensor['type'], sensor['number']) +
-                    TriggerProtocol.pack_sensor_para(1, 3, 1, 0, event_data)
-            )
-            expected_function_id = FunctionID.SENSOR_PARA_SET
-        else:
-            # 直接发送事件
-            command = (
-                    TriggerProtocol.pack_frame(
-                        self._device_id, FunctionID.OUTPUT_EVENT_DATA, 1
-                    ) +
-                    bytes([event_data])
-            )
-            expected_function_id = FunctionID.OUTPUT_EVENT_DATA
-
-        result = self._send_command(command, expected_function_id)
-        return result is not None
-
-    def send_event_batch(self, events: List[int], delay: float = 0.01) -> List[bool]:
-        """批量发送事件"""
-        results = []
-        for event in events:
-            results.append(self.send_event(event))
-            if delay > 0:
-                time.sleep(delay)
-        return results
-
-    async def send_event_async(self, event_data: int) -> bool:
-        """异步发送事件"""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.send_event, event_data)
-
-    def get_performance_stats(self) -> Dict:
-        """获取性能统计"""
-        return self._stats.copy()
-
-    def get_last_error(self) -> Optional[str]:
-        """获取最后错误信息"""
-        return self._last_error
-
-    def reset_statistics(self):
-        """重置统计信息"""
-        self._stats = {
-            'requests': 0,
-            'errors': 0,
-            'avg_response_time': 0.0,
-            'last_request_time': 0.0
+        device_info = {
+            "HardwareVersion": hardware_version,
+            "FirmwareVersion": firmware_version,
+            "SensorSum": sensor_sum,
+            "DeviceID": device_id
         }
+        return device_info
+
+    def _get_sensor_type_string(self, sensor_type: int) -> str:
+        """参考原代码：传感器类型数字转可读名称"""
+        return self.SENSOR_TYPE_MAP.get(sensor_type, "Undefined")
+
+    def _get_sensor_type_num(self, type_string: str) -> int:
+        """参考原代码_sensor_type：传感器名称转数字"""
+        type_map_reverse = {v: k for k, v in self.SENSOR_TYPE_MAP.items()}
+        if type_string not in type_map_reverse:
+            raise ValueError(f"未定义的传感器类型：{type_string}")
+        return type_map_reverse[type_string]
+
+    def get_sensor_info(self) -> List[Dict]:
+        """参考原代码：读取所有传感器信息"""
+        cmd = PackageTriggerBoxBaseFrame()
+        cmd.deviceID = self._device_id
+        cmd.functionID = self.FUNCTION_ID_SENSOR_INFO_GET
+        cmd.payload = 0
+
+        self.send(cmd)
+        data = self.read(cmd.functionID)
+
+        if len(data) % 2 != 0:
+            raise RuntimeError(f"传感器信息响应长度错误（{len(data)}），应为偶数！")
+
+        sensor_info = []
+        for i in range(int(len(data) / 2)):
+            sensor_type = data[i * 2]
+            sensor_num = data[i * 2 + 1]
+            sensor_type_str = self._get_sensor_type_string(sensor_type)
+            sensor_info.append({
+                "Type": sensor_type_str,
+                "Number": sensor_num,
+                "TypeNum": sensor_type
+            })
+            print(f"🔍 传感器{i}：类型={sensor_type_str}，编号={sensor_num}")
+
+        return sensor_info
+
+    def get_sensor_para(self, sensor_id: int) -> PackageSensorPara:
+        """参考原代码：读取指定传感器参数"""
+        if sensor_id >= len(self._sensor_info):
+            raise IndexError(f"传感器ID{sensor_id}超出范围（共{len(self._sensor_info)}个传感器）")
+
+        sensor = self._sensor_info[sensor_id]
+        cmd = PackageGetSensorPara()
+        cmd.sensorInfo.sensorType = sensor["TypeNum"]
+        cmd.sensorInfo.sensorNum = sensor["Number"]
+        cmd.frame.deviceID = self._device_id
+        cmd.frame.functionID = self.FUNCTION_ID_SENSOR_PARA_GET
+        cmd.frame.payload = 2
+
+        self.send(cmd)
+        data = self.read(cmd.frame.functionID)
+
+        # 解析传感器参数（参考原代码）
+        sensor_para = PackageSensorPara()
+        sensor_para.Edge = data[0]
+        sensor_para.OutputChannel = data[1]
+        sensor_para.TriggerToBeOut = data[2] | (data[3] << 8)
+        sensor_para.Threshold = data[4] | (data[5] << 8)
+        sensor_para.EventData = data[6] | (data[7] << 8)
+
+        print(f"📌 传感器{sensor_id}参数：")
+        print(f"  - 触发边沿：{sensor_para.Edge}")
+        print(f"  - 输出通道：{sensor_para.OutputChannel}")
+        print(f"  - 触发值：{sensor_para.TriggerToBeOut}")
+        print(f"  - 阈值：{sensor_para.Threshold}")
+        print(f"  - 事件数据：{sensor_para.EventData}")
+        return sensor_para
+
+    def set_sensor_para(self, sensor_id: int, sensor_para: PackageSensorPara):
+        """参考原代码：设置指定传感器参数（修复原代码FUNCTION_ID错误）"""
+        if sensor_id >= len(self._sensor_info):
+            raise IndexError(f"传感器ID{sensor_id}超出范围（共{len(self._sensor_info)}个传感器）")
+
+        sensor = self._sensor_info[sensor_id]
+        cmd = PackageSetSensorPara()
+        cmd.frame.deviceID = self._device_id
+        # 修复原代码BUG：原代码用了FUNCTION_ID_OUTPUT_EVENT_DATA，应改为FUNCTION_ID_SENSOR_PARA_SET
+        cmd.frame.functionID = self.FUNCTION_ID_SENSOR_PARA_SET
+        cmd.frame.payload = 10
+        cmd.sensorInfo.sensorType = sensor["TypeNum"]
+        cmd.sensorInfo.sensorNum = sensor["Number"]
+        cmd.sensorPara = sensor_para
+
+        self.send(cmd)
+        data = self.read(cmd.frame.functionID)
+
+        if data[0] == sensor["TypeNum"] and data[1] == sensor["Number"]:
+            print(f"✅ 传感器{sensor_id}参数设置成功")
+        else:
+            raise RuntimeError(f"传感器{sensor_id}参数设置失败！响应：{data}")
+
+    def output_event_data(self, event_data: int, trigger_to_be_out: int = 1):
+        """参考原代码：输出触发事件数据（核心触发功能）"""
+        cmd = PackageGetDeviceInfo()
+        cmd.command = event_data
+        cmd.frame.deviceID = self._device_id
+        cmd.frame.functionID = self.FUNCTION_ID_OUTPUT_EVENT_DATA
+        cmd.frame.payload = 1
+
+        self.send(cmd)
+        data = self.read(cmd.frame.functionID)
+
+        if data[0] != self.FUNCTION_ID_OUTPUT_EVENT_DATA:
+            raise RuntimeError(f"发送触发事件失败！响应功能ID：{data[0]}")
+        print(f"✅ 触发事件发送成功（事件数据：{event_data}，触发值：{trigger_to_be_out}）")
+
+    def send(self, data):
+        """参考原代码：底层串口发送指令"""
+        if not self._serial_handle or not self._serial_handle.is_open:
+            raise RuntimeError("串口未打开，无法发送数据！")
+
+        self._serial_handle.flushInput()  # 清空接收缓冲区
+        self._serial_handle.write(bytes(data))  # 转换为字节发送
+
+    def read(self, function_id: int) -> bytes:
+        """参考原代码：底层串口读取响应，增加异常处理"""
+        if not self._serial_handle or not self._serial_handle.is_open:
+            raise RuntimeError("串口未打开，无法读取数据！")
+
+        self._serial_handle.flushOutput()  # 清空发送缓冲区
+        # 读取响应头（4字节：deviceID+functionID+payload）
+        header = self._serial_handle.read(4)
+        if len(header) != 4:
+            raise RuntimeError(f"响应头读取失败（长度：{len(header)}）")
+
+        # 校验设备ID（参考原代码）
+        if header[0] != self._device_id:
+            raise RuntimeError(f"设备ID不匹配！请求：{self._device_id}，响应：{header[0]}")
+
+        # 校验功能ID（参考原代码）
+        if header[1] != function_id:
+            if header[1] == self.FUNCTION_ID_ERROR:
+                error_type = self._serial_handle.read(1)[0]
+                error_msg = {
+                    0: '无错误',
+                    1: '帧头错误',
+                    2: '载荷长度错误',
+                    3: '通道不存在',
+                    4: '设备ID错误',
+                    5: '功能ID错误',
+                    6: '传感器类型错误'
+                }.get(error_type, f"未知错误（{error_type}）")
+                raise RuntimeError(f"触发盒响应错误：{error_msg}")
+            else:
+                raise RuntimeError(f"功能ID不匹配！请求：{function_id}，响应：{header[1]}")
+
+        # 读取有效载荷（参考原代码）
+        payload_len = header[2] | (header[3] << 8)
+        payload = self._serial_handle.read(payload_len)
+        if len(payload) != payload_len:
+            raise RuntimeError(f"载荷读取失败！预期：{payload_len}字节，实际：{len(payload)}字节")
+
+        return payload
+
+    def close_serial(self):
+        """参考原代码：关闭串口"""
+        if self._serial_handle and self._serial_handle.is_open:
+            self._serial_handle.close()
+            print(f"✅ 串口{self.serial_name}已关闭")
 
 
-# ==================== 工厂函数 ====================
-def create_trigger_box(port: str = None, auto_detect: bool = True) -> Optional[OptimizedTriggerBox]:
-    """
-    创建触发盒实例（自动检测或指定端口）
+# ===================== 测试代码（可直接运行验证） =====================
+if __name__ == "__main__":
+    # 替换为你的触发盒串口名（如COM3、/dev/ttyUSB0）
+    SERIAL_NAME = "COM3"
 
-    参数:
-        port: 串口路径，如 'COM3' 或 '/dev/ttyUSB0'
-        auto_detect: 是否自动检测设备
+    try:
+        # 初始化触发盒
+        trigger_core = TriggerCore(serial_name=SERIAL_NAME)
 
-    返回:
-        OptimizedTriggerBox实例 或 None
-    """
-    if port:
-        config = TriggerConfig(port=port)
-        trigger_box = OptimizedTriggerBox(config)
-        if trigger_box.connect():
-            return trigger_box
+        # 示例1：读取第一个传感器参数
+        sensor_para = trigger_core.get_sensor_para(sensor_id=0)
 
-    elif auto_detect:
-        # 自动检测可用串口
-        available_ports = serial.tools.list_ports.comports()
+        # 示例2：发送触发事件（事件数据=100，触发值=1）
+        trigger_core.output_event_data(event_data=100, trigger_to_be_out=1)
 
-        for port_info in available_ports:
-            try:
-                config = TriggerConfig(port=port_info.device)
-                trigger_box = OptimizedTriggerBox(config)
-
-                # 快速测试连接
-                if trigger_box.connect():
-                    device_name = trigger_box.get_device_name()
-                    if device_name and "Neuracle" in device_name:
-                        print(f"检测到触发盒: {port_info.device} - {device_name}")
-                        return trigger_box
-                    else:
-                        trigger_box.disconnect()
-            except:
-                continue
-
-    return None
-
-
-# ==================== 上下文管理器 ====================
-class TriggerBoxContext:
-    """上下文管理器，确保资源清理"""
-
-    def __init__(self, port: str = None):
-        self.port = port
-        self.trigger_box: Optional[OptimizedTriggerBox] = None
-
-    def __enter__(self) -> Optional[OptimizedTriggerBox]:
-        self.trigger_box = create_trigger_box(self.port)
-        return self.trigger_box
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.trigger_box:
-            self.trigger_box.disconnect()
-        # 清理连接池
-        ConnectionPool.close_all()
+        # 关闭串口
+        trigger_core.close_serial()
+    except Exception as e:
+        print(f"❌ 测试失败：{str(e)}")
