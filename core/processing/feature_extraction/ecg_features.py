@@ -110,7 +110,7 @@ def extract_ecg_features(data_dict: Dict[str, Any],
     # 检测R波峰值
     print("\n[1/5] 检测R波峰值...")
     r_peaks = detect_r_peaks(ecg, sampling_rate)
-    print(f"      检测到 {len(r_peaks)} 个R波峰")
+    print(f"检测到 {len(r_peaks)} 个R波峰")
     
     # 计算RR间期
     rr_intervals = np.diff(r_peaks) / sampling_rate * 1000  # 转换为毫秒
@@ -143,7 +143,7 @@ def extract_ecg_features(data_dict: Dict[str, Any],
     # 5. 非线性特征
     features['nonlinear'] = extract_nonlinear_features(rr_intervals)
     
-    print("✓ 特征提取完成!")
+    print("特征提取完成!")
     
     return features
 
@@ -171,7 +171,7 @@ def detect_r_peaks(ecg: np.ndarray, sampling_rate: float) -> np.ndarray:
         _, info = nk.ecg_peaks(ecg, sampling_rate=sampling_rate)
         r_peaks = info['ECG_R_Peaks']
     except Exception as e:
-        print(f"      警告: neurokit2检测失败，使用备用方法: {str(e)}")
+        print(f"警告: neurokit2检测失败，使用备用方法: {str(e)}")
         # 备用方法: 简单的峰值检测
         r_peaks = _simple_r_peak_detection(ecg, sampling_rate)
     
@@ -313,7 +313,7 @@ def extract_morphological_features(ecg: np.ndarray,
                     features['qrs_duration_std'] = float(np.std(qrs_durations))
     
     except Exception as e:
-        print(f"      警告: 详细波形分析失败: {str(e)}")
+        print(f"警告: 详细波形分析失败: {str(e)}")
         # 如果详细分析失败，至少保存基本的QRS振幅
         qrs_amplitudes = ecg[r_peaks]
         features['qrs_amplitude_mean'] = float(np.mean(qrs_amplitudes))
@@ -347,7 +347,7 @@ def extract_hrv_time_features(rr_intervals: np.ndarray) -> Dict[str, float]:
     features = {}
     
     if len(rr_intervals) < 2:
-        print("      警告: RR间期数量不足，跳过HRV时域特征")
+        print("警告: RR间期数量不足，跳过HRV时域特征")
         return features
     
     # SDNN - RR间隔标准差
@@ -408,7 +408,7 @@ def extract_hrv_frequency_features(rr_intervals: np.ndarray,
     features = {}
     
     if len(rr_intervals) < 10:
-        print("      警告: RR间期数量不足，跳过HRV频域特征")
+        print("警告: RR间期数量不足，跳过HRV频域特征")
         return features
     
     try:
@@ -476,7 +476,7 @@ def extract_hrv_frequency_features(rr_intervals: np.ndarray,
             features['HF_peak_freq'] = float(hf_freqs[hf_peak_idx])
     
     except Exception as e:
-        print(f"      警告: 频域分析失败: {str(e)}")
+        print(f"警告: 频域分析失败: {str(e)}")
     
     return features
 
@@ -569,7 +569,7 @@ def extract_time_frequency_features(ecg: np.ndarray,
         features['cwt_energy_entropy'] = float(cwt_entropy)
         
     except Exception as e:
-        print(f"      警告: 时频分析失败: {str(e)}")
+        print(f"警告: 时频分析失败: {str(e)}")
     
     return features
 
@@ -599,7 +599,7 @@ def extract_nonlinear_features(rr_intervals: np.ndarray) -> Dict[str, float]:
     features = {}
     
     if len(rr_intervals) < 50:
-        print("      警告: RR间期数量不足，跳过非线性特征")
+        print("警告: RR间期数量不足，跳过非线性特征")
         return features
     
     try:
@@ -624,7 +624,7 @@ def extract_nonlinear_features(rr_intervals: np.ndarray) -> Dict[str, float]:
         features['poincare_ellipse_area'] = float(np.pi * sd1 * sd2)
         
     except Exception as e:
-        print(f"      警告: 非线性分析失败: {str(e)}")
+        print(f"警告: 非线性分析失败: {str(e)}")
     
     return features
 

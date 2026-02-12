@@ -146,7 +146,7 @@ def extract_emg_features(data_dict: Dict[str, Any],
     print("[4/4] 提取非线性特征...")
     features['nonlinear'] = extract_nonlinear_features(emg, sampling_rate)
     
-    print("✓ 特征提取完成!")
+    print("特征提取完成!")
     
     return features
 
@@ -435,7 +435,7 @@ def extract_time_frequency_features(emg: np.ndarray,
         features['stft_energy_entropy'] = float(stft_entropy)
         
     except Exception as e:
-        print(f"      警告: STFT分析失败: {str(e)}")
+        print(f"警告: STFT分析失败: {str(e)}")
     
     try:
         # 2. 小波变换特征
@@ -488,7 +488,7 @@ def extract_time_frequency_features(emg: np.ndarray,
                 features['cwt_dominant_frequency'] = float(frequencies[dominant_scale_idx])
         
     except Exception as e:
-        print(f"      警告: 小波分析失败: {str(e)}")
+        print(f"警告: 小波分析失败: {str(e)}")
     
     return features
 
@@ -526,14 +526,14 @@ def extract_nonlinear_features(emg: np.ndarray,
         # m=2, r=0.2*std是标准参数
         features['sample_entropy'] = float(ant.sample_entropy(emg, order=2))
     except Exception as e:
-        print(f"      警告: 样本熵计算失败: {str(e)}")
+        print(f"警告: 样本熵计算失败: {str(e)}")
         features['sample_entropy'] = 0.0
     
     try:
         # 近似熵 (Approximate Entropy)
         features['approximate_entropy'] = float(ant.app_entropy(emg, order=2))
     except Exception as e:
-        print(f"      警告: 近似熵计算失败: {str(e)}")
+        print(f"警告: 近似熵计算失败: {str(e)}")
         features['approximate_entropy'] = 0.0
     
     try:
@@ -541,7 +541,7 @@ def extract_nonlinear_features(emg: np.ndarray,
         # 对EMG信号特别有用
         features['permutation_entropy'] = float(ant.perm_entropy(emg, order=3, normalize=True))
     except Exception as e:
-        print(f"      警告: 排列熵计算失败: {str(e)}")
+        print(f"警告: 排列熵计算失败: {str(e)}")
         features['permutation_entropy'] = 0.0
     
     try:
@@ -551,20 +551,20 @@ def extract_nonlinear_features(emg: np.ndarray,
         features['hjorth_mobility'] = float(hjorth_mobility)
         features['hjorth_complexity'] = float(hjorth_complexity)
     except Exception as e:
-        print(f"      警告: Hjorth参数计算失败: {str(e)}")
+        print(f"警告: Hjorth参数计算失败: {str(e)}")
     
     try:
         # 光谱熵 (Spectral Entropy)
         features['spectral_entropy'] = float(ant.spectral_entropy(emg, sf=sampling_rate, 
                                                                   method='welch', normalize=True))
     except Exception as e:
-        print(f"      警告: 光谱熵计算失败: {str(e)}")
+        print(f"警告: 光谱熵计算失败: {str(e)}")
     
     try:
         # SVD熵 (Singular Value Decomposition Entropy)
         features['svd_entropy'] = float(ant.svd_entropy(emg, order=3, delay=1, normalize=True))
     except Exception as e:
-        print(f"      警告: SVD熵计算失败: {str(e)}")
+        print(f"警告: SVD熵计算失败: {str(e)}")
     
     # 2. 分形维数 - 描述信号几何复杂结构
     
@@ -573,26 +573,26 @@ def extract_nonlinear_features(emg: np.ndarray,
         # 常用于EMG信号分析
         features['higuchi_fd'] = float(ant.higuchi_fd(emg, kmax=10))
     except Exception as e:
-        print(f"      警告: Higuchi分形维数计算失败: {str(e)}")
+        print(f"警告: Higuchi分形维数计算失败: {str(e)}")
     
     try:
         # Katz分形维数
         features['katz_fd'] = float(ant.katz_fd(emg))
     except Exception as e:
-        print(f"      警告: Katz分形维数计算失败: {str(e)}")
+        print(f"警告: Katz分形维数计算失败: {str(e)}")
     
     try:
         # Petrosian分形维数
         features['petrosian_fd'] = float(ant.petrosian_fd(emg))
     except Exception as e:
-        print(f"      警告: Petrosian分形维数计算失败: {str(e)}")
+        print(f"警告: Petrosian分形维数计算失败: {str(e)}")
     
     try:
         # Detrended Fluctuation Analysis (DFA)
         # 用nolds库计算
         features['dfa'] = float(nolds.dfa(emg))
     except Exception as e:
-        print(f"      警告: DFA计算失败: {str(e)}")
+        print(f"警告: DFA计算失败: {str(e)}")
     
     # 3. Lyapunov指数 - 刻画动态系统混沌程度
     
@@ -604,7 +604,7 @@ def extract_nonlinear_features(emg: np.ndarray,
             lyap = nolds.lyap_r(emg, emb_dim=10, lag=None, min_tsep=None)
             features['lyapunov_exponent'] = float(lyap)
     except Exception as e:
-        print(f"      警告: Lyapunov指数计算失败: {str(e)}")
+        print(f"警告: Lyapunov指数计算失败: {str(e)}")
     
     try:
         # Hurst指数
@@ -613,7 +613,7 @@ def extract_nonlinear_features(emg: np.ndarray,
         # H < 0.5: 长程负相关（均值回归）
         features['hurst_exponent'] = float(nolds.hurst_rs(emg))
     except Exception as e:
-        print(f"      警告: Hurst指数计算失败: {str(e)}")
+        print(f"警告: Hurst指数计算失败: {str(e)}")
     
     # 4. 相关维数
     try:
@@ -622,7 +622,7 @@ def extract_nonlinear_features(emg: np.ndarray,
             corr_dim = nolds.corr_dim(emg, emb_dim=10)
             features['correlation_dimension'] = float(corr_dim)
     except Exception as e:
-        print(f"      警告: 相关维数计算失败: {str(e)}")
+        print(f"警告: 相关维数计算失败: {str(e)}")
     
     # 5. 零交叉率的熵
     try:
@@ -634,7 +634,7 @@ def extract_nonlinear_features(emg: np.ndarray,
             zc_hist = zc_hist[zc_hist > 0]
             features['zc_entropy'] = float(-np.sum(zc_hist * np.log2(zc_hist)))
     except Exception as e:
-        print(f"      警告: 零交叉熵计算失败: {str(e)}")
+        print(f"警告: 零交叉熵计算失败: {str(e)}")
     
     return features
 
