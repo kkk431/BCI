@@ -1,8 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-EEG信号专用预处理模块（修复版）
-修复了分段创建为0的问题
-"""
 
 import numpy as np
 import mne
