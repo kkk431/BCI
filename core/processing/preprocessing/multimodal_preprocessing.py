@@ -4,7 +4,6 @@
 统一调度和管理EEG、fNIRS、ECG、EMG等多种生理信号的预处理
 支持四层数据格式结构，自动识别和并行处理多模态信号
 """
-import logger
 import numpy as np
 from typing import Dict, List, Optional, Any, Union, Tuple
 import logging
@@ -13,7 +12,6 @@ from enum import Enum
 import concurrent.futures
 import warnings
 import copy
-import json
 
 # 导入各模态预处理模块
 try:
@@ -25,8 +23,8 @@ try:
 
     HAS_MODULES = True
 except ImportError as e:
-    logger.warning(f"某些预处理模块导入失败: {str(e)}")
     HAS_MODULES = False
+    print(f"某些预处理模块导入失败: {str(e)}")
 
 # 配置日志
 logging.basicConfig(
@@ -249,12 +247,6 @@ class MultiModalPreprocessor:
     def _validate_data_dict(self, data_dict: Dict[str, Any]):
         """
         验证四层数据字典格式
-
-        Args:
-            data_dict: 数据字典
-
-        Raises:
-            ValueError: 如果数据格式不符合要求
         """
         required_layers = ["meta", "signal"]
         for layer in required_layers:
@@ -296,12 +288,6 @@ class MultiModalPreprocessor:
     def _detect_modalities(self, data_dict: Dict[str, Any]) -> List[str]:
         """
         检测数据中存在的信号模态
-
-        Args:
-            data_dict: 数据字典
-
-        Returns:
-            检测到的模态列表
         """
         detected_modalities = []
 
@@ -337,12 +323,6 @@ class MultiModalPreprocessor:
     def _select_modalities_to_process(self, detected_modalities: List[str]) -> List[str]:
         """
         选择要处理的模态
-
-        Args:
-            detected_modalities: 检测到的模态列表
-
-        Returns:
-            要处理的模态列表
         """
         if self.config.process_all_modalities:
             return detected_modalities
@@ -362,13 +342,6 @@ class MultiModalPreprocessor:
                                 modalities: List[str]) -> Dict[str, Any]:
         """
         同步多模态信号的时间
-
-        Args:
-            data_dict: 数据字典
-            modalities: 要同步的模态列表
-
-        Returns:
-            同步后的数据字典
         """
         if len(modalities) <= 1:
             logger.info("只有一个模态，无需同步")
@@ -389,13 +362,6 @@ class MultiModalPreprocessor:
                                    modalities: List[str]) -> Dict[str, Any]:
         """
         通过重采样进行时间同步
-
-        Args:
-            data_dict: 数据字典
-            modalities: 模态列表
-
-        Returns:
-            同步后的数据字典
         """
         if self.config.reference_sampling_rate is None:
             # 使用最高采样率作为参考
@@ -421,7 +387,7 @@ class MultiModalPreprocessor:
                 if modality == "EMG":
                     # 在重采样前检查并调整滤波参数
                     self._adjust_emg_filter_for_resampling(signal_info, original_fs, target_fs)
-                # 使用通用预处理器进行重采样
+                
                 data = signal_info["data"]
 
                 # 计算新的样本数
@@ -452,13 +418,6 @@ class MultiModalPreprocessor:
                                       modalities: List[str]) -> Dict[str, Any]:
         """
         通过插值进行时间同步
-
-        Args:
-            data_dict: 数据字典
-            modalities: 模态列表
-
-        Returns:
-            同步后的数据字典
         """
         # 找出最长的信号作为时间基准
         max_duration = 0
@@ -520,38 +479,17 @@ class MultiModalPreprocessor:
                                         modalities: List[str]) -> Dict[str, Any]:
         """
         通过事件对齐进行时间同步
-
-        Args:
-            data_dict: 数据字典
-            modalities: 模态列表
-
-        Returns:
-            同步后的数据字典
         """
-        # 简化实现：基于事件时间戳调整信号
-        # 实际应用中需要根据具体实验设计实现
         logger.warning("事件对齐同步是简化实现，实际应用需要完整事件对齐逻辑")
-
         if "event" not in data_dict:
             logger.warning("没有事件信息，跳过事件对齐")
             return data_dict
-
-        # 这里可以添加具体的事件对齐逻辑
-        # 例如：根据事件时间戳截取相同时间段的数据
-
         return data_dict
 
     def _execute_preprocessing(self, data_dict: Dict[str, Any],
                                modalities: List[str]) -> Dict[str, Any]:
         """
         执行各模态的预处理
-
-        Args:
-            data_dict: 数据字典
-            modalities: 要处理的模态列表
-
-        Returns:
-            处理后的数据字典
         """
         processed_data = copy.deepcopy(data_dict)
 
@@ -576,13 +514,6 @@ class MultiModalPreprocessor:
                                           modalities: List[str]) -> Dict[str, Any]:
         """
         顺序执行预处理
-
-        Args:
-            data_dict: 数据字典
-            modalities: 模态列表
-
-        Returns:
-            处理后的数据字典
         """
         import time
 
@@ -644,13 +575,6 @@ class MultiModalPreprocessor:
                                         modalities: List[str]) -> Dict[str, Any]:
         """
         并行执行预处理
-
-        Args:
-            data_dict: 数据字典
-            modalities: 模态列表
-
-        Returns:
-            处理后的数据字典
         """
         import time
         from concurrent.futures import ThreadPoolExecutor
@@ -778,13 +702,6 @@ class MultiModalPreprocessor:
                        modalities: List[str]) -> Dict[str, Any]:
         """
         检查处理后的信号质量
-
-        Args:
-            data_dict: 数据字典
-            modalities: 模态列表
-
-        Returns:
-            质量报告字典
         """
         quality_report = {
             "overall_quality": 1.0,
@@ -878,13 +795,6 @@ class MultiModalPreprocessor:
                          quality_report: Dict[str, Any]) -> Dict[str, Any]:
         """
         自动修复质量问题
-
-        Args:
-            data_dict: 数据字典
-            quality_report: 质量报告
-
-        Returns:
-            修复后的数据字典
         """
         logger.info("开始自动修复质量问题")
 
@@ -928,12 +838,6 @@ class MultiModalPreprocessor:
     def _collect_processing_stats(self, data_dict: Dict[str, Any]) -> Dict[str, Any]:
         """
         收集处理统计信息
-
-        Args:
-            data_dict: 数据字典
-
-        Returns:
-            统计信息字典
         """
         stats = {
             "modalities_processed": [],
@@ -979,9 +883,6 @@ class MultiModalPreprocessor:
     def _update_processing_history(self, stats: Dict[str, Any]):
         """
         更新处理历史
-
-        Args:
-            stats: 统计信息
         """
         self.processing_history.append(stats)
 
@@ -992,9 +893,6 @@ class MultiModalPreprocessor:
     def get_processing_summary(self) -> Dict[str, Any]:
         """
         获取处理摘要
-
-        Returns:
-            处理摘要字典
         """
         summary = {
             "total_processes": len(self.processing_history),
@@ -1009,9 +907,6 @@ class MultiModalPreprocessor:
     def save_config(self, filepath: str):
         """
         保存配置到文件
-
-        Args:
-            filepath: 文件路径
         """
         import json
 
@@ -1030,9 +925,6 @@ class MultiModalPreprocessor:
     def load_config(self, filepath: str):
         """
         从文件加载配置
-
-        Args:
-            filepath: 文件路径
         """
         import json
 
@@ -1211,274 +1103,6 @@ class MultiModalConfigFactory:
         )
 
 
-# ====================== 数据加载和保存工具 ======================
-
-class DataIO:
-    """
-    数据输入输出工具类
-    """
-
-    @staticmethod
-    def load_data(filepath: str, format: str = "auto") -> Dict[str, Any]:
-        """
-        加载数据文件
-
-        Args:
-            filepath: 文件路径
-            format: 文件格式 (auto, numpy, matlab, pickle, csv, json)
-
-        Returns:
-            四层结构的数据字典
-        """
-        import os
-
-        if format == "auto":
-            # 根据文件扩展名自动判断格式
-            _, ext = os.path.splitext(filepath)
-            ext = ext.lower()
-
-            if ext == '.npy' or ext == '.npz':
-                format = "numpy"
-            elif ext == '.mat':
-                format = "matlab"
-            elif ext == '.pkl' or ext == '.pickle':
-                format = "pickle"
-            elif ext == '.csv':
-                format = "csv"
-            elif ext == '.json':
-                format = "json"
-            else:
-                raise ValueError(f"无法识别的文件格式: {ext}")
-
-        if format == "numpy":
-            return DataIO._load_numpy(filepath)
-        elif format == "matlab":
-            return DataIO._load_matlab(filepath)
-        elif format == "pickle":
-            return DataIO._load_pickle(filepath)
-        elif format == "csv":
-            return DataIO._load_csv(filepath)
-        elif format == "json":
-            return DataIO._load_json(filepath)
-        else:
-            raise ValueError(f"不支持的格式: {format}")
-
-    @staticmethod
-    def _load_numpy(filepath: str) -> Dict[str, Any]:
-        """加载NumPy格式数据"""
-        data = np.load(filepath, allow_pickle=True)
-
-        if isinstance(data, np.ndarray):
-            # 简单数组，转换为四层结构
-            return DataIO._array_to_data_dict(data)
-        else:
-            # .npz文件
-            return dict(data)
-
-    @staticmethod
-    def _load_matlab(filepath: str) -> Dict[str, Any]:
-        """加载MATLAB格式数据"""
-        try:
-            import scipy.io as sio
-            data = sio.loadmat(filepath)
-
-            # 清理MATLAB特定字段
-            for key in list(data.keys()):
-                if key.startswith('__'):
-                    del data[key]
-
-            return data
-        except ImportError:
-            raise ImportError("需要scipy库来加载MATLAB文件")
-
-    @staticmethod
-    def _load_pickle(filepath: str) -> Dict[str, Any]:
-        """加载Pickle格式数据"""
-        import pickle
-
-        with open(filepath, 'rb') as f:
-            data = pickle.load(f)
-
-        return data
-
-    @staticmethod
-    def _load_csv(filepath: str) -> Dict[str, Any]:
-        """加载CSV格式数据（简化实现）"""
-        import pandas as pd
-
-        df = pd.read_csv(filepath)
-
-        # 将DataFrame转换为四层结构
-        # 这是一个简化实现，实际应用需要更复杂的解析
-        data_dict = {
-            "meta": {
-                "source": filepath,
-                "format": "csv",
-                "n_channels": len(df.columns) - 1 if "time" in df.columns else len(df.columns),
-                "n_samples": len(df)
-            },
-            "signal": {
-                "data": {
-                    "data": df.values.T if "time" in df.columns else df.values,
-                    "sampling_rate": 1.0,  # 默认值
-                    "channel_names": list(df.columns)
-                }
-            },
-            "event": {},
-            "processed": {}
-        }
-
-        return data_dict
-
-    @staticmethod
-    def _load_json(filepath: str) -> Dict[str, Any]:
-        """加载JSON格式数据"""
-        import json
-
-        with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-
-        return data
-
-    @staticmethod
-    def _array_to_data_dict(array: np.ndarray) -> Dict[str, Any]:
-        """
-        将NumPy数组转换为四层数据字典
-
-        Args:
-            array: 输入数组
-
-        Returns:
-            四层数据字典
-        """
-        if array.ndim == 1:
-            # 一维数组：单通道信号
-            n_channels = 1
-            n_samples = len(array)
-            data = array.reshape(1, -1)
-        elif array.ndim == 2:
-            # 二维数组：多通道信号
-            n_channels, n_samples = array.shape
-            data = array
-        else:
-            raise ValueError(f"不支持的数组维度: {array.ndim}")
-
-        data_dict = {
-            "meta": {
-                "subject_id": "unknown",
-                "task": "unknown",
-                "modality": ["EEG"],
-                "device": "unknown",
-                "sampling_rate": 1000,
-                "n_channels": n_channels,
-                "channel_names": [f"CH{i}" for i in range(n_channels)]
-            },
-            "signal": {
-                "EEG": {
-                    "data": data,
-                    "sampling_rate": 1000,
-                    "unit": "uV",
-                    "channel_names": [f"CH{i}" for i in range(n_channels)],
-                    "reference": "unknown"
-                }
-            },
-            "event": {},
-            "processed": {}
-        }
-
-        return data_dict
-
-    @staticmethod
-    def save_data(data_dict: Dict[str, Any], filepath: str, format: str = "pickle"):
-        """
-        保存数据到文件
-
-        Args:
-            data_dict: 数据字典
-            filepath: 文件路径
-            format: 文件格式 (pickle, numpy, json, matlab)
-        """
-        import os
-
-        os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else '.', exist_ok=True)
-
-        if format == "pickle":
-            DataIO._save_pickle(data_dict, filepath)
-        elif format == "numpy":
-            DataIO._save_numpy(data_dict, filepath)
-        elif format == "json":
-            DataIO._save_json(data_dict, filepath)
-        elif format == "matlab":
-            DataIO._save_matlab(data_dict, filepath)
-        else:
-            raise ValueError(f"不支持的格式: {format}")
-
-    @staticmethod
-    def _save_pickle(data_dict: Dict[str, Any], filepath: str):
-        """保存为Pickle格式"""
-        import pickle
-
-        with open(filepath, 'wb') as f:
-            pickle.dump(data_dict, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-        logger.info(f"数据已保存为Pickle格式: {filepath}")
-
-    @staticmethod
-    def _save_numpy(data_dict: Dict[str, Any], filepath: str):
-        """保存为NumPy格式"""
-        # 只保存signal层的数据
-        signal_data = {}
-        for modality, info in data_dict["signal"].items():
-            if "data" in info:
-                signal_data[f"{modality}_data"] = info["data"]
-                signal_data[f"{modality}_sampling_rate"] = info["sampling_rate"]
-
-        np.savez(filepath, **signal_data)
-        logger.info(f"数据已保存为NumPy格式: {filepath}")
-
-    @staticmethod
-    def _save_json(data_dict: Dict[str, Any], filepath: str):
-        """保存为JSON格式"""
-        import json
-
-        # 转换NumPy数组为列表
-        def convert_numpy(obj):
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, np.generic):
-                return obj.item()
-            elif isinstance(obj, dict):
-                return {k: convert_numpy(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_numpy(item) for item in obj]
-            else:
-                return obj
-
-        json_dict = convert_numpy(data_dict)
-
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(json_dict, f, indent=2, ensure_ascii=False)
-
-        logger.info(f"数据已保存为JSON格式: {filepath}")
-
-    @staticmethod
-    def _save_matlab(data_dict: Dict[str, Any], filepath: str):
-        """保存为MATLAB格式"""
-        try:
-            import scipy.io as sio
-
-            # 准备MATLAB兼容的数据
-            mat_data = {}
-            for modality, info in data_dict["signal"].items():
-                if "data" in info:
-                    mat_data[f"{modality.lower()}_data"] = info["data"]
-
-            sio.savemat(filepath, mat_data)
-            logger.info(f"数据已保存为MATLAB格式: {filepath}")
-        except ImportError:
-            raise ImportError("需要scipy库来保存MATLAB文件")
-
-
 # ====================== 使用示例 ======================
 
 def example_usage():
@@ -1524,7 +1148,7 @@ def example_usage():
         if i + 100 < n_samples:
             # 模拟QRS波
             qrs_wave = np.hanning(100) * 2e-3
-            emg_data[0, i:i + 100] += qrs_wave
+            ecg_data[0, i:i + 100] += qrs_wave  # 修复这里的笔误：从 emg_data 改为 ecg_data
 
     # 构建四层数据字典
     data_dict = {
@@ -1561,14 +1185,13 @@ def example_usage():
                 "time_offset": 0.0
             }
         },
-        # 修改事件时间，确保分段不会越界
-            "event": {
-                "event_id": [1, 2],
-                "event_label": ["left", "right"],
-                "event_time": [1.5, 3.0],  # 将4.0改为3.0，确保分段在数据范围内
-                "event_sample": [1500, 3000],
-                "duration": [2.0, 2.0]
-            },
+        "event": {
+            "event_id": [1, 2],
+            "event_label": ["left", "right"],
+            "event_time": [1.5, 3.0], 
+            "event_sample": [1500, 3000],
+            "duration": [2.0, 2.0]
+        },
         "processed": {}
     }
 
@@ -1597,32 +1220,10 @@ def example_usage():
 
     if result.success:
         print(f"✓ 处理成功，耗时: {result.processing_time:.2f}秒")
-
         processed_data = result.processed_data
-
         print(f"处理后的模态: {processed_data['processed']['multimodal_preprocessing']['modalities_processed']}")
-
-        # 显示各模态处理时间
-        print("\n各模态处理时间:")
-        for timeline in processed_data['processed']['multimodal_preprocessing']['processing_timeline']:
-            print(f"  - {timeline['modality']}: {timeline.get('processing_time', 0):.2f}秒")
-
-        # 显示质量报告
-        if 'quality_report' in processed_data['processed']:
-            quality = processed_data['processed']['quality_report']
-            print(f"\n信号质量: {quality.get('overall_quality', 0):.2f}")
-
-            if quality.get('has_issues', False):
-                print(f"发现问题: {len(quality.get('issues', []))}个")
-
     else:
         print(f"✗ 处理失败: {result.error_message}")
-
-    # 5. 获取处理摘要
-    print("\n5. 处理摘要:")
-    summary = preprocessor.get_processing_summary()
-    print(f"总处理次数: {summary['total_processes']}")
-    print(f"可用处理器: {summary['available_processors']}")
 
     print("\n" + "=" * 70)
     print("示例完成!")
@@ -1631,21 +1232,5 @@ def example_usage():
     return result if result.success else None
 
 
-# ====================== 主程序入口 ======================
-
 if __name__ == "__main__":
-    """
-    主程序：直接运行此文件将执行使用示例
-    """
-    print("多模态信号预处理器 v1.0")
-    print("=" * 50)
-
-    try:
-        # 运行示例
-        example_usage()
-
-    except Exception as e:
-        print(f"运行示例时出错: {str(e)}")
-        import traceback
-
-        traceback.print_exc()
+    example_usage()
