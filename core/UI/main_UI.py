@@ -206,7 +206,7 @@ class NeuroPioneerApp:
         popup.geometry(f"180x200+{x}+{y}")
         popup.config(bg="white", highlightthickness=1, highlightbackground="#ccc")
 
-        tk.Label(popup, text="快速跳转", bg="#eee", font=("微软雅黑", 9, "bold")).pack(fill="x")
+        tk.Label(popup, text="新建", bg="#eee", font=("微软雅黑", 9, "bold")).pack(fill="x")
 
         others = ["Preprocessing", "Extraction", "Analysis", "Visualization", "Settings"]
         for o in others:
