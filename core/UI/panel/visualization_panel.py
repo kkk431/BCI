@@ -3,7 +3,12 @@
 visualization_panel.py
 高级版可视化集成面板 - 修复滚动问题
 """
+import sys
+from pathlib import Path
 
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import os
@@ -579,7 +584,7 @@ class ModernVisualizationPanel(ttk.Frame):
             window.title("信号波形视图")
             window.geometry("1200x800")
 
-            from .signal_view import SignalView
+          
             view = SignalView(window, self.data_dict)
             view.pack(fill=tk.BOTH, expand=True)
 
@@ -600,7 +605,7 @@ class ModernVisualizationPanel(ttk.Frame):
             window.title("统计分析视图")
             window.geometry("1100x800")
 
-            from .stats_view import StatsView
+
             view = StatsView(window, self.data_dict)
             view.pack(fill=tk.BOTH, expand=True)
 
@@ -621,7 +626,7 @@ class ModernVisualizationPanel(ttk.Frame):
             window.title("柱状图视图")
             window.geometry("1200x800")
 
-            from .bar_view import BarView
+         
             view = BarView(window, self.data_dict)
             view.pack(fill=tk.BOTH, expand=True)
 
@@ -650,7 +655,7 @@ class ModernVisualizationPanel(ttk.Frame):
             fs = signal_info.get('sampling_rate', 1000)
             ch_names = signal_info.get('channel_names', [f"Ch{i}" for i in range(data.shape[0])])
 
-            from .plot_dialog import quick_plot
+          
             quick_plot(self, data, fs, ch_names, f"快速预览 - {modality}")
 
             self.status_var.set("🔍 快速预览已打开")
