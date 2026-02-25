@@ -9,20 +9,31 @@ COLOR_TAB_INACTIVE = "#d0d0d0"
 COLOR_TAB_ACTIVE = "white"
 COLOR_CONTENT_BG = "white"
 
-# 路径配置
-BG_IMAGE_PATH = os.path.join("core", "UI", "UI_resource", "homepage_background.png")
+# 图片资源路径（使用 os.path.join 自动处理分隔符）
+LOGO_PATH = os.path.join("core", "UI", "UI_resource", "logo.png")
+MENU_PATH = os.path.join("core", "UI", "UI_resource", "menu.png")
+CONTENT_PATH = os.path.join("core", "UI", "UI_resource", "Content.png")
+BUTTON1_PATH = os.path.join("core", "UI", "UI_resource", "button1.png")
+BUTTON2_PATH = os.path.join("core", "UI", "UI_resource", "button2.png")
+BUTTON3_PATH = os.path.join("core", "UI", "UI_resource", "button3.png")
+BUTTON4_PATH = os.path.join("core", "UI", "UI_resource", "button4.png")
+SIGNIN_PATH = os.path.join("core", "UI", "UI_resource", "SignIn.png")
+BACKGROUND_PATH = os.path.join("core", "UI", "UI_resource", "background.png")
 
 class NeuroPioneerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("智融脑机 - 大模型赋能多模态BCI平台")
-        self.root.geometry("1100x700")
+        self.root.geometry("1100x700")  # 临时大小，稍后会被主页背景图覆盖
         self.root.configure(bg=COLOR_CONTENT_BG)
 
         # 标签管理
         self.tabs = {}               # {tab_id: {"frame":..., "tab_btn":..., "base_name":..., "display_name":...}}
         self.active_tab_id = None
         self.tab_history = []         # 记录标签激活顺序，用于关闭时返回上一个
+
+        # 用于保持主页图片的引用
+        self.home_images = []
 
         self.setup_ui()
         self.show_homepage()
@@ -71,49 +82,98 @@ class NeuroPioneerApp:
         return tab_frame
 
     def show_homepage(self):
-        """初始化并显示 Homepage（唯一且不可关闭）"""
-        if "Homepage" not in self.tabs:
-            home_frame = tk.Frame(self.main_container, bg=COLOR_CONTENT_BG)
+        """重建 Homepage 界面，使用 Canvas 实现透明叠加，图片按绝对坐标布局"""
+        # 如果已存在 Homepage，先销毁旧组件
+        if "Homepage" in self.tabs:
+            old_data = self.tabs["Homepage"]
+            old_data["frame"].destroy()
+            old_data["tab_btn"].destroy()
+            del self.tabs["Homepage"]
+            while "Homepage" in self.tab_history:
+                self.tab_history.remove("Homepage")
 
-            # --- 背景图片自动缩放 ---
+        # 清空之前的图片引用
+        self.home_images.clear()
+
+        # 加载背景图以获取尺寸
+        try:
+            from PIL import Image, ImageTk
+            bg_img = Image.open(BACKGROUND_PATH)
+            bg_width, bg_height = bg_img.size
+            # 调整窗口大小：背景高度 + 标签栏高度45
+            self.root.geometry(f"{bg_width}x{bg_height + 45}")
+            self.root.resizable(False, False)  # 禁止缩放，保持绝对坐标
+        except Exception as e:
+            print(f"背景图片加载失败: {e}")
+            # 降级处理：使用默认大小
+            bg_width, bg_height = 1100, 700
+            self.root.geometry(f"{bg_width}x{bg_height + 45}")
+            bg_img = None
+
+        # 创建 Canvas 作为主页容器
+        home_canvas = tk.Canvas(self.main_container, bg=COLOR_CONTENT_BG, highlightthickness=0,
+                                width=bg_width, height=bg_height)
+        home_canvas.pack_propagate(False)  # 禁止自动调整大小
+        home_canvas.config(width=bg_width, height=bg_height)
+
+        # 放置背景图片
+        if bg_img:
             try:
-                from PIL import Image, ImageTk
-                self.original_bg_image = Image.open(BG_IMAGE_PATH)
-
-                bg_canvas = tk.Canvas(home_frame, bg=COLOR_CONTENT_BG, highlightthickness=0)
-                bg_canvas.place(x=0, y=0, relwidth=1, relheight=1)
-
-                def resize_bg(event):
-                    cw, ch = event.width, event.height
-                    if cw <= 0 or ch <= 0:
-                        return
-                    img_w, img_h = self.original_bg_image.size
-                    ratio = min(cw / img_w, ch / img_h)
-                    new_w, new_h = int(img_w * ratio), int(img_h * ratio)
-                    resized = self.original_bg_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
-                    self.bg_photo = ImageTk.PhotoImage(resized)
-                    bg_canvas.delete("all")
-                    bg_canvas.create_image(cw // 2, ch // 2, image=self.bg_photo, anchor="center")
-
-                bg_canvas.bind("<Configure>", resize_bg)
+                self.bg_photo = ImageTk.PhotoImage(bg_img)
+                # 背景图置于底层
+                home_canvas.create_image(0, 0, anchor="nw", image=self.bg_photo)
+                self.home_images.append(self.bg_photo)
             except Exception as e:
-                print(f"背景图片加载失败: {e}")
-                tk.Label(home_frame, text="智融脑机", font=("微软雅黑", 36, "bold"), bg=COLOR_CONTENT_BG).pack(pady=(150, 0))
-                tk.Label(home_frame, text="大模型赋能多模态BCI平台", font=("微软雅黑", 18), bg=COLOR_CONTENT_BG).pack()
-            # -------------------------
+                print(f"背景图片显示失败: {e}")
 
-            btn_box = tk.Frame(home_frame, bg=COLOR_CONTENT_BG)
-            btn_box.place(relx=0.5, rely=0.7, anchor="center")
-            funcs = ["Preprocessing", "Extraction", "Analysis", "Visualization"]
-            for f in funcs:
-                btn = tk.Button(btn_box, text=f, font=("Arial", 11, "bold"), bg="#3d85a1", fg="white",
-                                relief="flat", padx=20, pady=8, cursor="hand2",
-                                command=lambda name=f: self.open_functional_tab(name))
-                btn.pack(side="left", padx=15)
+        # 辅助函数：加载图片并在 canvas 上创建 image 项，返回图片对象和 canvas 项 ID
+        def add_image(path, x, y, tag=None):
+            try:
+                img = Image.open(path)
+                photo = ImageTk.PhotoImage(img)
+                item_id = home_canvas.create_image(x, y, anchor="nw", image=photo, tag=tag)
+                self.home_images.append(photo)  # 保持引用
+                return photo, item_id
+            except Exception as e:
+                print(f"图片加载失败 {path}: {e}")
+                return None, None
 
-            tab_btn = self.create_tab_widget("Homepage", tab_id="Homepage", can_close=False)
-            self.tabs["Homepage"] = {"frame": home_frame, "tab_btn": tab_btn,
-                                      "base_name": "Homepage", "display_name": "Homepage"}
+        # ① logo
+        add_image(LOGO_PATH, 56, 24)
+
+        # ② 菜单栏（暂不绑定事件）
+        add_image(MENU_PATH, 185, 31)
+
+        # ③ 文字介绍区域
+        add_image(CONTENT_PATH, 91, 250)
+
+        # ④ 四个功能按钮（绑定打开对应标签页）
+        button_info = [
+            (BUTTON1_PATH, 89, 557, "Preprocessing"),
+            (BUTTON2_PATH, 249, 557, "Extraction"),
+            (BUTTON3_PATH, 436, 557, "Analysis"),
+            (BUTTON4_PATH, 625, 557, "Visualization")
+        ]
+        for path, x, y, name in button_info:
+            _, item_id = add_image(path, x, y, tag=f"btn_{name}")
+            if item_id:
+                # 绑定点击事件
+                home_canvas.tag_bind(item_id, "<Button-1>", lambda e, n=name: self.open_functional_tab(n))
+                # 鼠标悬停时改变光标样式
+                home_canvas.tag_bind(item_id, "<Enter>", lambda e: home_canvas.config(cursor="hand2"))
+                home_canvas.tag_bind(item_id, "<Leave>", lambda e: home_canvas.config(cursor=""))
+
+        # ⑤ 登录键（暂不绑定事件）
+        add_image(SIGNIN_PATH, 1274, 24)
+
+        # 创建 Homepage 标签按钮（不可关闭）
+        tab_btn = self.create_tab_widget("Homepage", tab_id="Homepage", can_close=False)
+        self.tabs["Homepage"] = {
+            "frame": home_canvas,  # 注意这里存储的是 Canvas，但它是 Frame 的子类，可以正常 place
+            "tab_btn": tab_btn,
+            "base_name": "Homepage",
+            "display_name": "Homepage"
+        }
 
         self.switch_to_tab("Homepage")
 
@@ -123,7 +183,6 @@ class NeuroPioneerApp:
         for data in self.tabs.values():
             if data.get("base_name") == base_name:
                 display = data["display_name"]
-                # 格式为 "BaseName (num)"
                 match = re.search(r'\((\d+)\)', display)
                 if match:
                     num = int(match.group(1))
@@ -153,7 +212,6 @@ class NeuroPioneerApp:
             return
 
         self.active_tab_id = tab_id
-        # 更新历史：移除旧位置，追加到末尾
         if tab_id in self.tab_history:
             self.tab_history.remove(tab_id)
         self.tab_history.append(tab_id)
@@ -180,16 +238,13 @@ class NeuroPioneerApp:
         if not data:
             return
 
-        # 从历史记录中移除该标签的所有出现
         while tab_id in self.tab_history:
             self.tab_history.remove(tab_id)
 
-        # 销毁界面组件
         data["frame"].destroy()
         data["tab_btn"].destroy()
         del self.tabs[tab_id]
 
-        # 如果关闭的是当前激活的标签，则切换到历史中的上一个（或 Homepage）
         if self.active_tab_id == tab_id:
             if self.tab_history:
                 target_id = self.tab_history[-1]
@@ -206,7 +261,7 @@ class NeuroPioneerApp:
         popup.geometry(f"180x200+{x}+{y}")
         popup.config(bg="white", highlightthickness=1, highlightbackground="#ccc")
 
-        tk.Label(popup, text="新建", bg="#eee", font=("微软雅黑", 9, "bold")).pack(fill="x")
+        tk.Label(popup, text="快速跳转", bg="#eee", font=("微软雅黑", 9, "bold")).pack(fill="x")
 
         others = ["Preprocessing", "Extraction", "Analysis", "Visualization", "Settings"]
         for o in others:
@@ -232,7 +287,6 @@ class NeuroPioneerApp:
         for tid in ids:
             if tid != keep_tab_id and tid != "Homepage":
                 self.close_tab(tid)
-        # 确保最后激活的是 keep_tab_id（可能已经被前面的 close_tab 切换走了）
         self.switch_to_tab(keep_tab_id)
 
     def close_all_functional(self):
