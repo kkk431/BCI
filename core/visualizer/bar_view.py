@@ -432,7 +432,7 @@ class BarView(tk.Frame):
 
 
 # 测试代码
-"""if __name__ == "__main__":
+if __name__ == "__main__":
     import sys
 
     root = tk.Tk()
@@ -442,4 +442,4 @@ class BarView(tk.Frame):
     view = BarView(root)
     view.pack(fill=tk.BOTH, expand=True)
 
-    root.mainloop()"""
+    root.mainloop()
