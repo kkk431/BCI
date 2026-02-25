@@ -560,7 +560,7 @@ class StatsView(tk.Frame):
 
 
 # 测试代码
-"""if __name__ == "__main__":
+if __name__ == "__main__":
     import sys
 
     root = tk.Tk()
@@ -570,4 +570,4 @@ class StatsView(tk.Frame):
     view = StatsView(root)
     view.pack(fill=tk.BOTH, expand=True)
 
-    root.mainloop()"""
+    root.mainloop()
