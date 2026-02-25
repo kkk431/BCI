@@ -12,10 +12,10 @@ import numpy as np
 from datetime import datetime
 
 # 导入可视化模块
-from .signal_view import SignalView
-from .stats_view import StatsView
-from .bar_view import BarView
-from .plot_dialog import quick_plot
+from core.visualizer.signal_view import SignalView
+from core.visualizer.stats_view import StatsView
+from core.visualizer.bar_view import BarView
+from core.visualizer.plot_dialog import quick_plot
 
 # 导入数据IO
 try:
