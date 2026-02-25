@@ -1,59 +1,52 @@
 #!/usr/bin/env python3
 """
 bar_view.py
-柱状图视图 - 特征对比/Excel数据可视化
-支持多子图柱状图和数值标签
+Tkinter版本 - 柱状图视图
+支持特征对比和Excel数据可视化
 """
 
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
 import numpy as np
 import matplotlib
 
-matplotlib.use('Qt5Agg')
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+matplotlib.use('TkAgg')
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
-
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QLabel, QComboBox, QGroupBox,
-                             QGridLayout, QFileDialog, QMessageBox, QSpinBox,
-                             QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView,
-                             QSplitter, QTabWidget, QDoubleSpinBox, QLineEdit)
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QColor
 
 import pandas as pd
 import os
 from typing import Dict, List, Optional, Tuple, Any
 
 
-class BarView(QMainWindow):
+class BarView(tk.Frame):
     """
-    柱状图视图类
+    柱状图视图类 - Tkinter版本
     支持特征对比和Excel数据可视化
     """
 
-    def __init__(self, data_dict: Dict[str, Any] = None, excel_file: str = None, parent=None):
+    def __init__(self, parent, data_dict: Dict[str, Any] = None, excel_file: str = None):
         """
         初始化柱状图视图
 
         Args:
+            parent: 父窗口
             data_dict: 包含特征数据的数据字典
             excel_file: Excel文件路径
         """
         super().__init__(parent)
-
+        self.parent = parent
         self.data_dict = data_dict
         self.excel_file = excel_file
-        self.data = None
+        self.df = None
         self.column_names = []
+
+        # 创建matplotlib图形
+        self.figure = Figure(figsize=(10, 6), dpi=100)
 
         # 加载数据
         self._load_data()
-
-        # 设置窗口
-        self.setWindowTitle("柱状图视图")
-        self.resize(1200, 800)
 
         # 设置UI
         self.setup_ui()
@@ -71,12 +64,12 @@ class BarView(QMainWindow):
                 self.data_source = "excel"
                 self.file_name = os.path.basename(self.excel_file)
 
-                QMessageBox.information(self, "加载成功",
-                                        f"已加载Excel文件:\n{self.excel_file}\n"
-                                        f"共{len(self.df)}行，{len(self.column_names)}列")
+                messagebox.showinfo("加载成功",
+                                    f"已加载Excel文件:\n{self.excel_file}\n"
+                                    f"共{len(self.df)}行，{len(self.column_names)}列")
 
             except Exception as e:
-                QMessageBox.warning(self, "加载失败", f"无法加载Excel文件:\n{str(e)}")
+                messagebox.showerror("加载失败", f"无法加载Excel文件:\n{str(e)}")
                 self._create_demo_data()
 
         elif self.data_dict:
@@ -86,8 +79,6 @@ class BarView(QMainWindow):
 
             if features:
                 # 将特征字典转换为DataFrame
-                data_rows = []
-
                 # 提取通道和特征
                 feature_keys = list(features.keys())
                 channels = set()
@@ -115,9 +106,9 @@ class BarView(QMainWindow):
                 self.column_names = self.df.columns.tolist()
                 self.data_source = "features"
 
-                QMessageBox.information(self, "加载成功",
-                                        f"已从数据字典加载特征\n"
-                                        f"共{len(channels)}个通道，{len(feature_names)}个特征")
+                messagebox.showinfo("加载成功",
+                                    f"已从数据字典加载特征\n"
+                                    f"共{len(channels)}个通道，{len(feature_names)}个特征")
             else:
                 self._create_demo_data()
         else:
@@ -141,208 +132,230 @@ class BarView(QMainWindow):
         self.column_names = self.df.columns.tolist()
         self.data_source = "demo"
 
-        QMessageBox.information(self, "演示模式", "使用演示数据进行展示")
+        messagebox.showinfo("演示模式", "使用演示数据进行展示")
 
     def setup_ui(self):
         """设置用户界面"""
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-
-        main_layout = QVBoxLayout(central_widget)
+        # 主布局
+        main_frame = ttk.Frame(self)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # ========== 顶部控制栏 ==========
-        control_layout = QHBoxLayout()
+        control_frame = ttk.Frame(main_frame)
+        control_frame.pack(fill=tk.X, pady=5)
 
         # 文件信息
         if hasattr(self, 'file_name'):
-            info_label = QLabel(f"文件: {self.file_name}")
+            info_text = f"文件: {self.file_name}"
         else:
-            info_label = QLabel(f"数据源: {getattr(self, 'data_source', '未知')}")
-        info_label.setFont(QFont("Microsoft YaHei", 10))
-        control_layout.addWidget(info_label)
+            info_text = f"数据源: {getattr(self, 'data_source', '未知')}"
 
-        control_layout.addStretch()
+        info_label = ttk.Label(control_frame, text=info_text, font=('微软雅黑', 10))
+        info_label.pack(side=tk.LEFT, padx=5)
 
         # 打开文件按钮
-        open_btn = QPushButton("打开Excel文件")
-        open_btn.clicked.connect(self.open_excel_file)
-        control_layout.addWidget(open_btn)
+        ttk.Button(control_frame, text="打开Excel文件",
+                   command=self.open_excel_file).pack(side=tk.RIGHT, padx=5)
 
         # 刷新按钮
-        refresh_btn = QPushButton("刷新")
-        refresh_btn.clicked.connect(self.update_plot)
-        control_layout.addWidget(refresh_btn)
-
-        main_layout.addLayout(control_layout)
+        ttk.Button(control_frame, text="刷新",
+                   command=self.update_plot).pack(side=tk.RIGHT, padx=5)
 
         # ========== 中间：数据选择 + 绘图 ==========
-        splitter = QSplitter(Qt.Horizontal)
+        middle_frame = ttk.Frame(main_frame)
+        middle_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
         # 左侧控制面板
-        control_panel = QWidget()
-        control_panel.setMaximumWidth(300)
-        control_layout = QVBoxLayout(control_panel)
+        control_panel = ttk.LabelFrame(middle_frame, text="设置", width=250)
+        control_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+        control_panel.pack_propagate(False)
 
         # X轴选择
-        x_group = QGroupBox("X轴 (类别)")
-        x_layout = QVBoxLayout(x_group)
+        x_frame = ttk.LabelFrame(control_panel, text="X轴 (类别)")
+        x_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        self.x_combo = QComboBox()
-        self.x_combo.addItems(self.column_names)
-        self.x_combo.currentTextChanged.connect(self.on_x_changed)
-        x_layout.addWidget(self.x_combo)
+        self.x_var = tk.StringVar()
+        self.x_combo = ttk.Combobox(x_frame, textvariable=self.x_var,
+                                    values=self.column_names, state="readonly")
+        self.x_combo.pack(fill=tk.X, padx=5, pady=5)
+        if self.column_names:
+            self.x_combo.current(0)
+        self.x_combo.bind('<<ComboboxSelected>>', self.on_x_changed)
 
-        control_layout.addWidget(x_group)
+        # Y轴选择
+        y_frame = ttk.LabelFrame(control_panel, text="Y轴 (数值列)")
+        y_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        # Y轴选择（多选）
-        y_group = QGroupBox("Y轴 (数值列)")
-        y_layout = QVBoxLayout(y_group)
-
-        self.y_list = QComboBox()  # 改为下拉框便于测试
-        self.y_list.addItems([col for col in self.column_names if col != self.x_combo.currentText()])
-        self.y_list.currentTextChanged.connect(self.update_plot)
-        y_layout.addWidget(self.y_list)
-
-        control_layout.addWidget(y_group)
+        self.y_var = tk.StringVar()
+        self.y_combo = ttk.Combobox(y_frame, textvariable=self.y_var,
+                                    values=[c for c in self.column_names if c != self.x_var.get()],
+                                    state="readonly")
+        self.y_combo.pack(fill=tk.X, padx=5, pady=5)
+        if len(self.column_names) > 1:
+            self.y_combo.current(0)
+        self.y_combo.bind('<<ComboboxSelected>>', lambda e: self.update_plot())
 
         # 图表设置
-        plot_group = QGroupBox("图表设置")
-        plot_layout = QGridLayout(plot_group)
+        plot_frame = ttk.LabelFrame(control_panel, text="图表设置")
+        plot_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        plot_layout.addWidget(QLabel("标题:"), 0, 0)
-        self.title_edit = QLineEdit("特征对比柱状图")
-        plot_layout.addWidget(self.title_edit, 0, 1)
+        # 标题
+        ttk.Label(plot_frame, text="标题:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+        self.title_var = tk.StringVar(value="特征对比柱状图")
+        ttk.Entry(plot_frame, textvariable=self.title_var).grid(row=0, column=1, padx=5, pady=2, sticky=tk.EW)
 
-        plot_layout.addWidget(QLabel("X轴标签:"), 1, 0)
-        self.xlabel_edit = QLineEdit("通道")
-        plot_layout.addWidget(self.xlabel_edit, 1, 1)
+        # X轴标签
+        ttk.Label(plot_frame, text="X轴标签:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
+        self.xlabel_var = tk.StringVar(value="通道")
+        ttk.Entry(plot_frame, textvariable=self.xlabel_var).grid(row=1, column=1, padx=5, pady=2, sticky=tk.EW)
 
-        plot_layout.addWidget(QLabel("Y轴标签:"), 2, 0)
-        self.ylabel_edit = QLineEdit("值")
-        plot_layout.addWidget(self.ylabel_edit, 2, 1)
+        # Y轴标签
+        ttk.Label(plot_frame, text="Y轴标签:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=2)
+        self.ylabel_var = tk.StringVar(value="值")
+        ttk.Entry(plot_frame, textvariable=self.ylabel_var).grid(row=2, column=1, padx=5, pady=2, sticky=tk.EW)
 
-        plot_layout.addWidget(QLabel("柱子宽度:"), 3, 0)
-        self.width_spin = QDoubleSpinBox()
-        self.width_spin.setRange(0.1, 1.0)
-        self.width_spin.setValue(0.6)
-        self.width_spin.setSingleStep(0.1)
-        self.width_spin.valueChanged.connect(self.update_plot)
-        plot_layout.addWidget(self.width_spin, 3, 1)
+        # 柱子宽度
+        ttk.Label(plot_frame, text="柱子宽度:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=2)
+        self.width_var = tk.StringVar(value="0.6")
+        width_spin = ttk.Spinbox(plot_frame, from_=0.1, to=1.0, increment=0.1,
+                                 textvariable=self.width_var, width=10)
+        width_spin.grid(row=3, column=1, padx=5, pady=2, sticky=tk.W)
+        width_spin.bind('<Return>', lambda e: self.update_plot())
 
-        control_layout.addWidget(plot_group)
+        plot_frame.columnconfigure(1, weight=1)
 
         # 显示选项
-        display_group = QGroupBox("显示选项")
-        display_layout = QVBoxLayout(display_group)
+        display_frame = ttk.LabelFrame(control_panel, text="显示选项")
+        display_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        self.show_values_check = QCheckBox("显示数值标签")
-        self.show_values_check.setChecked(True)
-        self.show_values_check.toggled.connect(self.update_plot)
-        display_layout.addWidget(self.show_values_check)
+        self.show_values_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(display_frame, text="显示数值标签",
+                        variable=self.show_values_var,
+                        command=self.update_plot).pack(anchor=tk.W, padx=5, pady=2)
 
-        self.show_grid_check = QCheckBox("显示网格")
-        self.show_grid_check.setChecked(True)
-        self.show_grid_check.toggled.connect(self.update_plot)
-        display_layout.addWidget(self.show_grid_check)
+        self.show_grid_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(display_frame, text="显示网格",
+                        variable=self.show_grid_var,
+                        command=self.update_plot).pack(anchor=tk.W, padx=5, pady=2)
 
-        self.rotate_x_check = QCheckBox("旋转X轴标签")
-        self.rotate_x_check.setChecked(False)
-        self.rotate_x_check.toggled.connect(self.update_plot)
-        display_layout.addWidget(self.rotate_x_check)
+        self.rotate_x_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(display_frame, text="旋转X轴标签",
+                        variable=self.rotate_x_var,
+                        command=self.update_plot).pack(anchor=tk.W, padx=5, pady=2)
 
-        control_layout.addWidget(display_group)
-
-        control_layout.addStretch()
-
-        splitter.addWidget(control_panel)
-
-        # 右侧绘图区域 + 数据表格
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-
-        # 创建选项卡
-        tab_widget = QTabWidget()
+        # 右侧：笔记本（绘图 + 数据表格）
+        right_notebook = ttk.Notebook(middle_frame)
+        right_notebook.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # 绘图选项卡
-        plot_widget = QWidget()
-        plot_layout = QVBoxLayout(plot_widget)
+        plot_tab = ttk.Frame(right_notebook)
+        right_notebook.add(plot_tab, text="柱状图")
 
-        self.figure = Figure(figsize=(10, 6), dpi=100)
-        self.canvas = FigureCanvas(self.figure)
-        self.toolbar = NavigationToolbar(self.canvas, self)
+        # 创建画布
+        self.canvas = FigureCanvasTkAgg(self.figure, plot_tab)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        plot_layout.addWidget(self.toolbar)
-        plot_layout.addWidget(self.canvas)
-
-        tab_widget.addTab(plot_widget, "柱状图")
+        # 工具栏
+        toolbar_frame = ttk.Frame(plot_tab)
+        toolbar_frame.pack(fill=tk.X)
+        self.toolbar = NavigationToolbar2Tk(self.canvas, toolbar_frame)
+        self.toolbar.update()
 
         # 数据表格选项卡
-        table_widget = QWidget()
-        table_layout = QVBoxLayout(table_widget)
+        table_tab = ttk.Frame(right_notebook)
+        right_notebook.add(table_tab, text="数据表格")
 
-        self.data_table = QTableWidget()
-        self.data_table.setColumnCount(len(self.column_names))
-        self.data_table.setHorizontalHeaderLabels(self.column_names)
-        self.data_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        # 创建表格
+        self.setup_data_table(table_tab)
 
-        # 填充表格
+    def setup_data_table(self, parent):
+        """设置数据表格"""
+        # 创建Treeview
+        columns = self.column_names
+        self.tree = ttk.Treeview(parent, columns=columns, show="headings", height=20)
+
+        # 设置列
+        for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=100, anchor=tk.CENTER)
+
+        # 滚动条
+        v_scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=self.tree.yview)
+        h_scrollbar = ttk.Scrollbar(parent, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+
+        # 布局
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        v_scrollbar.grid(row=0, column=1, sticky="ns")
+        h_scrollbar.grid(row=1, column=0, sticky="ew")
+
+        parent.grid_rowconfigure(0, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+
+        # 填充数据
         self.populate_table()
-
-        table_layout.addWidget(self.data_table)
-
-        tab_widget.addTab(table_widget, "数据表格")
-
-        right_layout.addWidget(tab_widget)
-
-        splitter.addWidget(right_panel)
-        splitter.setSizes([300, 800])
-
-        main_layout.addWidget(splitter, 1)
 
     def populate_table(self):
         """填充数据表格"""
-        self.data_table.setRowCount(len(self.df))
+        # 清空现有内容
+        for item in self.tree.get_children():
+            self.tree.delete(item)
 
-        for i, row in self.df.iterrows():
-            for j, col in enumerate(self.column_names):
-                value = row[col]
-                if isinstance(value, (int, float)):
-                    item = QTableWidgetItem(f"{value:.4f}" if abs(value) < 1000 else f"{value:.2e}")
+        if self.df is None:
+            return
+
+        # 插入数据行
+        for _, row in self.df.iterrows():
+            values = []
+            for col in self.column_names:
+                val = row[col]
+                if isinstance(val, (int, float)):
+                    if abs(val) < 1000:
+                        values.append(f"{val:.4f}")
+                    else:
+                        values.append(f"{val:.2e}")
                 else:
-                    item = QTableWidgetItem(str(value))
-                self.data_table.setItem(i, j, item)
+                    values.append(str(val))
+            self.tree.insert("", tk.END, values=values)
 
-    def on_x_changed(self, x_col):
+    def on_x_changed(self, event=None):
         """X轴列改变"""
-        # 更新Y轴列表，排除X轴列
-        self.y_list.clear()
-        self.y_list.addItems([col for col in self.column_names if col != x_col])
+        x_col = self.x_var.get()
+        # 更新Y轴下拉框，排除X轴列
+        y_options = [col for col in self.column_names if col != x_col]
+        self.y_combo['values'] = y_options
+        if y_options:
+            self.y_combo.current(0)
         self.update_plot()
 
     def open_excel_file(self):
         """打开Excel文件"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择Excel文件", "", "Excel文件 (*.xlsx *.xls);;所有文件 (*)")
+        file_path = filedialog.askopenfilename(
+            title="选择Excel文件",
+            filetypes=[("Excel文件", "*.xlsx *.xls"), ("所有文件", "*.*")]
+        )
 
         if file_path:
             self.excel_file = file_path
             self._load_data()
 
             # 更新UI
-            self.x_combo.clear()
-            self.x_combo.addItems(self.column_names)
-            self.on_x_changed(self.x_combo.currentText())
+            self.x_combo['values'] = self.column_names
+            if self.column_names:
+                self.x_combo.current(0)
+                self.on_x_changed()
             self.populate_table()
             self.update_plot()
 
-    def update_plot(self):
+    def update_plot(self, event=None):
         """更新柱状图"""
         self.figure.clear()
 
-        x_col = self.x_combo.currentText()
-        y_col = self.y_list.currentText()
+        x_col = self.x_var.get()
+        y_col = self.y_var.get()
 
-        if not x_col or not y_col or x_col == y_col:
+        if not x_col or not y_col or x_col == y_col or self.df is None:
             return
 
         # 获取数据
@@ -354,7 +367,7 @@ class BarView(QMainWindow):
             try:
                 y_values = [float(v) if v else 0 for v in y_values]
             except:
-                QMessageBox.warning(self, "错误", f"列 '{y_col}' 包含非数值数据")
+                messagebox.showerror("错误", f"列 '{y_col}' 包含非数值数据")
                 return
 
         ax = self.figure.add_subplot(111)
@@ -362,57 +375,71 @@ class BarView(QMainWindow):
         # 创建x轴位置
         x_pos = np.arange(len(x_categories))
 
+        try:
+            width = float(self.width_var.get())
+        except:
+            width = 0.6
+
         # 绘制柱状图
-        bars = ax.bar(x_pos, y_values, width=self.width_spin.value(),
+        bars = ax.bar(x_pos, y_values, width=width,
                       color='steelblue', edgecolor='black', alpha=0.7)
 
         # 设置x轴标签
         ax.set_xticks(x_pos)
-        ax.set_xticklabels(x_categories, rotation=45 if self.rotate_x_check.isChecked() else 0)
+        rotation = 45 if self.rotate_x_var.get() else 0
+        ax.set_xticklabels(x_categories, rotation=rotation)
 
         # 设置标签和标题
-        ax.set_xlabel(self.xlabel_edit.text(), fontsize=12)
-        ax.set_ylabel(self.ylabel_edit.text(), fontsize=12)
-        ax.set_title(self.title_edit.text(), fontsize=14)
+        ax.set_xlabel(self.xlabel_var.get(), fontsize=12)
+        ax.set_ylabel(self.ylabel_var.get(), fontsize=12)
+        ax.set_title(self.title_var.get(), fontsize=14)
 
         # 显示网格
-        if self.show_grid_check.isChecked():
+        if self.show_grid_var.get():
             ax.grid(True, alpha=0.3, axis='y')
 
         # 显示数值标签
-        if self.show_values_check.isChecked():
+        if self.show_values_var.get():
             for i, (bar, val) in enumerate(zip(bars, y_values)):
                 height = bar.get_height()
                 va = 'bottom' if height >= 0 else 'top'
                 offset = 3 if height >= 0 else -3
                 ax.text(bar.get_x() + bar.get_width() / 2., height + offset,
-                        f'{val:.2f}', ha='center', va=va, fontsize=8, rotation=90 if len(x_categories) > 8 else 0)
-
-        # 如果有多个Y列（这里简化，只显示一列）
-        # 实际应用中可能需要多组柱状图
+                        f'{val:.2f}', ha='center', va=va, fontsize=8,
+                        rotation=90 if len(x_categories) > 8 else 0)
 
         self.figure.tight_layout()
         self.canvas.draw()
 
     def save_plot(self):
         """保存图表"""
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "保存图表", "", "PNG图像 (*.png);;PDF文件 (*.pdf);;SVG图像 (*.svg)")
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG图像", "*.png"), ("PDF文件", "*.pdf"), ("SVG图像", "*.svg")]
+        )
 
         if file_path:
             try:
                 self.figure.savefig(file_path, dpi=300, bbox_inches='tight')
-                QMessageBox.information(self, "保存成功", f"图表已保存到:\n{file_path}")
+                messagebox.showinfo("保存成功", f"图表已保存到:\n{file_path}")
             except Exception as e:
-                QMessageBox.warning(self, "保存失败", f"保存图表时出错:\n{str(e)}")
+                messagebox.showerror("保存失败", f"保存图表时出错:\n{str(e)}")
+
+    def destroy(self):
+        """销毁时清理"""
+        plt.close(self.figure)
+        super().destroy()
 
 
 # 测试代码
-if __name__ == "__main__":
+"""if __name__ == "__main__":
     import sys
-    from PyQt5.QtWidgets import QApplication
 
-    app = QApplication(sys.argv)
-    view = BarView()
-    view.show()
-    sys.exit(app.exec_())
+    root = tk.Tk()
+    root.title("柱状图视图测试")
+    root.geometry("1200x800")
+
+    view = BarView(root)
+    view.pack(fill=tk.BOTH, expand=True)
+
+    root.mainloop()"""
