@@ -1,7 +1,7 @@
 import tkinter as tk
-from tkinter import ttk
 import os
 import re
+import time
 
 # --- 视觉配置 ---
 COLOR_TAB_BAR_BG = "#c0c0c0"
@@ -19,6 +19,20 @@ BUTTON3_PATH = os.path.join("core", "UI", "UI_resource", "button3.png")
 BUTTON4_PATH = os.path.join("core", "UI", "UI_resource", "button4.png")
 SIGNIN_PATH = os.path.join("core", "UI", "UI_resource", "SignIn.png")
 BACKGROUND_PATH = os.path.join("core", "UI", "UI_resource", "background.png")
+
+# ========== 启动时预加载所有可视化模块 ==========
+print("正在预加载可视化模块...")
+preload_start = time.time()
+
+# 预导入所有需要的库
+import matplotlib
+matplotlib.use('TkAgg')  # 设置后端
+
+# 预导入可视化模块
+
+preload_time = time.time() - preload_start
+print(f"预加载完成，耗时: {preload_time:.2f}秒")
+# ===========================================
 
 class NeuroPioneerApp:
     def __init__(self, root):
@@ -82,8 +96,6 @@ class NeuroPioneerApp:
         return tab_frame
 
     def show_homepage(self):
-        """重建 Homepage 界面，使用 Canvas 实现透明叠加，图片按绝对坐标布局"""
-        # 如果已存在 Homepage，先销毁旧组件
         if "Homepage" in self.tabs:
             old_data = self.tabs["Homepage"]
             old_data["frame"].destroy()
@@ -191,20 +203,80 @@ class NeuroPioneerApp:
 
     def open_functional_tab(self, base_name):
         """打开一个新的功能标签页（总是新建）"""
-        next_num = self._get_next_number_for_base(base_name)
-        display_name = f"{base_name} ({next_num})"
-        tab_id = f"{base_name}_{next_num}"  # 唯一ID
+        if base_name == "Visualization":
+            # 打开可视化集成面板
+            self.open_visualization_tab()
+        else:
+            # 其他功能保持原样
+            next_num = self._get_next_number_for_base(base_name)
+            display_name = f"{base_name} ({next_num})"
+            tab_id = f"{base_name}_{next_num}"
 
+            new_frame = tk.Frame(self.main_container, bg=COLOR_CONTENT_BG)
+            tk.Label(new_frame, text=f"{base_name.lower()} 界面",
+                     font=("微软雅黑", 24), fg="#333", bg=COLOR_CONTENT_BG).place(relx=0.5, rely=0.5, anchor="center")
+
+            tab_btn = self.create_tab_widget(display_name, tab_id=tab_id)
+            self.tabs[tab_id] = {"frame": new_frame, "tab_btn": tab_btn,
+                                 "base_name": base_name, "display_name": display_name}
+
+            self.switch_to_tab(tab_id)
+
+    def open_visualization_tab(self):
+        """打开可视化标签页（带加载动画）"""
+        next_num = self._get_next_number_for_base("Visualization")
+        display_name = f"Visualization ({next_num})"
+        tab_id = f"Visualization_{next_num}"
+
+        # 创建框架
         new_frame = tk.Frame(self.main_container, bg=COLOR_CONTENT_BG)
-        # 临时占位内容，可替换为实际功能界面
-        tk.Label(new_frame, text=f"{base_name.lower()} 界面",
-                 font=("微软雅黑", 24), fg="#333", bg=COLOR_CONTENT_BG).place(relx=0.5, rely=0.5, anchor="center")
 
+        # 显示加载提示
+        loading_label = tk.Label(new_frame, text="正在加载可视化模块...",
+                                 font=("微软雅黑", 14), fg="#666", bg=COLOR_CONTENT_BG)
+        loading_label.place(relx=0.5, rely=0.5, anchor="center")
+
+        # 更新UI显示加载提示
+        new_frame.update()
+
+        # 创建标签按钮
         tab_btn = self.create_tab_widget(display_name, tab_id=tab_id)
-        self.tabs[tab_id] = {"frame": new_frame, "tab_btn": tab_btn,
-                             "base_name": base_name, "display_name": display_name}
 
+        # 存储标签信息
+        self.tabs[tab_id] = {
+            "frame": new_frame,
+            "tab_btn": tab_btn,
+            "base_name": "Visualization",
+            "display_name": display_name
+        }
+
+        # 切换到新标签页
         self.switch_to_tab(tab_id)
+
+        # 使用after延迟加载，不阻塞UI
+        def load_visualization():
+            try:
+                import time
+                start = time.time()
+
+                # 导入模块
+                from core.UI.panel.visualization_panel import ModernVisualizationPanel as VisualizationPanel
+
+                # 移除加载提示
+                loading_label.destroy()
+
+                # 创建可视化面板
+                vis_panel = VisualizationPanel(new_frame)
+                vis_panel.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+                elapsed = time.time() - start
+                print(f"可视化面板加载完成，耗时: {elapsed:.2f}秒")
+
+            except Exception as e:
+                loading_label.config(text=f"加载失败: {str(e)}", fg="red")
+
+        # 延迟10ms后开始加载，让UI先显示加载提示
+        new_frame.after(10, load_visualization)
 
     def switch_to_tab(self, tab_id):
         """切换到指定 ID 的标签页，并更新历史记录"""
