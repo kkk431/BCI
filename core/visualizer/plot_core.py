@@ -6,7 +6,13 @@
 - plot_eeg_psd：绘制功率谱密度拓扑图
 - plot_raw_by_file：通过文件对话框打开文件并绘图
 """
+import sys
+from pathlib import Path
 
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+    
 import matplotlib
 import mne
 import numpy as np
