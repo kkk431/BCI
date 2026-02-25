@@ -1,48 +1,47 @@
 #!/usr/bin/env python3
 """
 plot_dialog.py
-独立绘图对话框 - 用于弹出式信号查看
-复用signal_view的功能，但作为对话框
+Tkinter版本 - 独立绘图对话框
+用于弹出式信号查看
 """
 
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
 import numpy as np
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
-                             QLabel, QSpinBox, QDoubleSpinBox, QComboBox,
-                             QGroupBox, QCheckBox, QMessageBox, QFileDialog,
-                             QListWidget, QListWidgetItem)
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont
-
 import matplotlib
 
-matplotlib.use('Qt5Agg')
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+matplotlib.use('TkAgg')
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
 
 import scipy.signal
 from typing import Dict, List, Optional, Tuple, Any
 
 
-class PlotDialog(QDialog):
+class PlotDialog(tk.Toplevel):
     """
-    独立绘图对话框
+    独立绘图对话框 - Tkinter版本
     用于快速查看信号片段
     """
 
-    def __init__(self, data: np.ndarray, sampling_rate: float,
+    def __init__(self, parent, data: np.ndarray, sampling_rate: float,
                  channel_names: List[str] = None,
-                 title: str = "信号视图", parent=None):
+                 title: str = "信号视图"):
         """
         初始化绘图对话框
 
         Args:
+            parent: 父窗口
             data: 信号数据 (channels × samples) 或 (samples,)
             sampling_rate: 采样率 (Hz)
             channel_names: 通道名称列表
             title: 对话框标题
         """
         super().__init__(parent)
+        self.parent = parent
+        self.title(title)
+        self.geometry("1000x700")
 
         # 处理数据
         if data.ndim == 1:
@@ -59,17 +58,13 @@ class PlotDialog(QDialog):
         else:
             self.channel_names = channel_names
 
-        self.title = title
-
         # 当前显示状态
         self.current_page = 0
         self.page_duration = 5.0  # 默认每页5秒
         self.markers = []  # 事件标记
 
-        # 设置对话框
-        self.setWindowTitle(title)
-        self.resize(1000, 700)
-        self.setModal(False)  # 非模态，可以同时打开多个
+        # 创建matplotlib图形
+        self.figure = Figure(figsize=(10, 6), dpi=100)
 
         # 设置UI
         self.setup_ui()
@@ -77,172 +72,192 @@ class PlotDialog(QDialog):
         # 更新绘图
         self.update_plot()
 
+        # 设置窗口关闭事件
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
     def setup_ui(self):
         """设置用户界面"""
-        layout = QVBoxLayout(self)
+        # 主布局
+        main_frame = ttk.Frame(self)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # ========== 顶部控制栏 ==========
-        control_layout = QHBoxLayout()
+        control_frame = ttk.Frame(main_frame)
+        control_frame.pack(fill=tk.X, pady=5)
 
         # 信息显示
-        info_label = QLabel(f"{self.n_channels}通道 | {self.sampling_rate}Hz | {self.duration:.2f}秒")
-        info_label.setFont(QFont("Microsoft YaHei", 9))
-        control_layout.addWidget(info_label)
-
-        control_layout.addStretch()
+        info_text = f"{self.n_channels}通道 | {self.sampling_rate}Hz | {self.duration:.2f}秒"
+        info_label = ttk.Label(control_frame, text=info_text, font=('微软雅黑', 9))
+        info_label.pack(side=tk.LEFT, padx=5)
 
         # 翻页控制
-        control_layout.addWidget(QLabel("页:"))
-        self.page_spin = QSpinBox()
-        self.page_spin.setMinimum(1)
-        self.page_spin.setMaximum(max(1, int(np.ceil(self.duration / self.page_duration))))
-        self.page_spin.setValue(1)
-        self.page_spin.valueChanged.connect(self.on_page_changed)
-        control_layout.addWidget(self.page_spin)
+        page_frame = ttk.Frame(control_frame)
+        page_frame.pack(side=tk.RIGHT)
 
-        control_layout.addWidget(QLabel("/"))
-        self.total_pages_label = QLabel(str(self.page_spin.maximum()))
-        control_layout.addWidget(self.total_pages_label)
+        ttk.Label(page_frame, text="页:").pack(side=tk.LEFT)
 
-        control_layout.addWidget(QLabel("  每页(秒):"))
-        self.page_duration_spin = QDoubleSpinBox()
-        self.page_duration_spin.setRange(1, 60)
-        self.page_duration_spin.setValue(self.page_duration)
-        self.page_duration_spin.setSingleStep(1)
-        self.page_duration_spin.valueChanged.connect(self.on_page_duration_changed)
-        control_layout.addWidget(self.page_duration_spin)
+        self.page_var = tk.StringVar(value="1")
+        self.page_spin = ttk.Spinbox(page_frame, from_=1,
+                                     to=max(1, int(np.ceil(self.duration / self.page_duration))),
+                                     width=5, textvariable=self.page_var,
+                                     command=self.on_page_changed)
+        self.page_spin.pack(side=tk.LEFT, padx=2)
+
+        ttk.Label(page_frame, text="/").pack(side=tk.LEFT)
+
+        self.total_pages_label = ttk.Label(page_frame,
+                                           text=str(max(1, int(np.ceil(self.duration / self.page_duration)))))
+        self.total_pages_label.pack(side=tk.LEFT, padx=2)
+
+        ttk.Label(page_frame, text="每页(秒):").pack(side=tk.LEFT, padx=(10, 2))
+
+        self.page_duration_var = tk.StringVar(value="5")
+        self.page_duration_spin = ttk.Spinbox(page_frame, from_=1, to=60, width=5,
+                                              textvariable=self.page_duration_var,
+                                              command=self.on_page_duration_changed)
+        self.page_duration_spin.pack(side=tk.LEFT, padx=2)
 
         # 翻页按钮
-        prev_btn = QPushButton("◀")
-        prev_btn.setMaximumWidth(30)
-        prev_btn.clicked.connect(self.prev_page)
-        control_layout.addWidget(prev_btn)
-
-        next_btn = QPushButton("▶")
-        next_btn.setMaximumWidth(30)
-        next_btn.clicked.connect(self.next_page)
-        control_layout.addWidget(next_btn)
-
-        layout.addLayout(control_layout)
+        ttk.Button(page_frame, text="◀", width=3,
+                   command=self.prev_page).pack(side=tk.LEFT, padx=2)
+        ttk.Button(page_frame, text="▶", width=3,
+                   command=self.next_page).pack(side=tk.LEFT, padx=2)
 
         # ========== 第二行：滤波控制 ==========
-        filter_layout = QHBoxLayout()
+        filter_frame = ttk.LabelFrame(main_frame, text="滤波")
+        filter_frame.pack(fill=tk.X, pady=5)
 
-        self.filter_check = QCheckBox("启用滤波")
-        self.filter_check.toggled.connect(self.update_plot)
-        filter_layout.addWidget(self.filter_check)
+        self.filter_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(filter_frame, text="启用滤波",
+                        variable=self.filter_var,
+                        command=self.on_filter_toggled).pack(side=tk.LEFT, padx=5)
 
-        filter_layout.addWidget(QLabel("低通(Hz):"))
-        self.lowpass_spin = QDoubleSpinBox()
-        self.lowpass_spin.setRange(0.1, 500)
-        self.lowpass_spin.setValue(45)
-        self.lowpass_spin.setEnabled(False)
-        self.filter_check.toggled.connect(self.lowpass_spin.setEnabled)
-        filter_layout.addWidget(self.lowpass_spin)
+        ttk.Label(filter_frame, text="低通(Hz):").pack(side=tk.LEFT, padx=(10, 2))
+        self.lowpass_var = tk.StringVar(value="45")
+        lowpass_entry = ttk.Entry(filter_frame, textvariable=self.lowpass_var, width=8)
+        lowpass_entry.pack(side=tk.LEFT, padx=2)
+        lowpass_entry.bind('<Return>', lambda e: self.update_plot())
 
-        filter_layout.addWidget(QLabel("高通(Hz):"))
-        self.highpass_spin = QDoubleSpinBox()
-        self.highpass_spin.setRange(0.01, 500)
-        self.highpass_spin.setValue(0.5)
-        self.highpass_spin.setEnabled(False)
-        self.filter_check.toggled.connect(self.highpass_spin.setEnabled)
-        filter_layout.addWidget(self.highpass_spin)
+        ttk.Label(filter_frame, text="高通(Hz):").pack(side=tk.LEFT, padx=(10, 2))
+        self.highpass_var = tk.StringVar(value="0.5")
+        highpass_entry = ttk.Entry(filter_frame, textvariable=self.highpass_var, width=8)
+        highpass_entry.pack(side=tk.LEFT, padx=2)
+        highpass_entry.bind('<Return>', lambda e: self.update_plot())
 
-        filter_layout.addWidget(QLabel("陷波(Hz):"))
-        self.notch_spin = QDoubleSpinBox()
-        self.notch_spin.setRange(0, 100)
-        self.notch_spin.setValue(50)
-        self.notch_spin.setSpecialValueText("关闭")
-        self.notch_spin.setEnabled(False)
-        self.filter_check.toggled.connect(self.notch_spin.setEnabled)
-        filter_layout.addWidget(self.notch_spin)
+        ttk.Label(filter_frame, text="陷波(Hz):").pack(side=tk.LEFT, padx=(10, 2))
+        self.notch_var = tk.StringVar(value="50")
+        notch_entry = ttk.Entry(filter_frame, textvariable=self.notch_var, width=8)
+        notch_entry.pack(side=tk.LEFT, padx=2)
+        notch_entry.bind('<Return>', lambda e: self.update_plot())
 
-        filter_layout.addStretch()
-
-        layout.addLayout(filter_layout)
+        # 初始禁用
+        lowpass_entry.config(state='disabled')
+        highpass_entry.config(state='disabled')
+        notch_entry.config(state='disabled')
 
         # ========== 绘图区域 ==========
-        self.figure = Figure(figsize=(10, 6), dpi=100)
-        self.canvas = FigureCanvas(self.figure)
-        self.toolbar = NavigationToolbar(self.canvas, self)
+        plot_frame = ttk.Frame(main_frame)
+        plot_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        layout.addWidget(self.toolbar)
-        layout.addWidget(self.canvas, 1)
+        # 创建画布
+        self.canvas = FigureCanvasTkAgg(self.figure, plot_frame)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # 工具栏
+        toolbar_frame = ttk.Frame(plot_frame)
+        toolbar_frame.pack(fill=tk.X)
+        self.toolbar = NavigationToolbar2Tk(self.canvas, toolbar_frame)
+        self.toolbar.update()
 
         # ========== 底部按钮 ==========
-        btn_layout = QHBoxLayout()
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(fill=tk.X, pady=5)
 
-        add_marker_btn = QPushButton("添加标记")
-        add_marker_btn.clicked.connect(self.add_marker)
-        btn_layout.addWidget(add_marker_btn)
+        ttk.Button(btn_frame, text="添加标记",
+                   command=self.add_marker).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="清除标记",
+                   command=self.clear_markers).pack(side=tk.LEFT, padx=2)
 
-        clear_marker_btn = QPushButton("清除标记")
-        clear_marker_btn.clicked.connect(self.clear_markers)
-        btn_layout.addWidget(clear_marker_btn)
+        ttk.Button(btn_frame, text="保存图像",
+                   command=self.save_plot).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(btn_frame, text="关闭",
+                   command=self.on_close).pack(side=tk.RIGHT, padx=2)
 
-        btn_layout.addStretch()
-
-        save_btn = QPushButton("保存图像")
-        save_btn.clicked.connect(self.save_plot)
-        btn_layout.addWidget(save_btn)
-
-        close_btn = QPushButton("关闭")
-        close_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(close_btn)
-
-        layout.addLayout(btn_layout)
+    def on_filter_toggled(self):
+        """滤波开关"""
+        enabled = self.filter_var.get()
+        # 获取输入框并设置状态
+        for child in self.winfo_children():
+            if isinstance(child, ttk.LabelFrame) and child['text'] == '滤波':
+                for grandchild in child.winfo_children():
+                    if isinstance(grandchild, ttk.Entry):
+                        grandchild.config(state='normal' if enabled else 'disabled')
+        self.update_plot()
 
     def on_page_changed(self):
         """页码改变"""
-        self.current_page = self.page_spin.value() - 1
-        self.update_plot()
+        try:
+            self.current_page = int(self.page_var.get()) - 1
+            self.update_plot()
+        except:
+            pass
 
     def on_page_duration_changed(self):
         """每页时长改变"""
-        self.page_duration = self.page_duration_spin.value()
-        max_pages = max(1, int(np.ceil(self.duration / self.page_duration)))
-        self.page_spin.setMaximum(max_pages)
-        self.total_pages_label.setText(str(max_pages))
-        self.update_plot()
+        try:
+            self.page_duration = float(self.page_duration_var.get())
+            max_pages = max(1, int(np.ceil(self.duration / self.page_duration)))
+            self.page_spin.config(to=max_pages)
+            self.total_pages_label.config(text=str(max_pages))
+            self.update_plot()
+        except:
+            pass
 
     def prev_page(self):
         """上一页"""
         if self.current_page > 0:
             self.current_page -= 1
-            self.page_spin.setValue(self.current_page + 1)
+            self.page_var.set(str(self.current_page + 1))
+            self.update_plot()
 
     def next_page(self):
         """下一页"""
-        if self.current_page < self.page_spin.maximum() - 1:
+        max_pages = max(1, int(np.ceil(self.duration / self.page_duration)))
+        if self.current_page < max_pages - 1:
             self.current_page += 1
-            self.page_spin.setValue(self.current_page + 1)
+            self.page_var.set(str(self.current_page + 1))
+            self.update_plot()
 
     def apply_filter(self, data: np.ndarray) -> np.ndarray:
         """应用滤波"""
-        if not self.filter_check.isChecked():
+        if not self.filter_var.get():
             return data
 
         filtered = data.copy()
         fs = self.sampling_rate
 
-        # 低通滤波
-        lowcut = self.lowpass_spin.value()
-        if lowcut > 0 and lowcut < fs / 2:
-            sos = scipy.signal.butter(4, lowcut, 'lowpass', fs=fs, output='sos')
-            filtered = scipy.signal.sosfiltfilt(sos, filtered, axis=1)
+        try:
+            # 低通滤波
+            lowcut = float(self.lowpass_var.get())
+            if lowcut > 0 and lowcut < fs / 2:
+                sos = scipy.signal.butter(4, lowcut, 'lowpass', fs=fs, output='sos')
+                filtered = scipy.signal.sosfiltfilt(sos, filtered, axis=1)
 
-        # 高通滤波
-        highcut = self.highpass_spin.value()
-        if highcut > 0:
-            sos = scipy.signal.butter(4, highcut, 'highpass', fs=fs, output='sos')
-            filtered = scipy.signal.sosfiltfilt(sos, filtered, axis=1)
+            # 高通滤波
+            highcut = float(self.highpass_var.get())
+            if highcut > 0:
+                sos = scipy.signal.butter(4, highcut, 'highpass', fs=fs, output='sos')
+                filtered = scipy.signal.sosfiltfilt(sos, filtered, axis=1)
 
-        # 陷波滤波
-        notch = self.notch_spin.value()
-        if notch > 0 and notch < fs / 2:
-            Q = 30
-            b, a = scipy.signal.iirnotch(notch, Q, fs)
-            filtered = scipy.signal.filtfilt(b, a, filtered, axis=1)
+            # 陷波滤波
+            notch = float(self.notch_var.get())
+            if notch > 0 and notch < fs / 2:
+                Q = 30
+                b, a = scipy.signal.iirnotch(notch, Q, fs)
+                filtered = scipy.signal.filtfilt(b, a, filtered, axis=1)
+        except:
+            pass
 
         return filtered
 
@@ -302,7 +317,7 @@ class PlotDialog(QDialog):
                     ax.text(t, y_min + (y_max - y_min) * 0.1, label,
                             fontsize=8, color=color)
 
-        self.figure.suptitle(f"{self.title} - 时间: {t_start:.2f} - {t_end:.2f} 秒", fontsize=12)
+        self.figure.suptitle(f"{self.title()} - 时间: {t_start:.2f} - {t_end:.2f} 秒", fontsize=12)
 
         self.canvas.draw()
 
@@ -319,49 +334,58 @@ class PlotDialog(QDialog):
 
     def save_plot(self):
         """保存图像"""
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "保存图像", "", "PNG图像 (*.png);;PDF文件 (*.pdf);;SVG图像 (*.svg)")
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG图像", "*.png"), ("PDF文件", "*.pdf"), ("SVG图像", "*.svg")]
+        )
 
         if file_path:
             try:
                 self.figure.savefig(file_path, dpi=300, bbox_inches='tight')
-                QMessageBox.information(self, "保存成功", f"图像已保存到:\n{file_path}")
+                messagebox.showinfo("保存成功", f"图像已保存到:\n{file_path}")
             except Exception as e:
-                QMessageBox.warning(self, "保存失败", f"保存图像时出错:\n{str(e)}")
+                messagebox.showerror("保存失败", f"保存图像时出错:\n{str(e)}")
+
+    def on_close(self):
+        """关闭窗口"""
+        plt.close(self.figure)
+        self.destroy()
 
 
 # 便捷函数：快速弹出绘图窗口
-def quick_plot(data, sampling_rate=1000, channel_names=None, title="信号视图"):
+def quick_plot(parent, data, sampling_rate=1000, channel_names=None, title="信号视图"):
     """
     快速弹出绘图窗口
 
     Args:
+        parent: 父窗口
         data: 信号数据
         sampling_rate: 采样率
         channel_names: 通道名称
         title: 窗口标题
     """
-    from PyQt5.QtWidgets import QApplication
-
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-
-    dialog = PlotDialog(data, sampling_rate, channel_names, title)
-    dialog.exec_()
+    dialog = PlotDialog(parent, data, sampling_rate, channel_names, title)
+    dialog.grab_set()  # 模态对话框
 
 
 # 测试代码
-if __name__ == "__main__":
+"""if __name__ == "__main__":
     import sys
-    from PyQt5.QtWidgets import QApplication
+
+    root = tk.Tk()
+    root.title("绘图对话框测试")
+    root.geometry("400x300")
 
     # 创建测试信号
     fs = 1000
     t = np.arange(0, 30, 1 / fs)
     data = np.array([np.sin(2 * np.pi * 10 * t) + 0.5 * np.random.randn(len(t)) for _ in range(8)])
 
-    app = QApplication(sys.argv)
-    dialog = PlotDialog(data, fs, [f"Ch{i}" for i in range(8)], "测试信号")
-    dialog.show()
-    sys.exit(app.exec_())
+
+    def test_dialog():
+        quick_plot(root, data, fs, [f"Ch{i}" for i in range(8)], "测试信号")
+
+
+    ttk.Button(root, text="打开绘图对话框", command=test_dialog).pack(expand=True)
+
+    root.mainloop()"""
