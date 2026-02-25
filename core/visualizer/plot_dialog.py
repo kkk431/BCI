@@ -369,7 +369,7 @@ def quick_plot(parent, data, sampling_rate=1000, channel_names=None, title="信�
 
 
 # 测试代码
-"""if __name__ == "__main__":
+if __name__ == "__main__":
     import sys
 
     root = tk.Tk()
@@ -388,4 +388,4 @@ def quick_plot(parent, data, sampling_rate=1000, channel_names=None, title="信�
 
     ttk.Button(root, text="打开绘图对话框", command=test_dialog).pack(expand=True)
 
-    root.mainloop()"""
+    root.mainloop()
