@@ -511,43 +511,125 @@ class SignalView(tk.Frame):
         super().destroy()
 
 
-# 测试代码
+class fNIRSView(SignalView):
+    """
+    fNIRS专用视图类
+    继承自SignalView，增加HbO/HbR分离显示功能
+    """
+
+    def __init__(self, parent, data_dict: Dict[str, Any], modality: str = "fNIRS"):
+        super().__init__(parent, data_dict, modality)
+
+        # 添加fNIRS特有的控制
+        self.setup_fnirs_controls()
+
+    def setup_fnirs_controls(self):
+        """设置fNIRS特有的控制"""
+        # 找到滤波框架后面的位置插入
+        for child in self.winfo_children():
+            if isinstance(child, ttk.Frame):
+                for grandchild in child.winfo_children():
+                    if isinstance(grandchild, ttk.LabelFrame) and grandchild['text'] == '滤波':
+                        # 在滤波框架后面添加fNIRS控制
+                        fnirs_frame = ttk.LabelFrame(child, text="fNIRS设置")
+                        fnirs_frame.pack(fill=tk.X, pady=5, after=grandchild)
+
+                        # HbO/HbR选择
+                        self.hbo_var = tk.BooleanVar(value=True)
+                        self.hbr_var = tk.BooleanVar(value=True)
+
+                        ttk.Checkbutton(fnirs_frame, text="显示HbO",
+                                        variable=self.hbo_var,
+                                        command=self.update_plot).pack(side=tk.LEFT, padx=5)
+                        ttk.Checkbutton(fnirs_frame, text="显示HbR",
+                                        variable=self.hbr_var,
+                                        command=self.update_plot).pack(side=tk.LEFT, padx=5)
+
+                        # 通道配对信息
+                        ttk.Label(fnirs_frame, text="通道配对:", font=('微软雅黑', 9)).pack(side=tk.LEFT, padx=(20, 2))
+                        self.pair_info_var = tk.StringVar(value="自动")
+                        ttk.Label(fnirs_frame, textvariable=self.pair_info_var).pack(side=tk.LEFT)
+                        break
+                break
+
+    def _parse_data(self):
+        """重写数据解析，处理fNIRS特有的数据格式"""
+        super()._parse_data()
+
+        # 检查是否有HbO/HbR分离数据
+        if hasattr(self, 'data') and self.data is not None:
+            # 假设数据格式：前一半通道是HbO，后一半是HbR
+            n_channels = self.n_channels
+            if n_channels % 2 == 0:
+                self.n_hbo = n_channels // 2
+                self.n_hbr = n_channels // 2
+            else:
+                self.n_hbo = (n_channels + 1) // 2
+                self.n_hbr = n_channels // 2
+
+    def get_selected_channels(self) -> List[int]:
+        """重写通道选择，根据HbO/HbR设置筛选"""
+        selected = super().get_selected_channels()
+
+        if not hasattr(self, 'hbo_var'):
+            return selected
+
+        # 根据HbO/HbR设置过滤
+        filtered = []
+        for idx in selected:
+            if idx < self.n_hbo and self.hbo_var.get():
+                filtered.append(idx)
+            elif idx >= self.n_hbo and self.hbr_var.get():
+                filtered.append(idx)
+
+        return filtered if filtered else selected
+
+    def update_plot(self):
+        """重写绘图方法，添加fNIRS特有的标记"""
+        # 更新通道配对信息
+        if hasattr(self, 'pair_info_var'):
+            n_show = len(self.get_selected_channels())
+            self.pair_info_var.set(f"显示{n_show}通道")
+
+        super().update_plot()
+
+
+# 在文件末尾添加测试代码
 if __name__ == "__main__":
     import sys
 
     root = tk.Tk()
-    root.title("信号视图测试")
+    root.title("fNIRS视图测试")
     root.geometry("1200x800")
 
-    # 创建测试数据
-    fs = 1000
-    t = np.arange(0, 30, 1 / fs)
+    # 创建fNIRS测试数据
+    fs = 100
+    t = np.arange(0, 60, 1 / fs)
+
+    # 模拟HbO和HbR数据
+    hbo_data = np.array([0.5 * np.sin(2 * np.pi * 0.1 * t) + 0.1 * np.random.randn(len(t)) + 1.0
+                         for _ in range(4)])
+    hbr_data = np.array([0.3 * np.sin(2 * np.pi * 0.1 * t + 0.5) + 0.1 * np.random.randn(len(t)) + 0.5
+                         for _ in range(4)])
 
     data_dict = {
         "meta": {
             "subject_id": "test001",
             "session_id": "session1",
             "task": "rest",
-            "modality": ["EEG"]
+            "modality": ["fNIRS"]
         },
         "signal": {
-            "EEG": {
-                "data": np.array([np.sin(2 * np.pi * 10 * t) + 0.5 * np.random.randn(len(t))
-                                  for _ in range(8)]),
+            "fNIRS": {
+                "data": np.vstack([hbo_data, hbr_data]),
                 "sampling_rate": fs,
-                "channel_names": [f"EEG_{i}" for i in range(8)],
-                "unit": "uV"
+                "channel_names": [f"HbO_{i}" for i in range(4)] + [f"HbR_{i}" for i in range(4)],
+                "unit": "μM"
             }
-        },
-        "event": {
-            "event_time": [5.0, 10.0, 15.0, 20.0],
-            "event_label": ["start", "stim1", "stim2", "end"],
-            "event_id": [1, 2, 2, 3],
-            "duration": [0, 2, 2, 0]
         }
     }
 
-    view = SignalView(root, data_dict, modality="EEG")
+    view = fNIRSView(root, data_dict, modality="fNIRS")
     view.pack(fill=tk.BOTH, expand=True)
 
     root.mainloop()
