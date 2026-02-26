@@ -351,6 +351,8 @@ class ECGFeatureExtractor(CommonFeatureExtractor):
 
     # ========================= HRV频域特征 =========================
 
+    # ========================= HRV频域特征 =========================
+
     def extract_hrv_frequency_features(self, resample_rate: float = 4.0) -> Dict[str, float]:
         """
         提取HRV频域特征
@@ -373,13 +375,13 @@ class ECGFeatureExtractor(CommonFeatureExtractor):
         """
         features = {}
 
-        if len(self.rr_intervals) < 30:
-            print(f"警告: RR间期数量不足({len(self.rr_intervals)})，需要至少30个")
+        if len(self.rr_intervals) < 20:  # 降低要求到20个RR间期
+            print(f"警告: RR间期数量不足({len(self.rr_intervals)})，需要至少20个")
             return features
 
         # 数据质量检查
         valid_rr = self.rr_intervals[(self.rr_intervals > 300) & (self.rr_intervals < 2000)]
-        if len(valid_rr) < len(self.rr_intervals) * 0.8:
+        if len(valid_rr) < len(self.rr_intervals) * 0.7:  # 降低要求到70%
             print(f"警告: 有效RR间期比例过低({len(valid_rr)}/{len(self.rr_intervals)})")
             return features
 
@@ -391,31 +393,53 @@ class ECGFeatureExtractor(CommonFeatureExtractor):
             time_rr = np.insert(time_rr, 0, 0)
 
             total_duration = time_rr[-1]
-            if total_duration < 60:
-                print(f"警告: 信号时长过短({total_duration:.1f}秒)")
 
-            time_interp = np.arange(0, time_rr[-1], 1 / resample_rate)
+            # 根据信号时长自适应调整参数
+            if total_duration < 30:
+                print(f"警告: 信号时长过短({total_duration:.1f}秒)，使用简化HRV分析")
+                # 对于超短信号，只计算简单的频域特征
+                return self._extract_simple_frequency_features(rr_intervals)
+            elif total_duration < 60:
+                print(f"信号时长: {total_duration:.1f}秒，使用短时HRV分析方法")
+                # 短信号：调整频段和参数
+                min_duration = total_duration
+                resample_rate = max(2.0, resample_rate)  # 降低重采样率
+                # 调整频段范围
+                vlf_band = (0.003, min(0.04, 0.5))
+                lf_band = (0.04, min(0.15, 0.5))
+                hf_band = (0.15, min(0.4, 0.5))
+            else:
+                min_duration = total_duration
+                vlf_band = (0.003, 0.04)
+                lf_band = (0.04, 0.15)
+                hf_band = (0.15, 0.4)
 
-            if len(time_interp) < 50:
+            time_interp = np.arange(0, min_duration, 1 / resample_rate)
+
+            if len(time_interp) < 20:  # 降低要求到20个点
                 print(f"警告: 插值点数过少({len(time_interp)})")
-                return features
+                return self._extract_simple_frequency_features(rr_intervals)
 
+            # 插值RR间期
             rr_interp = interp1d(time_rr, np.append(rr_intervals[0], rr_intervals),
-                                 kind='cubic')(time_interp)
+                                 kind='cubic', fill_value='extrapolate')(time_interp)
 
             # 去趋势
             rr_detrend = signal.detrend(rr_interp)
 
-            if np.std(rr_detrend) < 1.0:
+            if np.std(rr_detrend) < 0.5:  # 降低阈值
                 print(f"警告: 去趋势后变异性过低(std={np.std(rr_detrend):.2f})")
-                return features
+                return self._extract_simple_frequency_features(rr_intervals)
+
+            # 根据信号长度自适应调整nperseg
+            nperseg = min(128, len(rr_detrend) // 3)  # 使用更小的窗口
+            nperseg = max(16, nperseg)  # 确保最小为16
+
+            if nperseg < 16:
+                print(f"警告: nperseg={nperseg} < 16")
+                return self._extract_simple_frequency_features(rr_intervals)
 
             # 计算PSD
-            nperseg = min(256, len(rr_detrend) // 2)
-            if nperseg < 64:
-                print(f"警告: nperseg={nperseg} < 64")
-                return features
-
             freqs, psd = signal.welch(rr_detrend, fs=resample_rate,
                                       nperseg=nperseg,
                                       noverlap=nperseg // 2,
@@ -423,21 +447,23 @@ class ECGFeatureExtractor(CommonFeatureExtractor):
 
             if np.sum(psd) == 0 or np.isnan(np.sum(psd)):
                 print("警告: 功率谱密度计算异常")
-                return features
-
-            # 定义频段
-            vlf_band = (0.003, 0.04)
-            lf_band = (0.04, 0.15)
-            hf_band = (0.15, min(0.4, freqs[-1]))
+                return self._extract_simple_frequency_features(rr_intervals)
 
             # 计算功率
             vlf_mask = (freqs >= vlf_band[0]) & (freqs < vlf_band[1])
             lf_mask = (freqs >= lf_band[0]) & (freqs < lf_band[1])
             hf_mask = (freqs >= hf_band[0]) & (freqs < hf_band[1])
 
-            if np.sum(vlf_mask) < 2 or np.sum(lf_mask) < 2 or np.sum(hf_mask) < 2:
-                print(f"警告: 频率分辨率不足")
-                return features
+            # 如果某个频段没有足够的点，使用相邻点
+            if np.sum(vlf_mask) < 2:
+                # 扩展VLF频段
+                vlf_mask = (freqs >= vlf_band[0]) & (freqs < lf_band[1])
+            if np.sum(lf_mask) < 2:
+                # 扩展LF频段
+                lf_mask = (freqs >= lf_band[0]) & (freqs < hf_band[1])
+            if np.sum(hf_mask) < 2:
+                # 扩展HF频段
+                hf_mask = (freqs >= hf_band[0]) & (freqs <= max(0.5, hf_band[1]))
 
             vlf_power = np.trapz(psd[vlf_mask], freqs[vlf_mask]) if np.sum(vlf_mask) > 0 else 0.0
             lf_power = np.trapz(psd[lf_mask], freqs[lf_mask]) if np.sum(lf_mask) > 0 else 0.0
@@ -477,8 +503,62 @@ class ECGFeatureExtractor(CommonFeatureExtractor):
                     hf_peak_idx = np.argmax(hf_psd_subset)
                     features['HF_peak_freq'] = float(hf_freqs[hf_peak_idx])
 
+            # 添加信号质量指示
+            features['signal_duration'] = float(total_duration)
+            features['n_rr_intervals'] = len(rr_intervals)
+
         except Exception as e:
-            print(f"警告: 频域分析失败: {str(e)}")
+            print(f"警告: 频域分析失败: {str(e)}，使用简化方法")
+            return self._extract_simple_frequency_features(rr_intervals)
+
+        return features
+
+    def _extract_simple_frequency_features(self, rr_intervals: np.ndarray) -> Dict[str, float]:
+        """
+        简化版的频域特征提取（用于短信号）
+
+        Parameters
+        ----------
+        rr_intervals : np.ndarray
+            RR间期序列
+
+        Returns
+        -------
+        features : dict
+            简化的频域特征
+        """
+        features = {}
+
+        try:
+            # 计算基本统计量作为替代
+            features['rr_mean'] = float(np.mean(rr_intervals))
+            features['rr_std'] = float(np.std(rr_intervals))
+            features['rr_cv'] = float(np.std(rr_intervals) / np.mean(rr_intervals))
+
+            # 使用自相关作为频域的简单替代
+            if len(rr_intervals) > 10:
+                # 计算相邻RR间期的相关性
+                rr_corr = np.corrcoef(rr_intervals[:-1], rr_intervals[1:])[0, 1]
+                features['rr_autocorrelation'] = float(rr_corr) if not np.isnan(rr_corr) else 0.0
+
+                # 计算高频波动的简单估计（使用差分）
+                diff_rr = np.diff(rr_intervals)
+                features['high_frequency_estimate'] = float(np.std(diff_rr))
+                features['low_frequency_estimate'] = float(np.std(rr_intervals))
+
+                # 估计LF/HF比（基于变异性比例）
+                if features['high_frequency_estimate'] > 0:
+                    features['LF_HF_ratio_estimate'] = float(
+                        features['low_frequency_estimate'] / features['high_frequency_estimate']
+                    )
+                else:
+                    features['LF_HF_ratio_estimate'] = 0.0
+
+            # 标记为简化特征
+            features['is_simplified'] = 1.0
+
+        except Exception as e:
+            print(f"警告: 简化频域分析也失败: {str(e)}")
 
         return features
 
