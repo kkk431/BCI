@@ -23,7 +23,7 @@ import scipy.spatial
 import warnings
 from typing import List, Tuple, Dict, Optional
 import networkx as nx
-from common_features import CommonFeatureExtractor
+from core.processing.feature_extraction.common_features import CommonFeatureExtractor
 
 class EEGFeatureExtractor(CommonFeatureExtractor):
     """

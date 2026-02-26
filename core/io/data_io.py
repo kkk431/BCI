@@ -233,7 +233,7 @@ class DataLoader:
         if format == 'unknown':
             raise ValueError(f"不支持的文件格式: {file_path}")
 
-        print(f"📂 读取: {Path(file_path).name} ({format})")
+        print(f"读取: {Path(file_path).name} ({format})")
 
         # 根据格式加载
         if format in ['csv', 'tsv', 'txt']:

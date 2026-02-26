@@ -16,7 +16,7 @@ import warnings
 
 # 导入通用预处理模块
 try:
-    from preprocessing import GeneralPreprocessor, PreprocessingConfig, FilterType, WaveletType, DetrendMethod
+    from core.processing.preprocessing.preprocessing import GeneralPreprocessor, PreprocessingConfig, FilterType, WaveletType, DetrendMethod
 except ImportError:
     # 如果无法导入，定义必要的类
     from enum import Enum as BaseEnum

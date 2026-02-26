@@ -15,11 +15,11 @@ import copy
 
 # 导入各模态预处理模块
 try:
-    from eeg_preprocessing import EEGPreprocessor, EEGPreprocessingConfig, EEGConfigFactory
-    from fnirs_preprocessing import fNIRSPreprocessor, fNIRSConfig
-    from ecg_preprocessing import ECGPreprocessor, ECGConfig
-    from emg_preprocessing import EMGPreprocessor, EMGPreprocessingConfig, EMGConfigFactory
-    from preprocessing import GeneralPreprocessor, PreprocessingConfig
+    from core.processing.preprocessing.eeg_preprocessing import EEGPreprocessor, EEGPreprocessingConfig, EEGConfigFactory
+    from core.processing.preprocessing.fnirs_preprocessing import fNIRSPreprocessor, fNIRSConfig
+    from core.processing.preprocessing.ecg_preprocessing import ECGPreprocessor, ECGConfig
+    from core.processing.preprocessing.emg_preprocessing import EMGPreprocessor, EMGPreprocessingConfig, EMGConfigFactory
+    from core.processing.preprocessing.preprocessing import GeneralPreprocessor, PreprocessingConfig
 
     HAS_MODULES = True
 except ImportError as e:

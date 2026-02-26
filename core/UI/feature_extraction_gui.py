@@ -3,35 +3,10 @@
 # flake8: noqa
 """
 智融脑机 - 独立特征提取模块 GUI
-(彻底解决路径导入问题，严格遵循 main_UI 风格，隐式执行全管线)
 """
 
 import os
 import sys
-
-# ================= 动态绝对路径强制注入 =================
-# 1. 强制获取当前脚本所在的项目根目录 (D:\BCI)
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-
-# 2. 动态拼接到底层模块所在的绝对路径
-path_io = os.path.join(PROJECT_ROOT, "io")
-path_fe = os.path.join(PROJECT_ROOT, "processing", "feature_extraction")
-path_pr = os.path.join(PROJECT_ROOT, "processing", "preprocessing")
-
-# 3. 强行将路径插入到系统环境变量的最前面 (index=0)
-if path_io not in sys.path: sys.path.insert(0, path_io)
-if path_fe not in sys.path: sys.path.insert(0, path_fe)
-if path_pr not in sys.path: sys.path.insert(0, path_pr)
-
-# [环境自检诊断] 打印在终端，方便排查
-print("\n" + "=" * 30)
-print("启动环境与路径自检诊断:")
-print(f"-> 根目录: {PROJECT_ROOT}")
-print(f"-> IO模块路径: {path_io} | 是否存在: {os.path.exists(path_io)}")
-print(f"-> 预处理路径: {path_pr} | 是否存在: {os.path.exists(path_pr)}")
-print(f"-> 特征提取路径: {path_fe} | 是否存在: {os.path.exists(path_fe)}")
-print("=" * 30 + "\n")
-# ========================================================
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -39,11 +14,16 @@ import threading
 import traceback
 import numpy as np
 
-# --- 导入底层业务模块 (现在绝对能找到了) ---
+# --- 导入底层业务模块  ---
 try:
-    from data_io import DataLoader
-    from multimodal_preprocessing import MultiModalPreprocessor, MultiModalConfigFactory
-    from multimodal_pipeline import MultimodalFeaturePipeline
+    from core.io.data_io import DataLoader
+    from core.processing.preprocessing.multimodal_preprocessing import MultiModalPreprocessor, MultiModalConfigFactory
+
+    # 导入各个特征提取器
+    from core.processing.feature_extraction.eeg_features import EEGFeatureExtractor
+    from core.processing.feature_extraction.fnirs_features import FNIRSFeatureExtractor
+    from core.processing.feature_extraction.emg_features import EMGFeatureExtractor
+    from core.processing.feature_extraction.ecg_features import ECGFeatureExtractor
 
     MODULES_LOADED = True
 except ImportError as e:
@@ -106,7 +86,7 @@ class ExtractionApp:
 
         # 核心数据容器
         self.clean_data_dict = None  # 存放 IO 加载 + 预处理后的纯净数据
-        self.extracted_features = None  # 存放提取出的特征字典
+        self.extracted_features = {}  # 存放提取出的特征字典
         self.checkbox_vars = {}  # 存放用户勾选的特征变量
 
         if not MODULES_LOADED:
@@ -303,7 +283,7 @@ class ExtractionApp:
                 row += 1
 
     def action_extract(self):
-        """执行精确的特征提取"""
+        """执行精确的特征提取 - 使用具体的特征提取器类"""
         mod = self.modality_var.get()
         if not mod or not self.clean_data_dict:
             return
@@ -319,12 +299,146 @@ class ExtractionApp:
 
         def background_extraction():
             try:
-                request = {mod: selected_cats}
-                pipeline = MultimodalFeaturePipeline(self.clean_data_dict, selected_features=request)
-                final_dict = pipeline.run_pipeline()
+                # 获取当前模态的数据
+                sig_info = self.clean_data_dict['signal'][mod]
+                data = sig_info['data']
+                fs = sig_info.get('sampling_rate', 1000)
+                ch_names = sig_info.get('channel_names', [])
 
-                all_feats = final_dict.get('processed', {}).get('feature', {})
-                self.extracted_features = {mod: all_feats.get(mod, {})}
+                # 初始化特征字典
+                features = {}
+
+                # ================= 根据模态选择对应的特征提取器 =================
+                if mod == 'EEG':
+                    extractor = EEGFeatureExtractor(fs=fs, channel_names=ch_names)
+
+                    # 逐通道提取通用特征
+                    for ch_idx in range(data.shape[0]):
+                        ch_data = data[ch_idx] if data.ndim == 2 else data
+                        ch_name = ch_names[ch_idx] if ch_names else f"ch{ch_idx}"
+
+                        if 'time_domain' in selected_cats:
+                            time_feats = extractor.compute_time_domain_features(ch_data)
+                            features.update({f"{ch_name}_{k}": v for k, v in time_feats.items()})
+
+                        if 'freq_domain' in selected_cats:
+                            freq_feats = extractor.compute_freq_domain_features(ch_data)
+                            features.update({f"{ch_name}_{k}": v for k, v in freq_feats.items()})
+
+                        if 'wavelet' in selected_cats:
+                            wave_feats = extractor.compute_wavelet_features(ch_data)
+                            features.update({f"{ch_name}_{k}": v for k, v in wave_feats.items()})
+
+                        if 'nonlinear' in selected_cats:
+                            nl_feats = extractor.compute_nonlinear_features(ch_data)
+                            features.update({f"{ch_name}_{k}": v for k, v in nl_feats.items()})
+
+                    # 跨通道特征
+                    if 'band_power' in selected_cats and data.ndim == 2:
+                        band_feats = extractor.extract_band_powers(data)
+                        features.update(band_feats)
+
+                    if 'connectivity' in selected_cats and data.ndim == 2 and data.shape[0] > 1:
+                        conn_feats = extractor.compute_connectivity_features(data)
+                        features.update({f"connectivity_{k}": v for k, v in conn_feats.items()})
+
+                    if 'spatial' in selected_cats and data.ndim == 2 and data.shape[0] > 1:
+                        if extractor.channel_locations is not None:
+                            spat_feats = extractor.compute_topographic_features(data)
+                            features.update({f"spatial_{k}": v for k, v in spat_feats.items()})
+
+                elif mod == 'fNIRS':
+                    extractor = FNIRSFeatureExtractor(fs=fs)
+
+                    # 逐通道提取通用特征
+                    for ch_idx in range(data.shape[0]):
+                        ch_data = data[ch_idx] if data.ndim == 2 else data
+                        ch_name = ch_names[ch_idx] if ch_names else f"ch{ch_idx}"
+
+                        if 'time_domain' in selected_cats:
+                            time_feats = extractor.compute_time_domain_features(ch_data)
+                            features.update({f"{ch_name}_{k}": v for k, v in time_feats.items()})
+
+                        if 'freq_domain' in selected_cats:
+                            freq_feats = extractor.compute_freq_domain_features(ch_data)
+                            features.update({f"{ch_name}_{k}": v for k, v in freq_feats.items()})
+
+                        if 'wavelet' in selected_cats:
+                            wave_feats = extractor.compute_wavelet_features(ch_data)
+                            features.update({f"{ch_name}_{k}": v for k, v in wave_feats.items()})
+
+                        if 'nonlinear' in selected_cats:
+                            nl_feats = extractor.compute_nonlinear_features(ch_data)
+                            features.update({f"{ch_name}_{k}": v for k, v in nl_feats.items()})
+
+                    # fNIRS特有特征
+                    if 'hbo_hbr' in selected_cats and data.shape[0] >= 2:
+                        # 假设第一通道是HbO，第二通道是HbR
+                        hbo_feats = extractor.extract_hbo_hbr_features(data[0], data[1])
+                        features.update(hbo_feats)
+
+                    if 'channel_correlation' in selected_cats and data.shape[0] >= 2:
+                        corr_feats = extractor.compute_channel_correlation(data)
+                        features.update(corr_feats)
+
+                elif mod == 'EMG':
+                    extractor = EMGFeatureExtractor(sampling_rate=fs)
+
+                    # 创建数据字典供extract_emg_features使用
+                    emg_data_dict = {
+                        'signal': {
+                            'EMG': {
+                                'data': data,
+                                'sampling_rate': fs,
+                                'unit': 'mV',
+                                'channel_names': ch_names
+                            }
+                        }
+                    }
+
+                    # 使用extract_emg_features提取所有特征，然后过滤
+                    all_features = extractor.extract_emg_features(emg_data_dict)
+
+                    # 只保留用户选择的特征类别
+                    for cat in selected_cats:
+                        if cat == 'time_domain' and 'time_domain' in all_features:
+                            features.update({f"time_{k}": v for k, v in all_features['time_domain'].items()})
+                        elif cat == 'freq_domain' and 'frequency_domain' in all_features:
+                            features.update({f"freq_{k}": v for k, v in all_features['frequency_domain'].items()})
+                        elif cat == 'nonlinear' and 'nonlinear' in all_features:
+                            features.update({f"nl_{k}": v for k, v in all_features['nonlinear'].items()})
+
+                elif mod == 'ECG':
+                    extractor = ECGFeatureExtractor(sampling_rate=fs)
+
+                    # 创建数据字典供extract_ecg_features使用
+                    ecg_data_dict = {
+                        'signal': {
+                            'ECG': {
+                                'data': data,
+                                'sampling_rate': fs,
+                                'unit': 'mV',
+                                'channel_names': ch_names
+                            }
+                        }
+                    }
+
+                    # 使用extract_ecg_features提取所有特征，然后过滤
+                    all_features = extractor.extract_ecg_features(ecg_data_dict)
+
+                    # 只保留用户选择的特征类别
+                    for cat in selected_cats:
+                        if cat == 'morphological' and 'morphological' in all_features:
+                            features.update({f"morph_{k}": v for k, v in all_features['morphological'].items()})
+                        elif cat == 'hrv_time' and 'hrv_time' in all_features:
+                            features.update({f"hrv_t_{k}": v for k, v in all_features['hrv_time'].items()})
+                        elif cat == 'hrv_frequency' and 'hrv_frequency' in all_features:
+                            features.update({f"hrv_f_{k}": v for k, v in all_features['hrv_frequency'].items()})
+                        elif cat == 'nonlinear' and 'hrv_nonlinear' in all_features:
+                            features.update({f"hrv_nl_{k}": v for k, v in all_features['hrv_nonlinear'].items()})
+
+                # 保存提取的特征
+                self.extracted_features[mod] = features
 
                 self.root.after(0, self._ui_update_on_extract_success, mod)
 
@@ -336,7 +450,8 @@ class ExtractionApp:
 
     def _ui_update_on_extract_success(self, mod):
         """成功提取后刷新表格和状态"""
-        self.lbl_status.config(text=f"【{mod}】所选特征提取完毕！", fg="green")
+        feat_count = len(self.extracted_features.get(mod, {}))
+        self.lbl_status.config(text=f"【{mod}】{feat_count}个特征提取完毕！", fg="green")
         self.btn_extract.config(state="normal", bg=COLOR_BTN_BG, cursor="hand2")
         self.btn_load.config(state="normal", bg=COLOR_BTN_BG, cursor="hand2")
         self.render_table(mod)
@@ -348,19 +463,16 @@ class ExtractionApp:
 
         mod_feats = self.extracted_features.get(mod, {})
 
-        flat = {}
-        for k, v in mod_feats.items():
-            if isinstance(v, dict):
-                for sk, sv in v.items():
-                    flat[f"[{k}] {sk}"] = sv
-            else:
-                flat[k] = v
-
-        for name, val in flat.items():
+        for name, val in mod_feats.items():
             if isinstance(val, float):
-                val_str = f"{val:.6f}"
+                if abs(val) < 0.001:
+                    val_str = f"{val:.6f}"
+                elif abs(val) < 1:
+                    val_str = f"{val:.4f}"
+                else:
+                    val_str = f"{val:.2f}"
             elif isinstance(val, (list, np.ndarray)):
-                val_str = f"Array {np.shape(val)}: {str(val)[:30]}..."
+                val_str = f"Array {np.shape(val)}: {str(val)[:50]}..."
             else:
                 val_str = str(val)
 
