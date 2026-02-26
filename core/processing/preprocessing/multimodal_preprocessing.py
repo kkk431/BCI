@@ -387,7 +387,7 @@ class MultiModalPreprocessor:
                 if modality == "EMG":
                     # 在重采样前检查并调整滤波参数
                     self._adjust_emg_filter_for_resampling(signal_info, original_fs, target_fs)
-                
+
                 data = signal_info["data"]
 
                 # 计算新的样本数
@@ -991,8 +991,8 @@ class MultiModalConfigFactory:
         创建运动想象实验的多模态配置
         （通常包含EEG、EMG、ECG）
         """
-        from eeg_preprocessing import EEGConfigFactory
-        from emg_preprocessing import EMGConfigFactory
+        from core.processing.preprocessing.eeg_preprocessing import EEGConfigFactory
+        from core.processing.preprocessing.emg_preprocessing import EMGConfigFactory
 
         # 创建EEG配置
         eeg_config = EEGConfigFactory.create_motor_imagery_config()
@@ -1188,7 +1188,7 @@ def example_usage():
         "event": {
             "event_id": [1, 2],
             "event_label": ["left", "right"],
-            "event_time": [1.5, 3.0], 
+            "event_time": [1.5, 3.0],
             "event_sample": [1500, 3000],
             "duration": [2.0, 2.0]
         },
@@ -1219,11 +1219,11 @@ def example_usage():
     print("\n4. 处理结果:")
 
     if result.success:
-        print(f"✓ 处理成功，耗时: {result.processing_time:.2f}秒")
+        print(f"处理成功，耗时: {result.processing_time:.2f}秒")
         processed_data = result.processed_data
         print(f"处理后的模态: {processed_data['processed']['multimodal_preprocessing']['modalities_processed']}")
     else:
-        print(f"✗ 处理失败: {result.error_message}")
+        print(f"处理失败: {result.error_message}")
 
     print("\n" + "=" * 70)
     print("示例完成!")

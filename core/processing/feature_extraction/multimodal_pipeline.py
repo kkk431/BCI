@@ -11,20 +11,10 @@ import numpy as np
 import warnings
 
 try:
-    from eeg_features import EEGFeatureExtractor
-    from fnirs_features import FNIRSFeatureExtractor
-    # 精确导入 EMG 的细分函数
-    from emg_features import (extract_time_domain_features as emg_time,
-                              extract_frequency_domain_features as emg_freq,
-                              extract_time_frequency_features as emg_tf,
-                              extract_nonlinear_features as emg_nl)
-    # 精确导入 ECG 的细分函数
-    from ecg_features import (detect_r_peaks,
-                              extract_morphological_features as ecg_morph,
-                              extract_hrv_time_features as ecg_hrv_t,
-                              extract_hrv_frequency_features as ecg_hrv_f,
-                              extract_time_frequency_features as ecg_tf,
-                              extract_nonlinear_features as ecg_nl)
+    from core.processing.feature_extraction.eeg_features import EEGFeatureExtractor
+    from core.processing.feature_extraction.fnirs_features import FNIRSFeatureExtractor
+    from core.processing.feature_extraction.emg_features import EMGFeatureExtractor
+    from core.processing.feature_extraction.ecg_features import ECGFeatureExtractor
 except ImportError as e:
     warnings.warn(f"导入底层特征提取模块失败，详细错误: {e}")
 
@@ -171,39 +161,94 @@ class MultimodalFeaturePipeline:
 
                 # ================= EMG 分支 =================
                 elif mod == 'EMG':
-                    emg_signal = data[0] if data.ndim == 2 else data
-                    if 'time_domain' in selected_cats:
-                        features['time_domain'] = emg_time(emg_signal)
-                    if 'freq_domain' in selected_cats:
-                        features['frequency_domain'] = emg_freq(emg_signal, fs)
-                    if 'wavelet' in selected_cats:  # EMG里的时频对应特征
-                        features['time_frequency'] = emg_tf(emg_signal, fs)
-                    if 'nonlinear' in selected_cats:
-                        features['nonlinear'] = emg_nl(emg_signal, fs)
+                    # 实例化EMG特征提取器
+                    extractor = EMGFeatureExtractor(sampling_rate=fs)
+
+                    # 为EMG创建数据字典（支持多通道）
+                    emg_data_dict = {
+                        'signal': {
+                            'EMG': {
+                                'data': data,
+                                'sampling_rate': fs,
+                                'channel_names': ch_names
+                            }
+                        }
+                    }
+
+                    # 使用extract_emg_features提取所有特征
+                    all_features = extractor.extract_emg_features(emg_data_dict)
+
+                    # 根据用户选择过滤特征类别
+                    for cat in selected_cats:
+                        if cat == 'time_domain' and 'time_domain' in all_features:
+                            # 为时域特征添加前缀
+                            time_feats = {f"emg_time_{k}": v for k, v in all_features['time_domain'].items()}
+                            features.update(time_feats)
+                        elif cat == 'freq_domain' and 'frequency_domain' in all_features:
+                            freq_feats = {f"emg_freq_{k}": v for k, v in all_features['frequency_domain'].items()}
+                            features.update(freq_feats)
+                        elif cat == 'wavelet' and 'wavelet' not in all_features:  # EMG没有单独的wavelet
+                            # EMG的wavelet特征实际上在frequency_domain中已经包含
+                            pass
+                        elif cat == 'nonlinear' and 'nonlinear' in all_features:
+                            nl_feats = {f"emg_nl_{k}": v for k, v in all_features['nonlinear'].items()}
+                            features.update(nl_feats)
+
+                    # 如果用户选择了通用特征，添加common特征
+                    if 'common' in all_features:
+                        common_feats = {f"emg_common_{k}": v for k, v in all_features['common'].items()}
+                        features.update(common_feats)
 
                 # ================= ECG 分支 =================
                 elif mod == 'ECG':
-                    ecg_signal = data[0] if data.ndim == 2 else data
-                    # R波是其他特征的基础，只要提取ECG特征，就必须先检波
-                    r_peaks = detect_r_peaks(ecg_signal, fs)
-                    rr_intervals = np.diff(r_peaks) / fs * 1000
+                    # 实例化ECG特征提取器
+                    extractor = ECGFeatureExtractor(sampling_rate=fs)
 
-                    if 'morphological' in selected_cats:
-                        features['morphological'] = ecg_morph(ecg_signal, r_peaks, fs)
-                    if 'hrv_time' in selected_cats:
-                        features['hrv_time'] = ecg_hrv_t(rr_intervals)
-                    if 'hrv_frequency' in selected_cats:
-                        features['hrv_frequency'] = ecg_hrv_f(rr_intervals, 4.0)
-                    if 'wavelet' in selected_cats:
-                        features['time_frequency'] = ecg_tf(ecg_signal, fs)
-                    if 'nonlinear' in selected_cats:
-                        features['nonlinear'] = ecg_nl(rr_intervals)
+                    # 为ECG创建数据字典（支持多通道）
+                    ecg_data_dict = {
+                        'signal': {
+                            'ECG': {
+                                'data': data,
+                                'sampling_rate': fs,
+                                'channel_names': ch_names
+                            }
+                        }
+                    }
+
+                    # 使用extract_ecg_features提取所有特征
+                    all_features = extractor.extract_ecg_features(ecg_data_dict)
+
+                    # 根据用户选择过滤特征类别
+                    for cat in selected_cats:
+                        if cat == 'morphological' and 'morphological' in all_features:
+                            morph_feats = {f"ecg_morph_{k}": v for k, v in all_features['morphological'].items()}
+                            features.update(morph_feats)
+                        elif cat == 'hrv_time' and 'hrv_time' in all_features:
+                            hrv_t_feats = {f"ecg_hrv_t_{k}": v for k, v in all_features['hrv_time'].items()}
+                            features.update(hrv_t_feats)
+                        elif cat == 'hrv_frequency' and 'hrv_frequency' in all_features:
+                            hrv_f_feats = {f"ecg_hrv_f_{k}": v for k, v in all_features['hrv_frequency'].items()}
+                            features.update(hrv_f_feats)
+                        elif cat == 'wavelet' and 'wavelet' not in all_features:  # ECG没有单独的wavelet
+                            # ECG的wavelet特征可能在其他地方
+                            pass
+                        elif cat == 'nonlinear' and 'hrv_nonlinear' in all_features:
+                            nl_feats = {f"ecg_hrv_nl_{k}": v for k, v in all_features['hrv_nonlinear'].items()}
+                            features.update(nl_feats)
+
+                    # 如果用户选择了通用特征，添加common特征
+                    if 'common' in all_features:
+                        common_feats = {f"ecg_common_{k}": v for k, v in all_features['common'].items()}
+                        features.update(common_feats)
 
                 # 保存特征
                 if features:
                     self.processor.save_features(mod, features)
+                    print(f"模态 {mod} 特征提取完成，共 {len(features)} 个特征")
 
             except Exception as e:
-                print(f"[X] 提取模态 {mod} 发生异常: {e}")
+                print(f"提取模态 {mod} 发生异常: {e}")
+                import traceback
+                traceback.print_exc()
 
         return self.data_dict

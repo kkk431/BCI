@@ -315,9 +315,22 @@ class DataLoader:
             'bdf': mne.io.read_raw_bdf,
             'gdf': mne.io.read_raw_gdf
         }
+
+        # 读取文件
         raw = readers[format](file_path, preload=True)
 
-        data, _ = raw[:]
+        # 修复：使用更基础的方法获取数据
+        # 方法1：通过索引获取所有通道
+        n_channels = len(raw.ch_names)
+        n_times = len(raw.times)
+
+        # 创建数据数组
+        data = np.zeros((n_channels, n_times))
+
+        # 逐个通道读取数据
+        for idx, ch_name in enumerate(raw.ch_names):
+            data[idx, :] = raw.get_data(picks=[idx])[0]
+
         fs = raw.info['sfreq']
         ch_names = raw.ch_names
 
@@ -329,18 +342,42 @@ class DataLoader:
             signal_type='eeg', unit='uV'
         )
 
+        # 获取设备信息（如果可用）
+        device_info = raw.info.get('device_info', {})
+        device_name = device_info.get('model', 'unknown') if device_info else 'unknown'
+
         meta = self.builder.build_meta(
             subject_id=kwargs.get('subject_id', Path(file_path).stem),
             session_id=kwargs.get('session_id', 'session1'),
             task=kwargs.get('task', 'unknown'),
             file_path=str(file_path),
             modality=[modality],
-            device=raw.info.get('device_info', {}).get('model', 'unknown'),
+            device=device_name,
             sampling_rate=fs,
             n_channels=len(ch_names),
-            channel_names=ch_names
+            channel_names=ch_names,
+            meas_date=str(raw.info.get('meas_date', '')) if raw.info.get('meas_date') else ''
         )
         data_dict['meta'] = meta
+
+        # 如果有事件/刺激信息，也加载
+        try:
+            # 尝试查找事件通道
+            stim_channels = mne.pick_types(raw.info, stim=True, misc=False)
+            if len(stim_channels) > 0:
+                events = mne.find_events(raw, stim_channel=stim_channels, verbose=False, shortest_event=1)
+                if len(events) > 0:
+                    for event in events:
+                        self.builder.add_event(
+                            data_dict,
+                            event_label=f"event_{event[2]}",
+                            event_time=event[0] / fs,
+                            event_id=event[2]
+                        )
+        except Exception as e:
+            # 如果没有事件信息，忽略
+            print(f"没有找到事件信息: {e}")
+
         return data_dict
 
     def _load_mat(self, file_path: str, **kwargs) -> Dict:

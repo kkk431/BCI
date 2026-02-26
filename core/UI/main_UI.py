@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+import feature_extraction_gui
 
 project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
@@ -17,15 +18,15 @@ COLOR_TAB_ACTIVE = "white"
 COLOR_CONTENT_BG = "white"
 
 # 图片资源路径（使用 os.path.join 自动处理分隔符）
-LOGO_PATH = os.path.join("core", "UI", "UI_resource", "logo.png")
-MENU_PATH = os.path.join("core", "UI", "UI_resource", "menu.png")
-CONTENT_PATH = os.path.join("core", "UI", "UI_resource", "Content.png")
-BUTTON1_PATH = os.path.join("core", "UI", "UI_resource", "button1.png")
-BUTTON2_PATH = os.path.join("core", "UI", "UI_resource", "button2.png")
-BUTTON3_PATH = os.path.join("core", "UI", "UI_resource", "button3.png")
-BUTTON4_PATH = os.path.join("core", "UI", "UI_resource", "button4.png")
-SIGNIN_PATH = os.path.join("core", "UI", "UI_resource", "SignIn.png")
-BACKGROUND_PATH = os.path.join("core", "UI", "UI_resource", "background.png")
+LOGO_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "logo.png")
+MENU_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "menu.png")
+CONTENT_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "Content.png")
+BUTTON1_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "button1.png")
+BUTTON2_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "button2.png")
+BUTTON3_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "button3.png")
+BUTTON4_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "button4.png")
+SIGNIN_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "SignIn.png")
+BACKGROUND_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "background.png")
 
 # ========== 启动时预加载所有可视化模块 ==========
 print("正在预加载可视化模块...")
