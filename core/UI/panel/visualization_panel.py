@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 visualization_panel.py
-高级版可视化集成面板 - 修复滚动问题
+可视化集成面板 - 用于嵌入主界面的Visualization标签页
 """
 import sys
 from pathlib import Path
@@ -12,23 +12,21 @@ if str(project_root) not in sys.path:
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import os
-import sys
 import numpy as np
 from datetime import datetime
 
-# 导入可视化模块
-from core.visualizer.signal_view import SignalView
+# 导入功能模块
+from core.visualizer.signal_view import SignalView, fNIRSView
 from core.visualizer.stats_view import StatsView
 from core.visualizer.bar_view import BarView
-from core.visualizer.plot_dialog import quick_plot
+from core.visualizer.time_frequency_view import TimeFrequencyView
+from core.visualizer.topography_view import TopographyView
+from core.visualizer.feature_view import FeatureView
 
 # 导入数据IO
 try:
     from core.io.data_io import DataLoader
 except ImportError:
-    import sys
-    import os
-
     sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
     from core.io.data_io import DataLoader
 
@@ -51,7 +49,8 @@ class ScrollableFrame(ttk.Frame):
 
         # 创建可滚动的框架
         self.scrollable_frame = ttk.Frame(self.canvas)
-        self.scrollable_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.scrollable_frame.bind("<Configure>",
+                                   lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
 
         # 将框架添加到画布
         self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
@@ -73,19 +72,16 @@ class ScrollableFrame(ttk.Frame):
 
     def on_canvas_configure(self, event):
         """画布大小变化时调整内部框架宽度"""
-        # 设置内部框架宽度与画布相同
         self.canvas.itemconfig(self.canvas_window, width=event.width)
 
     def bind_mousewheel(self):
         """绑定鼠标滚轮事件"""
-
         def on_mousewheel(event):
             self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
         def on_shift_mousewheel(event):
             self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
 
-        # 绑定到自身和所有子组件
         self.canvas.bind_all("<MouseWheel>", on_mousewheel)
         self.canvas.bind_all("<Shift-MouseWheel>", on_shift_mousewheel)
 
@@ -106,14 +102,16 @@ class ModernCard(tk.Frame):
         self.color = color
 
         # 配置卡片样式
-        self.config(relief=tk.FLAT, highlightthickness=1, highlightcolor='#e0e0e0', highlightbackground='#e0e0e0')
+        self.config(relief=tk.FLAT, highlightthickness=1,
+                    highlightcolor='#e0e0e0', highlightbackground='#e0e0e0')
 
         # 图标和标题区域
         header = tk.Frame(self, bg='white')
         header.pack(fill=tk.X, padx=15, pady=(15, 5))
 
         # 图标
-        icon_label = tk.Label(header, text=icon, font=('Segoe UI', 24), bg='white', fg=color)
+        icon_label = tk.Label(header, text=icon, font=('Segoe UI', 24),
+                              bg='white', fg=color)
         icon_label.pack(side=tk.LEFT, padx=(0, 10))
 
         # 标题
@@ -162,7 +160,8 @@ class ModernCard(tk.Frame):
 
 class ModernVisualizationPanel(ttk.Frame):
     """
-    高级版可视化集成面板 - 支持滚动
+    可视化集成面板 - 用于嵌入主界面的Visualization标签页
+    包含6个功能模块卡片
     """
 
     # 配色方案
@@ -175,10 +174,12 @@ class ModernVisualizationPanel(ttk.Frame):
         'danger': '#e74c3c',
         'light': '#ecf0f1',
         'dark': '#2c3e50',
-        'card1': '#3498db',  # 信号波形
-        'card2': '#27ae60',  # 统计分析
-        'card3': '#e74c3c',  # 柱状图
-        'card4': '#f39c12',  # 快速预览
+        'card1': '#3498db',   # 信号波形
+        'card2': '#27ae60',   # 统计分析
+        'card3': '#e74c3c',   # 柱状图
+        'card4': '#9b59b6',   # 时频分析
+        'card5': '#1abc9c',   # 地形图
+        'card6': '#e67e22',   # 特征可视化
     }
 
     def __init__(self, parent, data_dict=None, file_path=None, **kwargs):
@@ -188,12 +189,12 @@ class ModernVisualizationPanel(ttk.Frame):
         self.file_path = file_path
         self.data_loader = DataLoader()
         self.current_views = {}
+        self.qt_app = None
 
         # 配置样式
         self.style = ttk.Style()
         self.style.theme_use('clam')
 
-        # 自定义样式
         self.style.configure('Modern.TLabel', font=('微软雅黑', 10))
         self.style.configure('Modern.TButton', font=('微软雅黑', 10), padding=5)
         self.style.configure('Modern.TLabelframe', font=('微软雅黑', 10, 'bold'))
@@ -207,88 +208,32 @@ class ModernVisualizationPanel(ttk.Frame):
     def setup_ui(self):
         """设置用户界面"""
         # 主容器 - 使用网格布局
-        self.grid_rowconfigure(0, weight=0)  # 导航栏
-        self.grid_rowconfigure(1, weight=1)  # 内容区域（可滚动）
-        self.grid_rowconfigure(2, weight=0)  # 状态栏
+        self.grid_rowconfigure(0, weight=0)  # 数据面板
+        self.grid_rowconfigure(1, weight=1)  # 功能卡片（可滚动）
         self.grid_columnconfigure(0, weight=1)
 
-        # ========== 顶部导航栏 ==========
-        self.create_navbar()
+        # ========== 顶部数据面板 ==========
+        self.create_data_panel().grid(row=0, column=0, sticky="ew", pady=10, padx=10)
 
-        # ========== 可滚动的内容区域 ==========
+        # ========== 可滚动的功能卡片区域 ==========
         self.scrollable_frame = ScrollableFrame(self)
-        self.scrollable_frame.grid(row=1, column=0, sticky="nsew")
+        self.scrollable_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
 
-        # 在可滚动框架中放置内容
-        self.create_content(self.scrollable_frame.scrollable_frame)
+        # 在可滚动框架中放置功能卡片
+        self.create_function_grid(self.scrollable_frame.scrollable_frame)
 
-        # ========== 状态栏 ==========
-        self.create_status_bar()
-
-    def create_navbar(self):
-        """创建导航栏"""
-        navbar = tk.Frame(self, bg=self.COLORS['primary'], height=50)
-        navbar.grid(row=0, column=0, sticky="ew")
-        navbar.grid_propagate(False)
-
-        # Logo
-        logo = tk.Label(navbar, text="🧠 智融脑机", bg=self.COLORS['primary'],
-                        fg='white', font=('微软雅黑', 14, 'bold'))
-        logo.pack(side=tk.LEFT, padx=20, pady=10)
-
-        # 时间显示
-        self.time_var = tk.StringVar()
-        self.update_time()
-        time_label = tk.Label(navbar, textvariable=self.time_var,
-                              bg=self.COLORS['primary'], fg='#bdc3c7',
-                              font=('微软雅黑', 10))
-        time_label.pack(side=tk.RIGHT, padx=20, pady=10)
-
-    def update_time(self):
-        """更新时间"""
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        self.time_var.set(f"📅 {now}")
-        self.after(1000, self.update_time)
-
-    def create_content(self, parent):
-        """创建内容区域"""
-        # 使用网格布局
-        parent.grid_columnconfigure(0, weight=1)
-
-        # ========== 欢迎区域 ==========
-        welcome = tk.Frame(parent, bg='#f5f6fa')
-        welcome.grid(row=0, column=0, sticky="ew", pady=(0, 20))
-
-        title = tk.Label(welcome, text="数据可视化平台",
-                         font=('微软雅黑', 24, 'bold'), bg='#f5f6fa', fg=self.COLORS['dark'])
-        title.pack(anchor=tk.W)
-
-        subtitle = tk.Label(welcome, text="多模态脑机接口数据可视化与分析",
-                            font=('微软雅黑', 11), bg='#f5f6fa', fg='#7f8c8d')
-        subtitle.pack(anchor=tk.W)
-
-        # ========== 数据面板 ==========
-        self.create_data_panel(parent).grid(row=1, column=0, sticky="ew", pady=(0, 20))
-
-        # ========== 功能卡片网格 ==========
-        self.create_function_grid(parent).grid(row=2, column=0, sticky="nsew", pady=(0, 20))
-
-        # 配置最后一行权重
-        parent.grid_rowconfigure(2, weight=1)
-
-    def create_data_panel(self, parent):
+    def create_data_panel(self):
         """创建数据面板"""
-        # 数据面板容器
-        panel = tk.Frame(parent, bg='white', relief=tk.FLAT,
+        panel = tk.Frame(self, bg='white', relief=tk.FLAT,
                          highlightthickness=1, highlightcolor='#e0e0e0')
 
         # 标题
-        title_frame = tk.Frame(panel, bg=self.COLORS['light'], height=35)
+        title_frame = tk.Frame(panel, bg='#ecf0f1', height=35)
         title_frame.pack(fill=tk.X)
         title_frame.pack_propagate(False)
 
-        title = tk.Label(title_frame, text="📁 数据管理", bg=self.COLORS['light'],
-                         font=('微软雅黑', 11, 'bold'), fg=self.COLORS['dark'])
+        title = tk.Label(title_frame, text="📁 数据管理", bg='#ecf0f1',
+                         font=('微软雅黑', 11, 'bold'), fg='#2c3e50')
         title.pack(side=tk.LEFT, padx=15, pady=5)
 
         # 内容区域
@@ -314,9 +259,9 @@ class ModernVisualizationPanel(ttk.Frame):
         btn_frame.pack(fill=tk.X, pady=10)
 
         buttons = [
-            ("📂 浏览文件", self.COLORS['accent'], self.browse_file),
-            ("📥 加载数据", self.COLORS['success'], self.load_current_file),
-            ("🎲 演示数据", self.COLORS['warning'], self.load_demo_data),
+            ("📂 浏览文件", '#3498db', self.browse_file),
+            ("📥 加载数据", '#27ae60', self.load_current_file),
+            ("🎲 演示数据", '#f39c12', self.load_demo_data),
             ("🔄 重置", '#95a5a6', self.reset_data)
         ]
 
@@ -333,16 +278,13 @@ class ModernVisualizationPanel(ttk.Frame):
 
     def create_info_card(self, parent):
         """创建信息卡片"""
-        # 信息容器
         info_container = tk.Frame(parent, bg='#f8f9fa', relief=tk.FLAT,
                                   highlightthickness=1, highlightcolor='#e0e0e0')
         info_container.pack(fill=tk.X, pady=10)
 
-        # 标题
         tk.Label(info_container, text="📊 数据信息", bg='#f8f9fa',
-                 font=('微软雅黑', 10, 'bold'), fg=self.COLORS['dark']).pack(anchor=tk.W, padx=10, pady=5)
+                 font=('微软雅黑', 10, 'bold'), fg='#2c3e50').pack(anchor=tk.W, padx=10, pady=5)
 
-        # 信息内容
         self.info_text = tk.Text(info_container, height=5, wrap=tk.WORD,
                                  font=('微软雅黑', 9), bg='#f8f9fa',
                                  relief=tk.FLAT, highlightthickness=0)
@@ -350,62 +292,64 @@ class ModernVisualizationPanel(ttk.Frame):
         self.info_text.config(state=tk.DISABLED)
 
     def create_function_grid(self, parent):
-        """创建功能卡片网格"""
-        # 容器
-        container = tk.Frame(parent, bg='#f5f6fa')
+        """创建功能卡片网格 - 3列显示6个卡片"""
+        # 配置网格列 - 3列
+        for i in range(3):
+            parent.columnconfigure(i, weight=1, uniform='col')
 
-        # 标题
-        title = tk.Label(container, text="🔧 可视化功能",
-                         font=('微软雅黑', 16, 'bold'), bg='#f5f6fa', fg=self.COLORS['dark'])
-        title.pack(anchor=tk.W, pady=(0, 15))
-
-        # 卡片网格容器
-        grid = tk.Frame(container, bg='#f5f6fa')
-        grid.pack(fill=tk.BOTH, expand=True)
-
-        # 配置网格列 - 2列，均匀分布
-        for i in range(2):
-            grid.columnconfigure(i, weight=1, uniform='col')
-
-        # 功能卡片定义
+        # 6个功能卡片定义
         cards = [
             {
                 'title': '信号波形',
-                'desc': '多通道信号显示 · 实时滤波 · 翻页导航 · 事件标记',
+                'desc': '多通道信号显示 · 实时滤波 · 翻页导航 · 事件标记 · fNIRS专用',
                 'icon': '📈',
                 'color': self.COLORS['card1'],
                 'command': self.open_signal_view
             },
             {
                 'title': '统计分析',
-                'desc': '箱线图 · ROC曲线 · 混淆矩阵 · 统计表格',
+                'desc': '箱线图 · ROC曲线 · 混淆矩阵 · 3D传感器 · 显著性标记',
                 'icon': '📊',
                 'color': self.COLORS['card2'],
                 'command': self.open_stats_view
             },
             {
                 'title': '柱状图',
-                'desc': '特征对比 · Excel数据可视化 · 数值标签',
+                'desc': 'Excel数据可视化 · 特征对比 · 数值标签 · 多子图',
                 'icon': '📋',
                 'color': self.COLORS['card3'],
                 'command': self.open_bar_view
             },
             {
-                'title': '快速预览',
-                'desc': '独立绘图窗口 · 快速查看信号片段',
-                'icon': '🔍',
+                'title': '时频分析',
+                'desc': 'STFT时频图 · 通道选择 · 动态色标 · 功率谱',
+                'icon': '⏱️',
                 'color': self.COLORS['card4'],
-                'command': self.open_quick_plot
+                'command': self.open_time_frequency
+            },
+            {
+                'title': '地形图',
+                'desc': '多频带拓扑图 · 相对/绝对功率 · 坏通道排除 · 数值表格',
+                'icon': '🗺️',
+                'color': self.COLORS['card5'],
+                'command': self.open_topography
+            },
+            {
+                'title': '特征可视化',
+                'desc': '曲线图 · 柱状图 · 表格 · 特征拓扑图 · 通道选择',
+                'icon': '📐',
+                'color': self.COLORS['card6'],
+                'command': self.open_feature_view
             }
         ]
 
         # 创建卡片
         for i, card in enumerate(cards):
-            row = i // 2
-            col = i % 2
+            row = i // 3
+            col = i % 3
 
             card_widget = ModernCard(
-                grid,
+                parent,
                 title=card['title'],
                 description=card['desc'],
                 icon=card['icon'],
@@ -414,51 +358,31 @@ class ModernVisualizationPanel(ttk.Frame):
             )
             card_widget.grid(row=row, column=col, padx=10, pady=10, sticky='nsew')
 
-        # 配置行权重，让卡片能够扩展
+        # 配置行权重
         for i in range(2):
-            grid.rowconfigure(i, weight=1)
+            parent.rowconfigure(i, weight=1)
 
-        return container
-
-    def create_status_bar(self):
-        """创建状态栏"""
-        status_bar = tk.Frame(self, bg='#ecf0f1', height=30)
-        status_bar.grid(row=2, column=0, sticky="ew")
-        status_bar.grid_propagate(False)
-
-        # 状态信息
-        self.status_var = tk.StringVar(value="✨ 就绪")
-        status_label = tk.Label(status_bar, textvariable=self.status_var,
-                                bg='#ecf0f1', fg='#7f8c8d',
-                                font=('微软雅黑', 9))
-        status_label.pack(side=tk.LEFT, padx=15, pady=5)
-
-        # 数据模态信息
-        self.modal_info_var = tk.StringVar(value="")
-        modal_label = tk.Label(status_bar, textvariable=self.modal_info_var,
-                               bg='#ecf0f1', fg=self.COLORS['accent'],
-                               font=('微软雅黑', 9, 'bold'))
-        modal_label.pack(side=tk.RIGHT, padx=15, pady=5)
-
+    # ========== 文件操作方法 ==========
     def browse_file(self):
         """浏览文件"""
         file_path = filedialog.askopenfilename(
             title="选择数据文件",
             filetypes=[
-                ("所有支持文件", "*.edf *.bdf *.gdf *.mat *.csv *.xlsx *.xls *.json *.npy"),
+                ("所有支持文件", "*.edf *.bdf *.gdf *.mat *.csv *.xlsx *.xls *.json *.npy *.set *.vhdr"),
                 ("EDF文件", "*.edf"),
                 ("BDF文件", "*.bdf"),
+                ("GDF文件", "*.gdf"),
                 ("MAT文件", "*.mat"),
                 ("NumPy文件", "*.npy"),
                 ("JSON文件", "*.json"),
                 ("CSV文件", "*.csv"),
-                ("Excel文件", "*.xlsx *.xls")
+                ("Excel文件", "*.xlsx *.xls"),
+                ("EEGLAB文件", "*.set *.vhdr")
             ]
         )
 
         if file_path:
             self.file_path_var.set(file_path)
-            self.status_var.set(f"已选择文件: {os.path.basename(file_path)}")
 
     def load_current_file(self):
         """加载当前文件"""
@@ -472,9 +396,6 @@ class ModernVisualizationPanel(ttk.Frame):
     def load_file(self, file_path):
         """加载文件"""
         try:
-            self.status_var.set("🔄 正在加载文件...")
-            self.update()
-
             import numpy as np
 
             if file_path.endswith('.npy'):
@@ -488,19 +409,13 @@ class ModernVisualizationPanel(ttk.Frame):
 
             self.file_path = file_path
             self.update_file_info()
-
-            self.status_var.set(f"✅ 文件加载成功: {os.path.basename(file_path)}")
             messagebox.showinfo("成功", "文件加载成功！")
 
         except Exception as e:
-            self.status_var.set("❌ 文件加载失败")
             messagebox.showerror("错误", f"文件加载失败:\n{str(e)}")
 
     def load_demo_data(self):
         """加载演示数据"""
-        self.status_var.set("🔄 正在生成演示数据...")
-        self.update()
-
         fs = 1000
         t = np.arange(0, 30, 1 / fs)
 
@@ -509,7 +424,7 @@ class ModernVisualizationPanel(ttk.Frame):
                 "subject_id": "demo",
                 "session_id": "session1",
                 "task": "rest",
-                "modality": ["EEG"]
+                "modality": ["EEG", "fNIRS"]
             },
             "signal": {
                 "EEG": {
@@ -518,20 +433,30 @@ class ModernVisualizationPanel(ttk.Frame):
                     "sampling_rate": fs,
                     "channel_names": [f"EEG_{i}" for i in range(8)],
                     "unit": "uV"
+                },
+                "fNIRS": {
+                    "data": np.array([np.sin(2 * np.pi * 0.1 * t) + 0.1 * np.random.randn(len(t))
+                                      for _ in range(4)]),
+                    "sampling_rate": fs,
+                    "channel_names": [f"NIRS_{i}" for i in range(4)],
+                    "unit": "uM"
                 }
             },
-            "event": {
-                "event_time": [5.0, 10.0, 15.0],
-                "event_label": ["stim1", "stim2", "stim3"],
-                "event_id": [1, 2, 3],
-                "duration": [1, 1, 1]
+            "feature": {
+                "type": "eeg_psd",
+                "ch_names": [f"EEG_{i}" for i in range(8)],
+                "feature": {
+                    "Delta": np.random.rand(8),
+                    "Theta": np.random.rand(8),
+                    "Alpha": np.random.rand(8),
+                    "Beta": np.random.rand(8),
+                    "Gamma": np.random.rand(8)
+                }
             }
         }
 
         self.file_path = None
         self.update_file_info()
-
-        self.status_var.set("🎲 演示数据已加载")
         messagebox.showinfo("成功", "演示数据加载成功！")
 
     def reset_data(self):
@@ -540,7 +465,6 @@ class ModernVisualizationPanel(ttk.Frame):
         self.file_path = None
         self.file_path_var.set("")
         self.update_file_info()
-        self.status_var.set("🔄 数据已重置")
 
     def update_file_info(self):
         """更新文件信息"""
@@ -549,7 +473,6 @@ class ModernVisualizationPanel(ttk.Frame):
 
         if not self.data_dict:
             self.info_text.insert(tk.END, "请加载数据文件或使用演示数据")
-            self.modal_info_var.set("")
         else:
             meta = self.data_dict.get("meta", {})
             subject = meta.get("subject_id", "unknown")
@@ -569,10 +492,10 @@ class ModernVisualizationPanel(ttk.Frame):
                     info += f"📊 {mod}: {n_ch}通道, {fs}Hz\n"
 
             self.info_text.insert(tk.END, info)
-            self.modal_info_var.set(f"当前: {', '.join(modalities)}")
 
         self.info_text.config(state=tk.DISABLED)
 
+    # ========== 功能模块打开方法 ==========
     def open_signal_view(self):
         """打开信号视图"""
         if not self.data_dict:
@@ -584,12 +507,15 @@ class ModernVisualizationPanel(ttk.Frame):
             window.title("信号波形视图")
             window.geometry("1200x800")
 
-          
-            view = SignalView(window, self.data_dict)
-            view.pack(fill=tk.BOTH, expand=True)
+            meta = self.data_dict.get("meta", {})
+            modalities = meta.get("modality", [])
 
-            self.current_views['signal'] = window
-            self.status_var.set("📈 信号视图已打开")
+            if "fNIRS" in modalities or "NIRS" in modalities:
+                view = fNIRSView(window, self.data_dict)
+            else:
+                view = SignalView(window, self.data_dict)
+
+            view.pack(fill=tk.BOTH, expand=True)
 
         except Exception as e:
             messagebox.showerror("错误", f"打开信号视图失败:\n{str(e)}")
@@ -605,12 +531,8 @@ class ModernVisualizationPanel(ttk.Frame):
             window.title("统计分析视图")
             window.geometry("1100x800")
 
-
             view = StatsView(window, self.data_dict)
             view.pack(fill=tk.BOTH, expand=True)
-
-            self.current_views['stats'] = window
-            self.status_var.set("📊 统计视图已打开")
 
         except Exception as e:
             messagebox.showerror("错误", f"打开统计视图失败:\n{str(e)}")
@@ -626,23 +548,21 @@ class ModernVisualizationPanel(ttk.Frame):
             window.title("柱状图视图")
             window.geometry("1200x800")
 
-         
             view = BarView(window, self.data_dict)
             view.pack(fill=tk.BOTH, expand=True)
-
-            self.current_views['bar'] = window
-            self.status_var.set("📋 柱状图视图已打开")
 
         except Exception as e:
             messagebox.showerror("错误", f"打开柱状图视图失败:\n{str(e)}")
 
-    def open_quick_plot(self):
-        """打开快速预览"""
+    def open_time_frequency(self):
+        """打开时频分析视图"""
         if not self.data_dict:
             messagebox.showwarning("警告", "请先加载数据")
             return
 
         try:
+            from core.visualizer.time_frequency_view import short_time_Fourier_transform
+
             signal_dict = self.data_dict.get("signal", {})
             if not signal_dict:
                 messagebox.showwarning("警告", "数据中没有信号")
@@ -651,29 +571,116 @@ class ModernVisualizationPanel(ttk.Frame):
             modality = list(signal_dict.keys())[0]
             signal_info = signal_dict[modality]
 
-            data = signal_info.get('data')
+            raw_data = signal_info.get('data')
             fs = signal_info.get('sampling_rate', 1000)
-            ch_names = signal_info.get('channel_names', [f"Ch{i}" for i in range(data.shape[0])])
+            ch_names = signal_info.get('channel_names', [])
 
-          
-            quick_plot(self, data, fs, ch_names, f"快速预览 - {modality}")
+            stft_input = {
+                'data': raw_data,
+                'srate': fs,
+                'ch_names': ch_names
+            }
 
-            self.status_var.set("🔍 快速预览已打开")
+            stft_result = short_time_Fourier_transform(stft_input)
+
+            self.ensure_pyqt_app()
+            self.tf_window = TimeFrequencyView(stft_result)
+            self.tf_window.show()
 
         except Exception as e:
-            messagebox.showerror("错误", f"打开快速预览失败:\n{str(e)}")
+            messagebox.showerror("错误", f"打开时频分析视图失败:\n{str(e)}")
+
+    def open_topography(self):
+        """打开地形图视图"""
+        if not self.data_dict:
+            messagebox.showwarning("警告", "请先加载数据")
+            return
+
+        try:
+            feature_data = self.data_dict.get("feature")
+            if not feature_data:
+                self.prepare_topography_data()
+                feature_data = self.data_dict.get("feature")
+
+            if not feature_data:
+                messagebox.showwarning("警告", "无法准备地形图数据")
+                return
+
+            self.ensure_pyqt_app()
+            self.topo_window = TopographyView(feature_data)
+            self.topo_window.show()
+
+        except Exception as e:
+            messagebox.showerror("错误", f"打开地形图视图失败:\n{str(e)}")
+
+    def prepare_topography_data(self):
+        """准备地形图数据"""
+        standard_channels = ['Fz', 'Cz', 'Pz', 'Oz', 'F3', 'F4', 'C3', 'C4',
+                             'P3', 'P4', 'O1', 'O2', 'F7', 'F8', 'T7', 'T8']
+
+        self.data_dict["feature"] = {
+            'type': 'eeg_psd',
+            'ch_names': standard_channels[:10],
+            'feature': {
+                'Delta': np.random.rand(10),
+                'Theta': np.random.rand(10),
+                'Alpha': np.random.rand(10),
+                'Beta': np.random.rand(10),
+                'Gamma': np.random.rand(10)
+            }
+        }
+
+    def open_feature_view(self):
+        """打开特征可视化视图"""
+        if not self.data_dict:
+            messagebox.showwarning("警告", "请先加载数据")
+            return
+
+        try:
+            feature_data = self.data_dict.get("feature")
+            if not feature_data:
+                messagebox.showwarning("警告", "数据中没有特征信息")
+                return
+
+            # 从feature_data中提取channels和features
+            channels = feature_data.get('ch_names', [])
+            features = list(feature_data.get('feature', {}).keys())
+
+            if not channels:
+                messagebox.showwarning("警告", "没有通道信息")
+                return
+
+            if not features:
+                messagebox.showwarning("警告", "没有特征信息")
+                return
+
+            self.ensure_pyqt_app()
+            from core.visualizer.feature_view import FeatureView
+
+            # 传入所有必需的参数
+            self.feature_window = FeatureView(feature_data, channels, features)
+            self.feature_window.show()
+
+        except Exception as e:
+            messagebox.showerror("错误", f"打开特征视图失败:\n{str(e)}")
+
+    def ensure_pyqt_app(self):
+        """确保PyQt应用存在"""
+        try:
+            from PyQt5.QtWidgets import QApplication
+            if not QApplication.instance():
+                self.qt_app = QApplication(sys.argv)
+        except ImportError:
+            pass
 
 
 # 测试代码
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("高级可视化面板 - 支持滚动")
+    root.title("可视化面板测试")
     root.geometry("1000x800")
 
-    # 设置根窗口样式
-    root.configure(bg='#f5f6fa')
-
     panel = ModernVisualizationPanel(root)
-    panel.pack(fill=tk.BOTH, expand=True)
+    panel.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
     root.mainloop()
