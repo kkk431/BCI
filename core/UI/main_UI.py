@@ -214,6 +214,9 @@ class NeuroPioneerApp:
         if base_name == "Visualization":
             # 打开可视化集成面板
             self.open_visualization_tab()
+        elif base_name == "Extraction":
+            # 打开特征提取面板
+            self.open_extraction_tab()
         else:
             # 其他功能保持原样
             next_num = self._get_next_number_for_base(base_name)
@@ -229,6 +232,72 @@ class NeuroPioneerApp:
                                  "base_name": base_name, "display_name": display_name}
 
             self.switch_to_tab(tab_id)
+
+    def open_extraction_tab(self):
+        """打开特征提取标签页（带加载动画）"""
+        next_num = self._get_next_number_for_base("Extraction")
+        display_name = f"Extraction ({next_num})"
+        tab_id = f"Extraction_{next_num}"
+
+        # 创建框架
+        new_frame = tk.Frame(self.main_container, bg=COLOR_CONTENT_BG)
+
+        # 显示加载提示
+        loading_label = tk.Label(new_frame, text="正在加载特征提取模块...",
+                                 font=("微软雅黑", 14), fg="#666", bg=COLOR_CONTENT_BG)
+        loading_label.place(relx=0.5, rely=0.5, anchor="center")
+
+        # 更新UI显示加载提示
+        new_frame.update()
+
+        # 创建标签按钮
+        tab_btn = self.create_tab_widget(display_name, tab_id=tab_id)
+
+        # 存储标签信息
+        self.tabs[tab_id] = {
+            "frame": new_frame,
+            "tab_btn": tab_btn,
+            "base_name": "Extraction",
+            "display_name": display_name
+        }
+
+        # 切换到新标签页
+        self.switch_to_tab(tab_id)
+
+        # 使用after延迟加载，不阻塞UI
+        def load_extraction():
+            try:
+                import time
+                start = time.time()
+
+                # 导入特征提取模块
+                import feature_extraction_gui
+
+                # 移除加载提示
+                loading_label.destroy()
+
+                # 创建特征提取应用
+                # 注意：feature_extraction_gui.py中的ExtractionApp类需要tk.Tk作为根窗口
+                # 这里我们传递new_frame作为父容器
+                app = feature_extraction_gui.ExtractionApp(new_frame)
+
+                # 如果ExtractionApp有自己的pack/grid方法，需要调整
+                # 假设ExtractionApp是一个tk.Frame子类或包含pack方法
+                if hasattr(app, 'pack'):
+                    app.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+                elif hasattr(app, 'frame') and hasattr(app.frame, 'pack'):
+                    app.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+                elapsed = time.time() - start
+                print(f"特征提取面板加载完成，耗时: {elapsed:.2f}秒")
+
+            except Exception as e:
+                loading_label.config(text=f"加载失败: {str(e)}", fg="red")
+                import traceback
+                traceback.print_exc()
+
+        # 延迟10ms后开始加载，让UI先显示加载提示
+        new_frame.after(10, load_extraction)
 
     def open_visualization_tab(self):
         """打开可视化标签页（带加载动画）"""

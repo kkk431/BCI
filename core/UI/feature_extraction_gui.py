@@ -75,20 +75,31 @@ FEATURE_MAP = {
 
 
 class ExtractionApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("智融脑机 - 特征提取模块")
-        self.root.geometry("1000x700")
-        self.root.configure(bg=COLOR_CONTENT_BG)
+    def __init__(self, parent):
+        """
+        修改后的初始化方法，接受父容器作为参数
+
+        Parameters
+        ----------
+        parent : tk.Widget
+            父容器，可以是 tk.Tk 或 tk.Frame
+        """
+        self.parent = parent
+        self.root = parent.winfo_toplevel() if parent != parent.winfo_toplevel() else parent
+
+        # 原有的初始化代码，但将 self.root 替换为 parent 或 self.root
+        # 如果原有代码使用 self.root 作为主窗口，现在需要适配
 
         # 核心数据容器
-        self.clean_data_dict = None  # 存放 IO 加载 + 预处理后的纯净数据
-        self.extracted_features = {}  # 存放提取出的特征字典
-        self.checkbox_vars = {}  # 存放用户勾选的特征变量
+        self.clean_data_dict = None
+        self.extracted_features = {}
+        self.checkbox_vars = {}
 
+        # 检查模块加载状态
         if not MODULES_LOADED:
             messagebox.showerror("初始化失败", "底层算法模块导入失败，请检查终端输出的路径信息。")
 
+        # 构建UI，但将原有 self.root 替换为 self.parent
         self.setup_ui()
 
     def setup_ui(self):
