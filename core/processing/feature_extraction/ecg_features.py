@@ -19,7 +19,7 @@ warnings.filterwarnings('ignore')
 
 # 导入通用特征提取器
 try:
-    from common_features import CommonFeatureExtractor
+    from core.processing.feature_extraction.common_features import CommonFeatureExtractor
 except ImportError:
     raise ImportError("需要common_features.py文件，请确保它在同一目录下")
 

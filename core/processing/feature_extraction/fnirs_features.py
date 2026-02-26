@@ -17,7 +17,7 @@ fNIRS Feature Extraction Module for Multimodal BCI
 
 import numpy as np
 import warnings
-from common_features import CommonFeatureExtractor
+from core.processing.feature_extraction.common_features import CommonFeatureExtractor
 
 class FNIRSFeatureExtractor(CommonFeatureExtractor):
     """

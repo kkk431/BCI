@@ -15,7 +15,7 @@ from enum import Enum
 import logging
 
 # 导入通用预处理模块
-from preprocessing import GeneralPreprocessor, PreprocessingConfig, FilterType, WaveletType, DetrendMethod
+from core.processing.preprocessing.preprocessing import GeneralPreprocessor, PreprocessingConfig, FilterType, WaveletType, DetrendMethod
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
