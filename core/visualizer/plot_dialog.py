@@ -368,24 +368,229 @@ def quick_plot(parent, data, sampling_rate=1000, channel_names=None, title="信�
     dialog.grab_set()  # 模态对话框
 
 
-# 测试代码
+class PSDDialog(tk.Toplevel):
+    """
+    PSD拓扑图对话框
+    用于查看功率谱密度拓扑图
+    """
+
+    def __init__(self, parent, data: np.ndarray, channel_names: List[str],
+                 fs: float = 1000, title: str = "PSD拓扑图"):
+        """
+        初始化PSD对话框
+
+        Args:
+            parent: 父窗口
+            data: 功率数据 (channels × bands) 或 (channels,)
+            channel_names: 通道名称列表
+            fs: 采样率
+            title: 对话框标题
+        """
+        super().__init__(parent)
+        self.parent = parent
+        self.title(title)
+        self.geometry("800x600")
+
+        # 处理数据
+        if data.ndim == 1:
+            self.data = data.reshape(-1, 1)
+        else:
+            self.data = data
+
+        self.channel_names = channel_names
+        self.fs = fs
+        self.n_channels, self.n_bands = self.data.shape
+
+        # 频带名称
+        self.band_names = ['Delta', 'Theta', 'Alpha', 'Beta', 'Gamma'][:self.n_bands]
+
+        # 设置参数
+        self.is_relative = tk.BooleanVar(value=True)
+        self.show_sensors = tk.BooleanVar(value=True)
+
+        # 设置UI
+        self.setup_ui()
+
+        # 更新绘图
+        self.update_plot()
+
+        # 设置窗口关闭事件
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def setup_ui(self):
+        """设置用户界面"""
+        # 主布局
+        main_frame = ttk.Frame(self)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # ========== 顶部控制栏 ==========
+        control_frame = ttk.Frame(main_frame)
+        control_frame.pack(fill=tk.X, pady=5)
+
+        # 信息显示
+        info_text = f"{self.n_channels}通道 | {self.n_bands}个频带"
+        info_label = ttk.Label(control_frame, text=info_text, font=('微软雅黑', 9))
+        info_label.pack(side=tk.LEFT, padx=5)
+
+        # 控制选项
+        ttk.Checkbutton(control_frame, text="相对功率",
+                        variable=self.is_relative,
+                        command=self.update_plot).pack(side=tk.LEFT, padx=10)
+
+        ttk.Checkbutton(control_frame, text="显示电极",
+                        variable=self.show_sensors,
+                        command=self.update_plot).pack(side=tk.LEFT, padx=10)
+
+        # ========== 绘图区域 ==========
+        plot_frame = ttk.Frame(main_frame)
+        plot_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # 创建matplotlib图形
+        self.figure = Figure(figsize=(10, 6), dpi=100)
+        self.canvas = FigureCanvasTkAgg(self.figure, plot_frame)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # 工具栏
+        toolbar_frame = ttk.Frame(plot_frame)
+        toolbar_frame.pack(fill=tk.X)
+        self.toolbar = NavigationToolbar2Tk(self.canvas, toolbar_frame)
+        self.toolbar.update()
+
+        # ========== 底部按钮 ==========
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(fill=tk.X, pady=5)
+
+        ttk.Button(btn_frame, text="保存图像",
+                   command=self.save_plot).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(btn_frame, text="关闭",
+                   command=self.on_close).pack(side=tk.RIGHT, padx=2)
+
+    def normalize_data(self) -> np.ndarray:
+        """归一化数据"""
+        data = self.data.T  # (bands, channels)
+
+        if self.is_relative.get():
+            # 逐行归一化到[-1, 1]
+            min_vals = data.min(axis=1, keepdims=True)
+            max_vals = data.max(axis=1, keepdims=True)
+            range_vals = max_vals - min_vals
+            range_vals[range_vals == 0] = 1
+            scaled = (data - min_vals) / range_vals
+            scaled = scaled * 2 - 1  # 映射到[-1, 1]
+        else:
+            # 全局归一化到[-1, 1]
+            min_val = data.min()
+            max_val = data.max()
+            if max_val - min_val == 0:
+                scaled = np.zeros_like(data)
+            else:
+                scaled = (data - min_val) / (max_val - min_val)
+                scaled = scaled * 2 - 1
+
+        return scaled
+
+    def update_plot(self):
+        """更新绘图"""
+        self.figure.clear()
+
+        # 创建子图
+        if self.n_bands == 1:
+            axes = [self.figure.add_subplot(111)]
+        else:
+            axes = self.figure.subplots(1, self.n_bands,
+                                        sharex=True, sharey=True)
+
+        # 归一化数据
+        norm_data = self.normalize_data()
+
+        # 为每个频带创建拓扑图
+        for i, (ax, band_name) in enumerate(zip(axes, self.band_names)):
+            ax.set_title(band_name)
+
+            # 这里需要MNE库来绘制拓扑图
+            # 如果没有MNE，显示文本提示
+            try:
+                import mne
+                self.plot_topomap_mne(ax, norm_data[i])
+            except ImportError:
+                # 降级显示：简单的条形图
+                ax.bar(range(len(self.channel_names)), norm_data[i])
+                ax.set_xticks(range(len(self.channel_names)))
+                ax.set_xticklabels(self.channel_names, rotation=45, ha='right')
+                ax.set_xlabel('通道')
+                ax.set_ylabel('归一化功率')
+
+        self.figure.suptitle("功率谱密度拓扑图", fontsize=12)
+        self.figure.subplots_adjust(bottom=0.15, top=0.88, wspace=0.3)
+
+        self.canvas.draw()
+
+    def plot_topomap_mne(self, ax, data):
+        """使用MNE绘制拓扑图"""
+        try:
+            import mne
+
+            # 创建标准蒙太奇
+            montage = mne.channels.make_standard_montage('standard_1020')
+
+            # 创建info对象
+            info = mne.create_info(ch_names=self.channel_names,
+                                   sfreq=self.fs,
+                                   ch_types='eeg')
+
+            # 创建evoked对象
+            evoked = mne.EvokedArray(data=np.array([data]).T, info=info)
+            evoked.set_montage(montage)
+
+            # 绘制拓扑图
+            mne.viz.plot_topomap(data, evoked.info, axes=ax, show=False,
+                                 sensors=self.show_sensors.get(),
+                                 vlim=(-1, 1))
+        except Exception as e:
+            ax.text(0.5, 0.5, f"MNE绘图失败\n{str(e)}",
+                    ha='center', va='center')
+
+    def save_plot(self):
+        """保存图像"""
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG图像", "*.png"), ("PDF文件", "*.pdf"), ("SVG图像", "*.svg")]
+        )
+
+        if file_path:
+            try:
+                self.figure.savefig(file_path, dpi=300, bbox_inches='tight')
+                messagebox.showinfo("保存成功", f"图像已保存到:\n{file_path}")
+            except Exception as e:
+                messagebox.showerror("保存失败", f"保存图像时出错:\n{str(e)}")
+
+    def on_close(self):
+        """关闭窗口"""
+        plt.close(self.figure)
+        self.destroy()
+
+
+# 在文件末尾添加测试代码
 if __name__ == "__main__":
     import sys
 
     root = tk.Tk()
-    root.title("绘图对话框测试")
+    root.title("PSD对话框测试")
     root.geometry("400x300")
 
-    # 创建测试信号
-    fs = 1000
-    t = np.arange(0, 30, 1 / fs)
-    data = np.array([np.sin(2 * np.pi * 10 * t) + 0.5 * np.random.randn(len(t)) for _ in range(8)])
+    # 创建测试数据
+    n_channels = 16
+    n_bands = 5
+    data = np.random.rand(n_channels, n_bands)
+    channel_names = [f"Ch{i + 1}" for i in range(n_channels)]
 
 
-    def test_dialog():
-        quick_plot(root, data, fs, [f"Ch{i}" for i in range(8)], "测试信号")
+    def test_psd():
+        dialog = PSDDialog(root, data, channel_names, fs=1000, title="测试PSD")
+        dialog.grab_set()
 
 
-    ttk.Button(root, text="打开绘图对话框", command=test_dialog).pack(expand=True)
+    ttk.Button(root, text="打开PSD对话框", command=test_psd).pack(expand=True)
 
     root.mainloop()
