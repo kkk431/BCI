@@ -24,6 +24,19 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
+# 动态设置后端，不强制使用QtAgg
+import matplotlib
+current_backend = matplotlib.get_backend()
+print(f"[feature_view] 当前matplotlib后端: {current_backend}")
+
+# 如果还没有后端被设置，且当前不是TkAgg，才尝试设置QtAgg
+if current_backend in ['', 'agg'] and 'tk' not in current_backend.lower():
+    try:
+        matplotlib.use('QtAgg')
+        print("[feature_view] 已设置后端为 QtAgg")
+    except:
+        pass
+
 
 # -------------------- 辅助函数--------------------
 def min_max_scaling_to_range(data, target_range=(-1, 1)):
