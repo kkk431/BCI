@@ -12,7 +12,7 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
-    
+
 import matplotlib
 import mne
 import numpy as np
@@ -21,7 +21,19 @@ from PyQt5.QtWidgets import QFileDialog, QWidget
 
 from core.io.data_io import DataLoader
 
-matplotlib.use('QtAgg')
+# 动态设置后端，不强制使用QtAgg
+import matplotlib
+
+current_backend = matplotlib.get_backend()
+print(f"[plot_core] 当前matplotlib后端: {current_backend}")
+
+# 如果还没有后端被设置，且当前不是TkAgg，才尝试设置QtAgg
+if current_backend in ['', 'agg'] and 'tk' not in current_backend.lower():
+    try:
+        matplotlib.use('QtAgg')
+        print("[plot_core] 已设置后端为 QtAgg")
+    except:
+        pass
 
 
 # -------------------- 辅助归一化函数--------------------
@@ -111,7 +123,7 @@ def plot_raw(data, channel=None, sharey=False, line_color='black', linewidth=0.5
         # 多通道：形状 (n_channels, n_times)
         n_channels, n_times = data.shape
         if channel is None:
-            channel = [str(i+1) for i in range(n_channels)]
+            channel = [str(i + 1) for i in range(n_channels)]
         fig, axes = plt.subplots(n_channels, 1, figsize=(10, 6), sharex=True, sharey=sharey)
         if n_channels == 1:
             axes = [axes]
@@ -185,6 +197,6 @@ def plot_eeg_psd(data, is_relative=False, is_norm=True, title=''):
 if __name__ == "__main__":
     # 生成示例多通道数据
     fs = 1000
-    t = np.linspace(0, 10, fs*10)
-    data_2d = np.array([np.sin(2*np.pi*10*t) + 0.5*np.random.randn(len(t)) for _ in range(8)])
+    t = np.linspace(0, 10, fs * 10)
+    data_2d = np.array([np.sin(2 * np.pi * 10 * t) + 0.5 * np.random.randn(len(t)) for _ in range(8)])
     plot_raw(data_2d, channel=[f'Ch{i}' for i in range(8)], sharey=False)
