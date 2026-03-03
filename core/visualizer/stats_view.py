@@ -21,6 +21,12 @@ from sklearn.metrics import roc_curve, auc, confusion_matrix
 import json
 import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+
+# 设置 matplotlib 全局字体为英文字体
+plt.rcParams['font.family'] = 'DejaVu Sans'  # 或 'Arial', 'Helvetica'
+plt.rcParams['axes.unicode_minus'] = False   # 正确显示负号
 
 
 class StatsView(tk.Frame):
@@ -107,9 +113,9 @@ class StatsView(tk.Frame):
         return {
             "boxplot": {
                 "data": [group1.tolist(), group2.tolist(), group3.tolist()],
-                "labels": ["左手", "右手", "脚"],
+                "labels": ["Left Hand", "Right Hand", "Foot"],
                 "colors": ["#1f77b4", "#ff7f0e", "#2ca02c"],
-                "title": "不同运动想象任务的EEG功率"
+                "title": "EEG Power by Motor Imagery Task"
             },
             "roc": {
                 "y_true": y_true.tolist(),
@@ -199,6 +205,7 @@ class StatsView(tk.Frame):
         control_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
         control_frame.pack_propagate(False)
 
+        # 大约在第180行附近
         self.show_points_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(control_frame, text="显示数据点",
                         variable=self.show_points_var,
@@ -424,9 +431,9 @@ class StatsView(tk.Frame):
                                     'k-', linewidth=1)
 
                             # 添加星号
-                            stars = '*' * sum([p_val < lvl for lvl in [0.001, 0.01, 0.05]])
+                            stars = '***' if p_val < 0.001 else '**' if p_val < 0.01 else '*' if p_val < 0.05 else ''
                             ax.text((x1 + x2) / 2, y_pos + y_range * 0.04, stars,
-                                    ha='center', va='bottom', fontsize=12, fontweight='bold')
+                                    ha='center', va='bottom', fontsize=12, fontweight='bold', family='DejaVu Sans')
             except:
                 pass
 
