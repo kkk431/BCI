@@ -166,9 +166,10 @@ class SignalView(tk.Frame):
         filter_frame.pack(fill=tk.X, pady=5)
 
         self.filter_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(filter_frame, text="启用滤波",
-                        variable=self.filter_var,
-                        command=self.on_filter_toggled).pack(side=tk.LEFT, padx=5)
+        tk.Checkbutton(filter_frame, text="启用滤波",
+                       variable=self.filter_var,
+                       command=self.on_filter_toggled,
+                       bg='white').pack(side=tk.LEFT, padx=5)  # 加 bg 匹配背景色
 
         ttk.Label(filter_frame, text="低通(Hz):").pack(side=tk.LEFT, padx=(10, 2))
         self.lowpass_var = tk.StringVar(value="45")
@@ -446,7 +447,7 @@ class SignalView(tk.Frame):
             if i < n_show - 1:
                 ax.set_xticklabels([])
             else:
-                ax.set_xlabel('时间 (秒)', fontsize=9)
+                ax.set_xlabel('Time (s)', fontsize=9)
 
             # 添加网格
             ax.grid(True, alpha=0.3)
@@ -464,7 +465,7 @@ class SignalView(tk.Frame):
                             fontsize=8, color=color)
 
         self.figure.suptitle(f"{self.modality} - {self.subject_id} - {self.task}\n"
-                             f"时间: {t_start:.2f} - {t_end:.2f} 秒",
+                             f"Time: {t_start:.2f} - {t_end:.2f} s",
                              fontsize=12)
 
         self.canvas.draw()
@@ -602,6 +603,9 @@ if __name__ == "__main__":
     root.title("fNIRS视图测试")
     root.geometry("1200x800")
 
+    style = ttk.Style()
+    style.configure(".", font=("Arial", 10))
+    style.configure("TCheckbutton", font=("Arial", 10))
     # 创建fNIRS测试数据
     fs = 100
     t = np.arange(0, 60, 1 / fs)
