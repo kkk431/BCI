@@ -305,7 +305,7 @@ class PlotDialog(tk.Toplevel):
             if i < n_show - 1:
                 ax.set_xticklabels([])
             else:
-                ax.set_xlabel('时间 (秒)', fontsize=9)
+                ax.set_xlabel('Time (s)', fontsize=9)
 
             # 添加网格
             ax.grid(True, alpha=0.3)
