@@ -162,13 +162,20 @@ class SignificanceBoxPlotWindow(QMainWindow):
         line_width = 1.5
 
         for (group1, group2), p_value in significance_dict.items():
-            if p_value < max(significance_markers.keys()):
-                # 匹配显著性标记规则
-                marker = next(
-                    v for k, v in significance_markers.items()
-                    if p_value < k
-                )
-
+            # if p_value < max(significance_markers.keys()):
+            #     # 匹配显著性标记规则
+            #     marker = next(
+            #         v for k, v in significance_markers.items()
+            #         if p_value < k
+            #     )
+            if p_value < 0.05:
+                if p_value < 0.0001:
+                    marker = '***'
+                elif p_value < 0.001:
+                    marker = '**'
+                else:
+                    marker = '*'
+                # 然后继续绘制标记和括号
                 # 计算标记位置，对齐原始代码的坐标逻辑
                 idx1, idx2 = groups.index(group1), groups.index(group2)
                 pos1, pos2 = group_positions[idx1], group_positions[idx2]
@@ -273,12 +280,13 @@ class SignificanceViolinPlotWindow(QMainWindow):
         line_width = 1.5
 
         for (group1, group2), p_value in significance_dict.items():
-            if p_value < max(significance_markers.keys()):
-                marker = next(
-                    v for k, v in significance_markers.items()
-                    if p_value < k
-                )
-
+            if p_value < 0.05:
+                if p_value < 0.0001:
+                    marker = '***'
+                elif p_value < 0.001:
+                    marker = '**'
+                else:
+                    marker = '*'
                 idx1, idx2 = groups.index(group1), groups.index(group2)
                 pos1, pos2 = group_positions[idx1], group_positions[idx2]
                 max_val = max(max(data_dict[group1]), max(data_dict[group2]))

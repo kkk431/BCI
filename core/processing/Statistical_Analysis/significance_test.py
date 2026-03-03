@@ -18,19 +18,41 @@ def calculate_significance(data_dict, method="t-test", paired=False):
     :raises ValueError: For insufficient groups or invalid method names
     """
     groups = list(data_dict.keys())
-    data = list(data_dict.values())
     results = []
 
     if len(groups) < 2:
         raise ValueError("At least two groups required for comparison")
 
+    # ---------- 方法名标准化处理 ----------
+    # 去除首尾空白、替换连字符为空格、去除所有空格、转为小写
+    method_clean = method.strip().replace('-', ' ').replace(' ', '').lower()
+
+    # 定义标准方法名映射（键为标准化后的字符串，值为(实际方法名, 是否需要配对标记)）
+    method_map = {
+        'ttest': ('t-test', False),
+        'ttestpaired': ('t-test', True),
+        'anova': ('anova', False),
+        'mannwhitneyu': ('mann-whitney U', False),
+        'wilcoxon': ('wilcoxon', False),
+        'wilcoxonpaired': ('wilcoxon', True),
+        'kruskalwallis': ('kruskal-wallis', False),
+    }
+
+    if method_clean not in method_map:
+        raise ValueError(f"Unsupported statistical method: {method}")
+
+    actual_method, requires_paired = method_map[method_clean]
+    # 如果方法要求配对但用户未设置，抛出错误
+    if requires_paired and not paired:
+        raise ValueError(f"{actual_method} test requires paired data")
+
+    # ---------- 两两比较 ----------
     for group1, group2 in combinations(groups, 2):
         result = {}
         data1 = data_dict[group1]
         data2 = data_dict[group2]
 
-        # 对齐原始代码的方法名（mann-whitney U），匹配UI下拉框选项
-        if method == "t-test":
+        if actual_method == "t-test":
             if paired:
                 stat, p_value = stats.ttest_rel(data1, data2)
                 result["method"] = "paired t-test"
@@ -38,15 +60,15 @@ def calculate_significance(data_dict, method="t-test", paired=False):
                 stat, p_value = stats.ttest_ind(data1, data2)
                 result["method"] = "independent t-test"
 
-        elif method == "anova":
+        elif actual_method == "anova":
             stat, p_value = stats.f_oneway(data1, data2)
             result["method"] = "ANOVA"
 
-        elif method == "mann-whitney U":
+        elif actual_method == "mann-whitney U":
             stat, p_value = stats.mannwhitneyu(data1, data2, alternative='two-sided')
             result["method"] = "Mann-Whitney U test"
 
-        elif method == "wilcoxon":
+        elif actual_method == "wilcoxon":
             if not paired:
                 raise ValueError("Wilcoxon test requires paired data")
             if len(data1) != len(data2):
@@ -58,12 +80,9 @@ def calculate_significance(data_dict, method="t-test", paired=False):
             except ValueError as e:
                 raise ValueError(f"Wilcoxon test error: {str(e)}")
 
-        elif method == "kruskal-wallis":
+        elif actual_method == "kruskal-wallis":
             stat, p_value = stats.kruskal(data1, data2)
             result["method"] = "Kruskal-Wallis test"
-
-        else:
-            raise ValueError(f"Unsupported statistical method: {method}")
 
         result["group_comparison"] = f"{group1} vs {group2}"
         result["stat"] = stat
@@ -71,7 +90,6 @@ def calculate_significance(data_dict, method="t-test", paired=False):
         results.append(result)
 
     return results
-
 
 def multiple_comparison_correction(results, correction_method="bonferroni"):
     """

@@ -27,34 +27,33 @@ from UI.ui_component import BFPushButton
 def get_feature(feature_dict, channel_name=None, feature_name=None):
     """
     Extract specific feature data from a feature dictionary.
-    :param feature_dict: Dictionary containing feature data
-    :type feature_dict: dict
-    :param channel_name: Target channel name (optional)
-    :type channel_name: str
-    :param feature_name: Target feature name (required)
-    :type feature_name: str
-    :return: Feature values for specified channel/feature
-    :rtype: list
-    :raises ValueError: For invalid channel or feature names
+    Ensures returned data is always a 1D list of sample values.
     """
-    # 验证通道选择
-    if "ch_names" in feature_dict and channel_name:
-        if channel_name not in feature_dict["ch_names"]:
-            raise ValueError(f"Channel '{channel_name}' not found")
-        channel_index = feature_dict["ch_names"].index(channel_name)
-    else:
-        channel_index = None
-
-    # 验证特征选择
     if feature_name not in feature_dict["feature"]:
         raise ValueError(f"Feature '{feature_name}' not found")
 
-    # 提取并返回数据
     feature_data = feature_dict["feature"][feature_name]
-    if channel_index is not None:
-        return feature_data[channel_index]
-    return feature_data
 
+    if channel_name is not None:
+        # 如果指定了通道，必须存在通道信息
+        if "ch_names" not in feature_dict:
+            raise ValueError("Data has no channel information, cannot select channel")
+        if channel_name not in feature_dict["ch_names"]:
+            raise ValueError(f"Channel '{channel_name}' not found")
+        channel_index = feature_dict["ch_names"].index(channel_name)
+        data = feature_data[channel_index]          # 取该通道的所有样本
+    else:
+        data = feature_data                         # 无通道时，直接取整个特征数据
+
+    # 统一转换为 1D 列表：处理可能出现的单个数值、numpy数组或嵌套列表
+    if isinstance(data, (np.ndarray, list)):
+        # 使用 ravel 展平（如果已经是1D则不变），再转列表
+        data = np.asarray(data).ravel().tolist()
+    else:
+        # 单个数值（如 int/float）包装成列表
+        data = [data]
+
+    return data
 
 def convert_to_significance_dict(result):
     """
@@ -480,10 +479,12 @@ class StatisticalAnalysisDialog(QMainWindow):
         widget.setStyleSheet("background-color: white;")
         outer_layout = QVBoxLayout()
         layout = QGridLayout()
+
         # 标题
         title_label = QLabel("Statistical Analysis")
         title_label.setStyleSheet("font-family: 'Times New Roman'; font-size: 14pt; font-weight: bold;")
         outer_layout.addWidget(title_label)
+
         # 描述文字
         description = QLabel('Performs pairwise group comparisons using selected method. '
                              'Multiple comparison correction applied when >2 groups exist. '
@@ -499,20 +500,26 @@ class StatisticalAnalysisDialog(QMainWindow):
         self.channel_combo = QComboBox()
         layout.addWidget(channel_label, 0, 0)
         layout.addWidget(self.channel_combo, 0, 1)
+
         # 特征选择
         feature_label = QLabel("Feature:")
         self.feature_combo = QComboBox()
         layout.addWidget(feature_label, 1, 0)
         layout.addWidget(self.feature_combo, 1, 1)
-        # 统计方法选择（对齐significance_test.py的方法名）
+
+        # ========== 统计方法选择（关键修改：逐项添加，确保字符串绝对干净）==========
         method_label = QLabel("Method:")
         self.method_combo = QComboBox()
-        self.method_combo.addItems([
-            "t-test", "t-test(paired)", "anova", "mann-whitney U",
-            "wilcoxon(paired)", "kruskal-wallis"
-        ])
+        self.method_combo.clear()  # 先清空，避免设计器残留
+        self.method_combo.addItem("t-test")
+        self.method_combo.addItem("t-test(paired)")
+        self.method_combo.addItem("anova")
+        self.method_combo.addItem("mann-whitney U")
+        self.method_combo.addItem("wilcoxon(paired)")
+        self.method_combo.addItem("kruskal-wallis")
         layout.addWidget(method_label, 2, 0)
         layout.addWidget(self.method_combo, 2, 1)
+
         # 多重校正配置
         correction_label = QLabel("Correction:")
         self.correction_combo = QComboBox()
@@ -524,6 +531,7 @@ class StatisticalAnalysisDialog(QMainWindow):
         layout.addWidget(correction_label, 3, 0)
         layout.addWidget(self.correction_combo, 3, 1)
         layout.addWidget(self.enable_correction, 3, 2)
+
         # 操作按钮
         self.run_button = BFPushButton("Run Analysis")
         self.run_button.setFixedWidth(120)
@@ -673,15 +681,25 @@ class StatisticalAnalysisDialog(QMainWindow):
 
         try:
             # 提取选中的通道和特征，加载数据
+            self.group_select_features.clear()
             for group_name in self.group_files:
                 self.group_select_features[group_name] = []
                 for dataset in self.group_files[group_name]:
                     channel = self.channel_combo.currentText() if 'ch_names' in dataset else None
                     feature = self.feature_combo.currentText()
+                    # get_feature 需返回一维列表（之前已修改）
                     self.group_select_features[group_name].extend(get_feature(dataset, channel, feature))
 
-            # 处理统计方法和配对标记（对齐significance_test.py）
-            method = self.method_combo.currentText()
+            # ========== 方法名处理：去除所有可能干扰的字符 ==========
+            raw_method = self.method_combo.currentText()
+            print("=" * 50)
+            print(f"[DEBUG] Raw method repr: {repr(raw_method)}")  # 显示原始字符串的精确表示
+
+            # 去除首尾空白
+            method = raw_method.strip()
+            print(f"[DEBUG] After strip: {repr(method)}")
+
+            # 处理配对标记
             is_paired = False
             if method == 't-test(paired)':
                 method = 't-test'
@@ -690,16 +708,21 @@ class StatisticalAnalysisDialog(QMainWindow):
                 method = 'wilcoxon'
                 is_paired = True
 
-            # 调用统计检验函数
+            # 再次去除首尾空白（防止转换后引入）
+            method = method.strip()
+            print(f"[DEBUG] Final method: {repr(method)}")
+            print("=" * 50)
+
+            # ========== 调用统计检验函数 ==========
             self.result = calculate_significance(
                 self.group_select_features,
                 method=method,
                 paired=is_paired
             )
 
-            # 应用多重校正
+            # 应用多重校正（仅当有多个比较且启用了校正）
             if self.enable_correction.isChecked() and len(self.result) > 1:
-                correct_method = self.correction_combo.currentText()
+                correct_method = self.correction_combo.currentText().strip()
                 self.result = multiple_comparison_correction(self.result, correct_method)
 
             self.status_label.setText("Status: Completed!")
@@ -708,7 +731,6 @@ class StatisticalAnalysisDialog(QMainWindow):
         except Exception as e:
             self.status_label.setText("Status: Failed!")
             QMessageBox.critical(self, "Error", f"Analysis failed: {str(e)}")
-
     def export_results(self):
         """Export analysis results to external format (导出结果，预留扩展接口)."""
         if not self.result:
