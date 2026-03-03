@@ -201,17 +201,17 @@ class BarView(tk.Frame):
 
         # 标题
         ttk.Label(plot_frame, text="标题:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
-        self.title_var = tk.StringVar(value="特征对比柱状图")
+        self.title_var = tk.StringVar(value="Feature Comparison Bar Chart")
         ttk.Entry(plot_frame, textvariable=self.title_var).grid(row=0, column=1, padx=5, pady=2, sticky=tk.EW)
 
         # X轴标签
         ttk.Label(plot_frame, text="X轴标签:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
-        self.xlabel_var = tk.StringVar(value="通道")
+        self.xlabel_var = tk.StringVar(value="Channel")
         ttk.Entry(plot_frame, textvariable=self.xlabel_var).grid(row=1, column=1, padx=5, pady=2, sticky=tk.EW)
 
         # Y轴标签
         ttk.Label(plot_frame, text="Y轴标签:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=2)
-        self.ylabel_var = tk.StringVar(value="值")
+        self.ylabel_var = tk.StringVar(value="Value")
         ttk.Entry(plot_frame, textvariable=self.ylabel_var).grid(row=2, column=1, padx=5, pady=2, sticky=tk.EW)
 
         # 柱子宽度
@@ -390,9 +390,9 @@ class BarView(tk.Frame):
         ax.set_xticklabels(x_categories, rotation=rotation)
 
         # 设置标签和标题
-        ax.set_xlabel(self.xlabel_var.get(), fontsize=12)
-        ax.set_ylabel(self.ylabel_var.get(), fontsize=12)
-        ax.set_title(self.title_var.get(), fontsize=14)
+        ax.set_xlabel('Channel', fontsize=12, fontfamily='DejaVu Sans')
+        ax.set_ylabel('Value', fontsize=12, fontfamily='DejaVu Sans')
+        ax.set_title('Feature Comparison Bar Chart', fontsize=14, fontfamily='DejaVu Sans')
 
         # 显示网格
         if self.show_grid_var.get():
