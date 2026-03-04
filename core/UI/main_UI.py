@@ -97,7 +97,7 @@ class NeuroPioneerApp:
         line.pack(side="left", fill="y")
 
         lbl = tk.Label(tab_frame, text=display_name, bg=COLOR_TAB_INACTIVE, padx=15,
-                       font=("微软雅黑", 9), cursor="hand2")
+                       font=("微软雅黑", 16), cursor="hand2")
         lbl.pack(side="left", fill="y")
         lbl.bind("<Button-1>", lambda e, tid=tab_id: self.switch_to_tab(tid))
         lbl.bind("<Button-3>", lambda e, tid=tab_id: self.show_context_menu(e, tid))
@@ -167,21 +167,18 @@ class NeuroPioneerApp:
                 print(f"图片加载失败 {path}: {e}")
                 return None, None
 
-        # ① logo
-        add_image(LOGO_PATH, 56, 24)
+        #菜单栏（暂不绑定事件）
+        add_image(MENU_PATH, 280, 100)
 
-        # ② 菜单栏（暂不绑定事件）
-        add_image(MENU_PATH, 185, 31)
-
-        # ③ 文字介绍区域
-        add_image(CONTENT_PATH, 91, 250)
+        #文字介绍区域
+        add_image(CONTENT_PATH, 60, 330)
 
         # ④ 四个功能按钮（绑定打开对应标签页）
         button_info = [
-            (BUTTON1_PATH, 89, 557, "Preprocessing"),
-            (BUTTON2_PATH, 249, 557, "Extraction"),
-            (BUTTON3_PATH, 436, 557, "Analysis"),
-            (BUTTON4_PATH, 625, 557, "Visualization")
+            (BUTTON1_PATH, 60, 700, "Preprocessing"),
+            (BUTTON2_PATH, 400, 700, "Extraction"),
+            (BUTTON3_PATH, 60, 800, "Analysis"),
+            (BUTTON4_PATH, 400, 800, "Visualization")
         ]
         for path, x, y, name in button_info:
             _, item_id = add_image(path, x, y, tag=f"btn_{name}")
@@ -191,9 +188,6 @@ class NeuroPioneerApp:
                 # 鼠标悬停时改变光标样式
                 home_canvas.tag_bind(item_id, "<Enter>", lambda e: home_canvas.config(cursor="hand2"))
                 home_canvas.tag_bind(item_id, "<Leave>", lambda e: home_canvas.config(cursor=""))
-
-        # ⑤ 登录键（暂不绑定事件）
-        add_image(SIGNIN_PATH, 1274, 24)
 
         # 创建 Homepage 标签按钮（不可关闭）
         tab_btn = self.create_tab_widget("Homepage", tab_id="Homepage", can_close=False)
@@ -400,11 +394,11 @@ class NeuroPioneerApp:
         popup.geometry(f"180x200+{x}+{y}")
         popup.config(bg="white", highlightthickness=1, highlightbackground="#ccc")
 
-        tk.Label(popup, text="快速跳转", bg="#eee", font=("微软雅黑", 9, "bold")).pack(fill="x")
+        tk.Label(popup, text="快速跳转", bg="#eee", font=("微软雅黑", 12, "bold")).pack(fill="x")
 
         others = ["Preprocessing", "Extraction", "Analysis", "Visualization", "Settings"]
         for o in others:
-            lbl = tk.Label(popup, text=o, bg="white", pady=5, cursor="hand2")
+            lbl = tk.Label(popup, text=o, bg="white", font=("微软雅黑", 12, "bold"), pady=5, cursor="hand2")
             lbl.pack(fill="x")
             lbl.bind("<Button-1>", lambda e, name=o: [self.open_functional_tab(name), popup.destroy()])
             lbl.bind("<Enter>", lambda e: e.widget.config(bg="#f0f0f0"))
