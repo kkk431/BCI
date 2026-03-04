@@ -399,7 +399,20 @@ class ModernVisualizationPanel(ttk.Frame):
             import numpy as np
 
             if file_path.endswith('.npy'):
-                self.data_dict = np.load(file_path, allow_pickle=True).item()
+                loaded_data = np.load(file_path, allow_pickle=True)
+                # 处理不同类型的加载结果
+                if loaded_data.ndim == 0:
+                    self.data_dict = loaded_data.item()
+                else:
+                    self.data_dict = loaded_data
+
+            elif file_path.endswith('.npz'):
+                npz_data = np.load(file_path, allow_pickle=True)
+                # 尝试将 npz 转换为字典
+                self.data_dict = {}
+                for key in npz_data.keys():
+                    self.data_dict[key] = npz_data[key]
+
             elif file_path.endswith('.json'):
                 import json
                 with open(file_path, 'r', encoding='utf-8') as f:
@@ -408,11 +421,24 @@ class ModernVisualizationPanel(ttk.Frame):
                 self.data_dict = self.data_loader.load(file_path)
 
             self.file_path = file_path
+
+            # ===== 确保数据字典包含必要的字段 =====
+            if 'meta' not in self.data_dict:
+                self.data_dict['meta'] = {}
+            if 'signal' not in self.data_dict:
+                self.data_dict['signal'] = {}
+            if 'event' not in self.data_dict:
+                self.data_dict['event'] = {'event_id': [], 'event_label': [], 'event_time': [], 'duration': []}
+            if 'processed' not in self.data_dict:
+                self.data_dict['processed'] = {'features': {}}
+
             self.update_file_info()
             messagebox.showinfo("成功", "文件加载成功！")
 
         except Exception as e:
             messagebox.showerror("错误", f"文件加载失败:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def load_demo_data(self):
         """加载演示数据"""
@@ -474,15 +500,21 @@ class ModernVisualizationPanel(ttk.Frame):
         if not self.data_dict:
             self.info_text.insert(tk.END, "请加载数据文件或使用演示数据")
         else:
+            # 直接使用 data_dict，它已经是标准格式
             meta = self.data_dict.get("meta", {})
             subject = meta.get("subject_id", "unknown")
             task = meta.get("task", "unknown")
             modalities = meta.get("modality", [])
 
+            # 如果没有modality，从signal中获取
+            if not modalities and 'signal' in self.data_dict:
+                modalities = list(self.data_dict['signal'].keys())
+
             info = f"🧑 被试: {subject}\n"
             info += f"📋 任务: {task}\n"
-            info += f"🔬 模态: {', '.join(modalities)}\n"
+            info += f"🔬 模态: {', '.join(modalities) if modalities else '无'}\n"
 
+            # 显示信号信息
             signal_dict = self.data_dict.get("signal", {})
             for mod, sig in signal_dict.items():
                 if isinstance(sig, dict) and 'data' in sig:
@@ -631,48 +663,18 @@ class ModernVisualizationPanel(ttk.Frame):
         }
 
     def open_feature_view(self):
-        """打开特征可视化视图"""
+        """打开特征可视化"""
         if not self.data_dict:
             messagebox.showwarning("警告", "请先加载数据")
             return
 
         try:
-            feature_data = self.data_dict.get("feature")
-            if not feature_data:
-                messagebox.showwarning("警告", "数据中没有特征信息")
-                return
-
-            # 从feature_data中提取channels和features
-            channels = feature_data.get('ch_names', [])
-            features = list(feature_data.get('feature', {}).keys())
-
-            if not channels:
-                messagebox.showwarning("警告", "没有通道信息")
-                return
-
-            if not features:
-                messagebox.showwarning("警告", "没有特征信息")
-                return
-
-            self.ensure_pyqt_app()
-            from core.visualizer.feature_view import FeatureView
-
-            # 传入所有必需的参数
-            self.feature_window = FeatureView(feature_data, channels, features)
-            self.feature_window.show()
-
+            from core.visualizer.feature_view import show_feature_view
+            show_feature_view(self, self.data_dict)
         except Exception as e:
             messagebox.showerror("错误", f"打开特征视图失败:\n{str(e)}")
-
-    def ensure_pyqt_app(self):
-        """确保PyQt应用存在"""
-        try:
-            from PyQt5.QtWidgets import QApplication
-            if not QApplication.instance():
-                self.qt_app = QApplication(sys.argv)
-        except ImportError:
-            pass
-
+            import traceback
+            traceback.print_exc()
 
 # 测试代码
 if __name__ == "__main__":
