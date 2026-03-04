@@ -17,6 +17,7 @@ import json
 import pickle
 from datetime import datetime
 from enum import Enum
+import warnings
 
 
 # ==================== 信号类型枚举 ====================
@@ -430,41 +431,161 @@ class DataLoader:
         return data_dict
 
     def _load_numpy(self, file_path: str, **kwargs) -> Dict:
-        """加载NumPy文件"""
-        if file_path.endswith('.npy'):
-            data = np.load(file_path)
-        else:
-            npz = np.load(file_path)
-            data = npz[list(npz.keys())[0]]
+        """加载NumPy文件 - 完善版本"""
+        # 获取 allow_pickle 参数，默认为 True
+        allow_pickle = kwargs.get('allow_pickle', True)
 
-        data_dict = self.builder.create_empty_data_dict()
+        print(f"   加载NumPy文件，allow_pickle={allow_pickle}")
 
+        try:
+            if file_path.endswith('.npy'):
+                data = np.load(file_path, allow_pickle=allow_pickle)
+            else:  # .npz
+                npz_data = np.load(file_path, allow_pickle=allow_pickle)
+
+                # 处理 NPZ 文件
+                # 优先查找数据键
+                data_keys = ['data', 'signal', 'eeg', 'emg', 'ecg', 'fnirs', 'values', 'raw']
+                found_key = None
+
+                for key in data_keys:
+                    if key in npz_data:
+                        found_key = key
+                        break
+
+                if found_key:
+                    data = npz_data[found_key]
+                    print(f"   使用键 '{found_key}' 加载数据")
+                else:
+                    # 如果没有找到标准键，取第一个数组
+                    keys = list(npz_data.keys())
+                    if keys:
+                        data = npz_data[keys[0]]
+                        print(f"   使用第一个键 '{keys[0]}' 加载数据")
+                    else:
+                        raise ValueError("NPZ文件为空")
+
+                # 同时保存其他元数据
+                self.npz_meta = {}
+                for key in npz_data.keys():
+                    if key != found_key and key not in data_keys:
+                        try:
+                            self.npz_meta[key] = npz_data[key].tolist()
+                        except:
+                            pass
+        except Exception as e:
+            print(f"   加载失败: {e}")
+            raise
+
+        # ========== 修复点：更智能地处理 object 数组 ==========
+        # 如果数据是 0 维的 object 数组（通常是字典），直接取出
+        if data.ndim == 0 and data.dtype == object:
+            print(f"   检测到0维object数组，直接取出内容")
+            data = data.item()
+            # 如果取出的是字典，并且有 signal 字段，说明是完整的数据字典
+            if isinstance(data, dict) and 'signal' in data:
+                print(f"   成功加载数据字典")
+                # 构建标准数据字典
+                data_dict = self.builder.create_empty_data_dict()
+                data_dict.update(data)
+                return data_dict
+
+        # 如果数据是多维的 object 数组（可能是信号数据）
+        elif data.dtype == object:
+            print(f"   检测到object数组，检查内容类型...")
+            # 检查第一个元素类型
+            if data.size > 0:
+                first_elem = data.flat[0]
+                if isinstance(first_elem, (int, float, np.number)):
+                    # 如果是数值，尝试转换
+                    try:
+                        data = np.array(data.tolist(), dtype=np.float32)
+                        print(f"   转换为数值数组成功，新形状: {data.shape}")
+                    except Exception as e:
+                        print(f"   无法转换object数组: {e}")
+                        # 保留原样，但给出警告
+                        warnings.warn(f"数据包含Python对象，可能无法正常处理")
+                else:
+                    # 如果不是数值（比如是字典），保留原样
+                    print(f"   数据包含非数值对象（如字典），保持原样")
+            else:
+                print(f"   空数组")
+
+        # ========== 确保数据是2D数组用于信号处理 ==========
+        # 检查 data 是否已经是完整的数据字典
+        if isinstance(data, dict) and 'signal' in data:
+            # 已经是完整数据字典，直接返回
+            return data
+
+        # 否则，data 应该是信号数组
+        # 确保 data 是 numpy 数组
+        if not isinstance(data, np.ndarray):
+            try:
+                data = np.array(data)
+            except:
+                raise ValueError("无法将数据转换为numpy数组")
+
+        # 确保数据是2D
         if data.ndim == 1:
             data = data.reshape(1, -1)
+            print(f"   将1D数据重塑为 (1, {data.shape[1]})")
         elif data.ndim == 2 and data.shape[0] > data.shape[1]:
-            data = data.T
+            # 如果通道数大于样本数，可能数据是 (samples, channels)
+            if data.shape[0] > data.shape[1] * 2:  # 启发式判断
+                data = data.T
+                print(f"   转置数据为 (channels, samples): {data.shape}")
 
+        # ========== 构建数据字典 ==========
+        data_dict = self.builder.create_empty_data_dict()
+
+        # 获取采样率
         fs = kwargs.get('fs', kwargs.get('sampling_rate', 1000))
-        ch_names = kwargs.get('channel_names', [f'Ch{i + 1}' for i in range(data.shape[0])])
+        if hasattr(self, 'npz_meta') and 'fs' in self.npz_meta:
+            fs = float(self.npz_meta['fs'])
+            print(f"   从文件读取采样率: {fs} Hz")
+        elif hasattr(self, 'npz_meta') and 'sampling_rate' in self.npz_meta:
+            fs = float(self.npz_meta['sampling_rate'])
+            print(f"   从文件读取采样率: {fs} Hz")
+
+        # 获取通道名称
+        if hasattr(self, 'npz_meta') and 'channel_names' in self.npz_meta:
+            ch_names = self.npz_meta['channel_names']
+            if len(ch_names) != data.shape[0]:
+                ch_names = [f'Ch{i + 1}' for i in range(data.shape[0])]
+        else:
+            ch_names = kwargs.get('channel_names', [f'Ch{i + 1}' for i in range(data.shape[0])])
+
         modality = kwargs.get('modality', 'UNKNOWN').upper()
 
+        # 添加信号
         self.builder.add_signal(
             data_dict, data, fs, ch_names, modality,
-            signal_type=modality.lower(), unit=kwargs.get('unit', 'unknown')
+            signal_type=modality.lower(),
+            unit=kwargs.get('unit', 'unknown')
         )
 
-        meta = self.builder.build_meta(
-            subject_id=kwargs.get('subject_id', Path(file_path).stem),
-            session_id=kwargs.get('session_id', 'session1'),
-            task=kwargs.get('task', 'unknown'),
-            file_path=str(file_path),
-            modality=[modality] if modality != 'UNKNOWN' else [],
-            device='',
-            sampling_rate=fs,
-            n_channels=data.shape[0],
-            channel_names=ch_names
-        )
+        # 构建meta信息
+        meta_kwargs = {
+            'subject_id': kwargs.get('subject_id', Path(file_path).stem),
+            'session_id': kwargs.get('session_id', 'session1'),
+            'task': kwargs.get('task', 'unknown'),
+            'file_path': str(file_path),
+            'modality': [modality] if modality != 'UNKNOWN' else [],
+            'device': kwargs.get('device', ''),
+            'sampling_rate': fs,
+            'n_channels': data.shape[0],
+            'channel_names': ch_names
+        }
+
+        # 添加NPZ中的其他元数据
+        if hasattr(self, 'npz_meta'):
+            for key, value in self.npz_meta.items():
+                if key not in meta_kwargs:
+                    meta_kwargs[key] = value
+
+        meta = self.builder.build_meta(**meta_kwargs)
         data_dict['meta'] = meta
+
         return data_dict
 
     def _load_fnirs(self, file_path: str, **kwargs) -> Dict:
@@ -576,6 +697,7 @@ class DataLoader:
         data_dict['processed'] = data.get('processed', {})
         return data_dict
 
+
 # ==================== 保存器 ====================
 class DataSaver:
     """标准数据字典 → 保存为各种格式"""
@@ -621,10 +743,23 @@ class DataSaver:
     def _save_npz(data_dict: Dict, output_path: str, format: str = None, **kwargs):
         """保存为NPZ"""
         save_dict = {}
+
+        # 保存signal数据
         if 'signal' in data_dict:
             for modality, info in data_dict['signal'].items():
                 if 'data' in info:
                     save_dict[f'{modality}_data'] = info['data']
+
+        # 保存meta信息
+        if 'meta' in data_dict:
+            save_dict['meta'] = np.array([str(data_dict['meta'])], dtype=object)
+
+        # 保存features（如果有）
+        if 'features_matrix' in data_dict:
+            save_dict['features'] = data_dict['features_matrix']
+        if 'feature_names' in data_dict:
+            save_dict['feature_names'] = np.array(data_dict['feature_names'], dtype=object)
+
         np.savez_compressed(output_path, **save_dict)
 
     @staticmethod
@@ -784,6 +919,8 @@ def main():
     parser.add_argument('--modality', help='信号模态 (EEG, EMG, ECG, GSR, FNIRS, ET, RESP)')
     parser.add_argument('--fs', type=float, help='采样率(Hz)')
     parser.add_argument('--unit', help='信号单位')
+    parser.add_argument('--allow-pickle', action='store_true', default=True,
+                        help='允许加载包含Python对象的数组 (默认: True)')
 
     parser.add_argument('-p', '--pattern', default='*', help='文件匹配模式 (默认: *)')
     parser.add_argument('-r', '--recursive', action='store_true', help='递归子目录')
@@ -807,6 +944,7 @@ def main():
         'modality': args.modality,
         'fs': args.fs,
         'unit': args.unit,
+        'allow_pickle': args.allow_pickle,
     }
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
