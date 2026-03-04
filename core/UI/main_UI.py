@@ -1,15 +1,24 @@
 import sys
 from pathlib import Path
-import feature_extraction_gui
 
-project_root = Path(__file__).resolve().parents[2]
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+# 将项目根目录（即core的上一级目录）动态添加到 sys.path，确保无论从哪个位置运行都能正确导入核心模块
+start_path = Path(__file__).resolve().parent
+for parent in [start_path] + list(start_path.parents):
+    if parent.name == 'core':
+        project_root = parent.parent
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+            print(f"已将项目根目录 {project_root} 添加到 sys.path")
+        break
+else:
+    raise RuntimeError("未找到名为 'core' 的目录")
     
 import tkinter as tk
 import os
 import re
 import time
+
+from core.UI.panel.extraction_panel import ExtractionApp
 
 # --- 视觉配置 ---
 COLOR_TAB_BAR_BG = "#c0c0c0"
@@ -234,7 +243,7 @@ class NeuroPioneerApp:
             self.switch_to_tab(tab_id)
 
     def open_extraction_tab(self):
-        """打开特征提取标签页（带加载动画）"""
+        """打开特征提取标签页"""
         next_num = self._get_next_number_for_base("Extraction")
         display_name = f"Extraction ({next_num})"
         tab_id = f"Extraction_{next_num}"
@@ -244,10 +253,8 @@ class NeuroPioneerApp:
 
         # 显示加载提示
         loading_label = tk.Label(new_frame, text="正在加载特征提取模块...",
-                                 font=("微软雅黑", 14), fg="#666", bg=COLOR_CONTENT_BG)
+                                font=("微软雅黑", 14), fg="#666", bg=COLOR_CONTENT_BG)
         loading_label.place(relx=0.5, rely=0.5, anchor="center")
-
-        # 更新UI显示加载提示
         new_frame.update()
 
         # 创建标签按钮
@@ -264,39 +271,22 @@ class NeuroPioneerApp:
         # 切换到新标签页
         self.switch_to_tab(tab_id)
 
-        # 使用after延迟加载，不阻塞UI
+        # 延迟加载，不阻塞UI
         def load_extraction():
             try:
-                import time
-                start = time.time()
-
-                # 导入特征提取模块
-                import feature_extraction_gui
-
                 # 移除加载提示
                 loading_label.destroy()
 
-                # 创建特征提取应用
-                # 注意：feature_extraction_gui.py中的ExtractionApp类需要tk.Tk作为根窗口
-                # 这里我们传递new_frame作为父容器
-                app = feature_extraction_gui.ExtractionApp(new_frame)
+                # 创建特征提取面板
+                extraction_app = ExtractionApp(new_frame)
+                extraction_app.pack(fill=tk.BOTH, expand=True)
 
-                # 如果ExtractionApp有自己的pack/grid方法，需要调整
-                # 假设ExtractionApp是一个tk.Frame子类或包含pack方法
-                if hasattr(app, 'pack'):
-                    app.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-                elif hasattr(app, 'frame') and hasattr(app.frame, 'pack'):
-                    app.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-                elapsed = time.time() - start
-                print(f"特征提取面板加载完成，耗时: {elapsed:.2f}秒")
-
+                print("特征提取面板加载完成")
             except Exception as e:
                 loading_label.config(text=f"加载失败: {str(e)}", fg="red")
                 import traceback
                 traceback.print_exc()
 
-        # 延迟10ms后开始加载，让UI先显示加载提示
         new_frame.after(10, load_extraction)
 
     def open_visualization_tab(self):

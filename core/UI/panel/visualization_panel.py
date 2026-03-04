@@ -6,9 +6,18 @@ visualization_panel.py
 import sys
 from pathlib import Path
 
-project_root = Path(__file__).resolve().parents[2]
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+# 将项目根目录（即core的上一级目录）动态添加到 sys.path，确保无论从哪个位置运行都能正确导入核心模块
+start_path = Path(__file__).resolve().parent
+for parent in [start_path] + list(start_path.parents):
+    if parent.name == 'core':
+        project_root = parent.parent
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+            print(f"已将项目根目录 {project_root} 添加到 sys.path")
+        break
+else:
+    raise RuntimeError("未找到名为 'core' 的目录")
+
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import os
@@ -22,14 +31,7 @@ from core.visualizer.bar_view import BarView
 from core.visualizer.time_frequency_view import TimeFrequencyView
 from core.visualizer.topography_view import TopographyView
 from core.visualizer.feature_view import FeatureView
-
-# 导入数据IO
-try:
-    from core.io.data_io import DataLoader
-except ImportError:
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    from core.io.data_io import DataLoader
-
+from core.io.data_io import DataLoader
 
 class ScrollableFrame(ttk.Frame):
     """可滚动的框架"""

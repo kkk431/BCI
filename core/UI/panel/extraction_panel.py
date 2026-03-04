@@ -3,19 +3,30 @@
 # flake8: noqa
 """
 智融脑机 - 独立特征提取模块 GUI
-(彻底解决路径导入问题，严格遵循 main_UI 风格，隐式执行全管线)
 """
 
 import os
-import sys
-
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
 import traceback
 import numpy as np
+from pathlib import Path
+import sys
 
-# --- 导入底层业务模块 (现在绝对能找到了) ---
+# 将项目根目录（即core的上一级目录）动态添加到 sys.path，确保无论从哪个位置运行都能正确导入核心模块
+start_path = Path(__file__).resolve().parent
+for parent in [start_path] + list(start_path.parents):
+    if parent.name == 'core':
+        project_root = parent.parent
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+            print(f"已将项目根目录 {project_root} 添加到 sys.path")
+        break
+else:
+    raise RuntimeError("未找到名为 'core' 的目录")
+
+# --- 导入底层业务模块---
 try:
     from core.io.data_io import DataLoader
     from core.processing.preprocessing.multimodal_preprocessing import MultiModalPreprocessor, MultiModalConfigFactory
@@ -28,7 +39,7 @@ except ImportError as e:
     print(f"模块导入依旧失败，详细信息: {e}")
     traceback.print_exc()
 
-# --- 视觉配置 (严格复刻 main_UI.py 风格) ---
+# --- 视觉配置 ---
 COLOR_CONTENT_BG = "white"
 COLOR_BTN_BG = "#3d85a1"
 COLOR_BTN_FG = "white"
@@ -73,38 +84,26 @@ FEATURE_MAP = {
     }
 }
 
-
-class ExtractionApp:
-    def __init__(self, parent):
-        """
-        修改后的初始化方法，接受父容器作为参数
-
-        Parameters
-        ----------
-        parent : tk.Widget
-            父容器，可以是 tk.Tk 或 tk.Frame
-        """
-        self.parent = parent
-        self.root = parent.winfo_toplevel() if parent != parent.winfo_toplevel() else parent
-
-        # 原有的初始化代码，但将 self.root 替换为 parent 或 self.root
-        # 如果原有代码使用 self.root 作为主窗口，现在需要适配
+class ExtractionApp(tk.Frame):
+    def __init__(self, parent, *args, **kwargs):
+        # 调用父类初始化，将当前 Frame 放入 parent 中
+        super().__init__(parent, *args, **kwargs)
+        self.parent = parent  # 保存父容器，但后续主要使用 self.master 或直接 self
 
         # 核心数据容器
         self.clean_data_dict = None
-        self.extracted_features = {}
+        self.extracted_features = None
         self.checkbox_vars = {}
 
-        # 检查模块加载状态
         if not MODULES_LOADED:
             messagebox.showerror("初始化失败", "底层算法模块导入失败，请检查终端输出的路径信息。")
 
-        # 构建UI，但将原有 self.root 替换为 self.parent
         self.setup_ui()
 
     def setup_ui(self):
-        """构建整体 UI 布局"""
-        main_container = tk.Frame(self.root, bg=COLOR_CONTENT_BG, padx=30, pady=20)
+        """构建整体 UI 布局（所有控件都放在 self 上）"""
+        # 主容器直接使用 self（因为 self 就是 Frame）
+        main_container = tk.Frame(self, bg=COLOR_CONTENT_BG, padx=30, pady=20)
         main_container.pack(fill="both", expand=True)
 
         # 标题
@@ -112,7 +111,7 @@ class ExtractionApp:
                              bg=COLOR_CONTENT_BG, fg=COLOR_TEXT_MAIN)
         title_lbl.pack(anchor="w", pady=(0, 20))
 
-        # ================= 区域 1：数据加载 =================
+        # ================= 区域1：数据加载 =================
         frame_step1 = tk.Frame(main_container, bg=COLOR_CONTENT_BG)
         frame_step1.pack(fill="x", pady=10)
 
@@ -123,7 +122,7 @@ class ExtractionApp:
         btn_box1 = tk.Frame(frame_step1, bg=COLOR_CONTENT_BG)
         btn_box1.pack(fill="x")
 
-        self.btn_load = tk.Button(btn_box1, text="上传本地数据文件", font=FONT_BTN, bg=COLOR_BTN_BG, fg=COLOR_BTN_FG,
+        self.btn_load = tk.Button(btn_box1, text="📁 上传本地数据文件", font=FONT_BTN, bg=COLOR_BTN_BG, fg=COLOR_BTN_FG,
                                   relief="flat", padx=15, pady=6, cursor="hand2", command=self.action_load_data)
         self.btn_load.pack(side="left")
 
@@ -133,7 +132,7 @@ class ExtractionApp:
 
         tk.Frame(main_container, bg="#e0e0e0", height=1).pack(fill="x", pady=15)
 
-        # ================= 区域 2：特征勾选与提取 =================
+        # ================= 区域2：特征勾选与提取 =================
         frame_step2 = tk.Frame(main_container, bg=COLOR_CONTENT_BG)
         frame_step2.pack(fill="x", pady=10)
 
@@ -168,7 +167,7 @@ class ExtractionApp:
 
         tk.Frame(main_container, bg="#e0e0e0", height=1).pack(fill="x", pady=15)
 
-        # ================= 区域 3：结果展示 =================
+        # ================= 区域3：结果展示 =================
         frame_step3 = tk.Frame(main_container, bg=COLOR_CONTENT_BG)
         frame_step3.pack(fill="both", expand=True)
 
@@ -193,39 +192,38 @@ class ExtractionApp:
         scrollbar.pack(side="right", fill="y")
 
     # ================= 业务逻辑 =================
+    # 所有方法中的 self.root.after 改为 self.after
+    # 所有 self.root 引用改为 self.master 或 self（但大部分已通过 self 操作）
 
     def action_load_data(self):
-        """隐式执行 data_io 读取 -> preprocessor 降噪"""
         if not MODULES_LOADED:
             messagebox.showerror("错误", "底层模块未加载，请检查文件路径是否正确。")
             return
-        #
-        # filepath = filedialog.askopenfilename(
-        #     title="选择数据文件",
-        #     filetypes=[("支持的格式", "*.csv *.mat *.edf *.bdf *.npy *.npz *.snirf *.set *.pkl *.json"),
-        #                ("All Files", "*.*")]
-        # )
-        # if not filepath:
-        #     return
-        #
-        # self.btn_load.config(state="disabled", bg="#a0a0a0", cursor="arrow")
-        # self.btn_extract.config(state="disabled", bg="#a0a0a0", cursor="arrow")
-        # self.lbl_status.config(text="正在读取文件并进行后台降噪处理，这可能需要几秒钟，请稍候...", fg="#0056b3")
-        #
-        # for item in self.tree.get_children():
-        #     self.tree.delete(item)
+
+        filepath = filedialog.askopenfilename(
+            title="选择数据文件",
+            filetypes=[("支持的格式", "*.csv *.mat *.edf *.bdf *.npy *.npz *.snirf *.set *.pkl *.json"),
+                       ("All Files", "*.*")]
+        )
+        if not filepath:
+            return
+
+        self.btn_load.config(state="disabled", bg="#a0a0a0", cursor="arrow")
+        self.btn_extract.config(state="disabled", bg="#a0a0a0", cursor="arrow")
+        self.lbl_status.config(text="正在读取文件并进行后台降噪处理，这可能需要几秒钟，请稍候...", fg="#0056b3")
+
+        for item in self.tree.get_children():
+            self.tree.delete(item)
 
         def background_task():
             try:
-                # [隐式步骤1]：调用 data_io.py 解析格式
-                # loader = DataLoader()
-                # raw_dict = loader.load(filepath)
+                loader = DataLoader()
+                raw_dict = loader.load(filepath)
 
-                # [隐式步骤2]：调用预处理模块进行净化
-                # prep_config = MultiModalConfigFactory.create_resting_state_config()
-                # preprocessor = MultiModalPreprocessor(prep_config)
-                # result = preprocessor.process(raw_dict)
-                result = example_usage()
+                prep_config = MultiModalConfigFactory.create_resting_state_config()
+                preprocessor = MultiModalPreprocessor(prep_config)
+                result = preprocessor.process(raw_dict)
+
                 if not result.success:
                     raise Exception(f"后台预处理去噪失败: {result.error_message}")
 
@@ -234,15 +232,14 @@ class ExtractionApp:
                 mods = list(self.clean_data_dict.get('signal', {}).keys())
                 valid_mods = [m for m in mods if m in FEATURE_MAP]
 
-                # 防止跨线程刷新UI导致卡死
                 if valid_mods:
-                    self.root.after(0, self._ui_update_on_load_success, valid_mods)
+                    self.after(0, self._ui_update_on_load_success, valid_mods)   # 改 self.root.after -> self.after
                 else:
-                    self.root.after(0, self._ui_update_on_load_warning)
+                    self.after(0, self._ui_update_on_load_warning)               # 改 self.root.after -> self.after
 
             except Exception as e:
                 traceback.print_exc()
-                self.root.after(0, self._ui_update_on_error, f"处理失败: {str(e)}")
+                self.after(0, self._ui_update_on_error, f"处理失败: {str(e)}")   # 改 self.root.after -> self.after
 
         threading.Thread(target=background_task, daemon=True).start()
 
@@ -265,7 +262,6 @@ class ExtractionApp:
         self.btn_extract.config(state="disabled", bg="#a0a0a0", cursor="arrow")
 
     def refresh_checkboxes(self, event):
-        """根据下拉框选中的模态，动态生成复选框"""
         mod = self.modality_var.get()
         if not mod or mod not in FEATURE_MAP:
             return
@@ -291,7 +287,6 @@ class ExtractionApp:
                 row += 1
 
     def action_extract(self):
-        """执行精确的特征提取 - 使用 MultimodalFeaturePipeline"""
         mod = self.modality_var.get()
         if not mod or not self.clean_data_dict:
             return
@@ -303,98 +298,68 @@ class ExtractionApp:
 
         self.btn_extract.config(state="disabled", bg="#a0a0a0", cursor="arrow")
         self.btn_load.config(state="disabled", bg="#a0a0a0", cursor="arrow")
-        self.lbl_status.config(text=f"正在通过 MultimodalFeaturePipeline 提取 {mod} 的特征，请稍候...", fg="#0056b3")
+        self.lbl_status.config(text=f"正在精确提取 {mod} 的特征，请稍候...", fg="#0056b3")
 
         def background_extraction():
             try:
-                # 构建 selected_features 字典，格式为 {"EMG": ["time_domain", "nonlinear"]}
-                selected_features = {mod: selected_cats}
-
-                # 实例化 MultimodalFeaturePipeline 并运行
-                pipeline = MultimodalFeaturePipeline(
-                    data_dict=self.clean_data_dict,
-                    selected_features=selected_features
-                )
-
-                # 运行完整的特征提取流程
+                request = {mod: selected_cats}
+                pipeline = MultimodalFeaturePipeline(self.clean_data_dict, selected_features=request)
                 final_dict = pipeline.run_pipeline()
 
-                # 从 processed['feature'] 中提取当前模态的特征
-                if 'processed' in final_dict and 'feature' in final_dict['processed']:
-                    all_features = final_dict['processed']['feature']
-                    self.extracted_features = all_features.get(mod, {})
-                else:
-                    self.extracted_features = {}
+                all_feats = final_dict.get('processed', {}).get('feature', {})
+                self.extracted_features = {mod: all_feats.get(mod, {})}
 
-                feat_count = len(self.extracted_features)
-                print(f"特征提取完成，共提取 {feat_count} 个特征")
-
-                self.root.after(0, self._ui_update_on_extract_success, mod, feat_count)
+                self.after(0, self._ui_update_on_extract_success, mod)   # 改 self.root.after -> self.after
 
             except Exception as e:
                 traceback.print_exc()
-                self.root.after(0, self._ui_update_on_error, f"特征提取异常: {str(e)}")
+                self.after(0, self._ui_update_on_error, f"特征提取异常: {str(e)}")   # 改 self.root.after -> self.after
 
         threading.Thread(target=background_extraction, daemon=True).start()
 
-    def _ui_update_on_extract_success(self, mod, feat_count):
-        """成功提取后刷新表格和状态"""
-        self.lbl_status.config(text=f"【{mod}】{feat_count}个特征提取完毕！", fg="green")
+    def _ui_update_on_extract_success(self, mod):
+        self.lbl_status.config(text=f"【{mod}】所选特征提取完毕！", fg="green")
         self.btn_extract.config(state="normal", bg=COLOR_BTN_BG, cursor="hand2")
         self.btn_load.config(state="normal", bg=COLOR_BTN_BG, cursor="hand2")
         self.render_table(mod)
 
     def render_table(self, mod):
-        """将提取完毕的特征铺入表格"""
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        mod_feats = self.extracted_features
+        mod_feats = self.extracted_features.get(mod, {})
 
-        # 展平嵌套的特征字典
-        flat_features = self._flatten_features(mod_feats)
+        flat = {}
+        for k, v in mod_feats.items():
+            if isinstance(v, dict):
+                for sk, sv in v.items():
+                    flat[f"[{k}] {sk}"] = sv
+            else:
+                flat[k] = v
 
-        for name, val in flat_features.items():
+        for name, val in flat.items():
             if isinstance(val, float):
-                if abs(val) < 0.001:
-                    val_str = f"{val:.6f}"
-                elif abs(val) < 1:
-                    val_str = f"{val:.4f}"
-                else:
-                    val_str = f"{val:.2f}"
+                val_str = f"{val:.6f}"
             elif isinstance(val, (list, np.ndarray)):
-                val_str = f"Array {np.shape(val)}: {str(val)[:50]}..."
-            elif isinstance(val, dict):
-                # 如果是字典，跳过（已经在扁平化时处理了）
-                continue
+                val_str = f"Array {np.shape(val)}: {str(val)[:30]}..."
             else:
                 val_str = str(val)
 
             self.tree.insert('', "end", values=(name, val_str))
 
-    def _flatten_features(self, features, parent_key='', sep='_'):
-        """递归展平嵌套的特征字典"""
-        items = []
-        if not isinstance(features, dict):
-            return {parent_key: features} if parent_key else {}
-
-        for k, v in features.items():
-            new_key = f"{parent_key}{sep}{k}" if parent_key else k
-            if isinstance(v, dict):
-                items.extend(self._flatten_features(v, new_key, sep=sep).items())
-            else:
-                items.append((new_key, v))
-        return dict(items)
-
-
 if __name__ == "__main__":
     try:
         from ctypes import windll
-
         windll.shcore.SetProcessDpiAwareness(1)
     except:
         pass
 
     root = tk.Tk()
+    root.title("智融脑机 - 特征提取模块")  # 只有独立运行时才设置标题和大小
+    root.geometry("1000x700")
+    root.configure(bg=COLOR_CONTENT_BG)
+
     app = ExtractionApp(root)
+    app.pack(fill=tk.BOTH, expand=True)
+
     root.mainloop()
