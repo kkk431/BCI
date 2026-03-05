@@ -1,3 +1,6 @@
+import subprocess
+import sys
+import os
 import sys
 from pathlib import Path
 
@@ -14,6 +17,7 @@ else:
     raise RuntimeError("未找到名为 'core' 的目录")
 
 import tkinter as tk
+from tkinter import messagebox      # ==== 新增：导入 messagebox 用于错误提示 ====
 import os
 import re
 import time
@@ -30,6 +34,20 @@ except ImportError:
     AIChatWindow = None
 
 from core.UI.panel.extraction_panel import ExtractionApp
+
+# ==== 新增：导入统计分析模块和 PyQt5 相关 ====
+try:
+    from core.processing.Statistical_Analysis.statistical_analysis_dialog import StatisticalAnalysisDialog
+except ImportError:
+    StatisticalAnalysisDialog = None
+    print("统计分析模块未找到，请检查路径 core/processing/Statistical_Analysis/")
+
+try:
+    from PyQt5.QtWidgets import QApplication
+except ImportError:
+    QApplication = None
+    print("PyQt5 未安装，统计分析窗口将无法弹出")
+# ==========================================
 
 # 视觉配置
 COLOR_TAB_BAR_BG = "#c0c0c0"
@@ -88,6 +106,17 @@ class NeuroPioneerApp:
 
         # 创建灵动悬浮气泡
         self.create_ai_bubble()
+        # self.start_qt_event_loop()
+
+    # def start_qt_event_loop(self):
+    #     """定时处理 PyQt 事件，避免窗口无响应"""
+    #
+    #     def process():
+    #         if QApplication.instance():
+    #             QApplication.processEvents()
+    #         self.root.after(100, process)
+    #
+    #     self.root.after(100, process)
 
     def setup_ui(self):
         self.header_frame = tk.Frame(self.root, bg=COLOR_TAB_BAR_BG, height=45)
@@ -214,11 +243,14 @@ class NeuroPioneerApp:
                     max_num = max(max_num, num)
         return max_num + 1
 
+    # ==== 修改：为 "Analysis" 添加分支，直接弹出窗口 ====
     def open_functional_tab(self, base_name):
         if base_name == "Visualization":
             self.open_visualization_tab()
         elif base_name == "Extraction":
             self.open_extraction_tab()
+        elif base_name == "Analysis":
+            self.open_statistical_dialog()   # 直接弹出统计分析窗口
         else:
             next_num = self._get_next_number_for_base(base_name)
             display_name = f"{base_name} ({next_num})"
@@ -233,6 +265,7 @@ class NeuroPioneerApp:
                                  "base_name": base_name, "display_name": display_name}
 
             self.switch_to_tab(tab_id)
+    # ===================================================
 
     def open_extraction_tab(self):
         next_num = self._get_next_number_for_base("Extraction")
@@ -307,6 +340,26 @@ class NeuroPioneerApp:
                 loading_label.config(text=f"加载失败: {str(e)}", fg="red")
 
         new_frame.after(10, load_visualization)
+
+    # ==== 新增：弹出统计分析 PyQt 窗口的方法 ====
+    def open_statistical_dialog(self):
+        """弹出统计分析 PyQt 窗口（作为独立进程运行）"""
+        if StatisticalAnalysisDialog is None:
+            messagebox.showerror("错误", "统计分析模块未正确加载，请检查文件路径或依赖库。")
+            return
+
+        # 获取当前 Python 解释器路径
+        python_executable = sys.executable
+        # 获取 statistical_analysis_dialog.py 的完整路径
+        dialog_path = os.path.join(project_root, "core", "processing", "Statistical_Analysis",
+                                   "statistical_analysis_dialog.py")
+
+        try:
+            # 启动子进程，不等待
+            subprocess.Popen([python_executable, dialog_path])
+        except Exception as e:
+            messagebox.showerror("错误", f"无法启动统计分析窗口: {str(e)}")
+    # ===========================================
 
     def switch_to_tab(self, tab_id):
         if tab_id not in self.tabs:
