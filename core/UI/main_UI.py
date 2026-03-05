@@ -393,7 +393,7 @@ class NeuroPioneerApp:
                 self.close_tab(tid)
         self.switch_to_tab("Homepage")
 
-    # ========== 最终防误触版：AI悬浮气泡 ==========
+    # ========== AI悬浮气泡 ==========
     def create_ai_bubble(self):
         # 基础固定配置（全局统一，杜绝错位）
         self.bubble_window_size = 64  # 气泡窗口固定总尺寸
@@ -555,7 +555,7 @@ class NeuroPioneerApp:
         else:
             self._draw_perfect_bubble(self.theme_main)
 
-    # ========== 核心修改：防误触拖拽逻辑 ==========
+    # ========== 防误触拖拽逻辑 ==========
     def _bubble_drag_start(self, e):
         """鼠标按下：初始化状态，记录按下坐标"""
         self.is_dragging = False
@@ -638,7 +638,6 @@ class NeuroPioneerApp:
         target_y = root_y + root_h - self.bubble_window_size - 20
         self.bubble_window.geometry(f"+{target_x}+{target_y}")
 
-    # ========== 防误触版代码结束 ==========
 
     def toggle_ai(self):
         """切换AI窗口显示/隐藏"""
