@@ -1,6 +1,19 @@
 import json
 import os
 import sys
+from pathlib import Path
+
+# 添加项目根目录到 sys.path
+start_path = Path(__file__).resolve().parent
+for parent in [start_path] + list(start_path.parents):
+    if parent.name == 'core':
+        project_root = parent.parent
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+            print(f"子进程: 已将项目根目录 {project_root} 添加到 sys.path")
+        break
+else:
+    raise RuntimeError("子进程: 未找到名为 'core' 的目录")
 import pandas as pd
 import numpy as np
 from scipy.stats import ttest_ind
@@ -16,12 +29,13 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 
-# 项目内模块导入（对齐原始代码路径，直接适配项目目录）
-from BrainFusion.io.File_IO import read_file, read_xlsx
-from BrainFusion.statistic.significance_test import calculate_significance, multiple_comparison_correction
-from BrainFusion.statistic.statistical_plot import (ScatterPlotWindow, DensityHistogramWindow,
-                                                   SignificanceBoxPlotWindow, SignificanceViolinPlotWindow)
-from UI.ui_component import BFPushButton
+# 项目内模块导入（使用自定义的 read_xlsx 替代 DataLoader）
+from core.processing.Statistical_Analysis.file_io_fallback import read_xlsx
+from core.processing.Statistical_Analysis.significance_test import calculate_significance, multiple_comparison_correction
+from core.processing.Statistical_Analysis.statistical_plot import (ScatterPlotWindow, DensityHistogramWindow,
+                                    SignificanceBoxPlotWindow, SignificanceViolinPlotWindow)
+# 临时使用 QPushButton 代替 BFPushButton，直到找到真实路径
+BFPushButton = QPushButton
 
 
 def get_feature(feature_dict, channel_name=None, feature_name=None):
@@ -55,19 +69,19 @@ def get_feature(feature_dict, channel_name=None, feature_name=None):
 
     return data
 
+
 def convert_to_significance_dict(result):
     """
     Convert significance test results to a comparison dictionary.
-    :param result: Significance test result list
-    :type result: list
-    :return: Dictionary mapping group pairs to corrected p-values
-    :rtype: dict
+    If corrected_p_value is not present, use original p_value.
     """
     significance_dict = {}
     for entry in result:
-        if not pd.isna(entry['corrected_p_value']):
+        # 优先使用 corrected_p_value，如果没有则用 p_value
+        p_val = entry.get('corrected_p_value', entry['p_value'])
+        if not pd.isna(p_val):
             group1, group2 = entry['group_comparison'].split(' vs ')
-            significance_dict[(f"{group1}", f"{group2}")] = entry['corrected_p_value']
+            significance_dict[(f"{group1}", f"{group2}")] = p_val
     return significance_dict
 
 
@@ -638,10 +652,11 @@ class StatisticalAnalysisDialog(QMainWindow):
                 if not os.path.exists(folder_path):
                     QMessageBox.warning(self, "Error", f"Folder {folder_path} does not exist!")
                     return
-                # 加载xlsx文件（对齐原始代码的文件格式）
+                # 加载xlsx文件（使用自定义的 read_xlsx）
                 for file_name in os.listdir(folder_path):
                     if file_name.endswith('.xlsx'):
                         file_path = os.path.join(folder_path, file_name)
+                        print(f"读取: {file_name} (xlsx)")
                         file_data = read_xlsx(file_path)
                         self.group_files[group_name].append(file_data)
                 # 无有效文件时提示
@@ -655,10 +670,12 @@ class StatisticalAnalysisDialog(QMainWindow):
         # 初始化UI的通道和特征下拉框
         try:
             self.data = next(iter(self.group_files.values()))[0]
+            # 根据 read_xlsx 返回的数据结构填充下拉框
+            # feature_dict 包含 'feature' 字典（特征名: 数据列表）和 'ch_names' 列表
             self.feature_combo.clear()
-            self.feature_combo.addItems(self.data['feature'])
+            self.feature_combo.addItems(list(self.data['feature'].keys()))
             # 通道下拉框显隐控制
-            if 'ch_names' not in self.data.keys():
+            if 'ch_names' not in self.data or not self.data['ch_names']:
                 self.channel_combo.setVisible(False)
             else:
                 self.channel_combo.clear()
@@ -677,7 +694,7 @@ class StatisticalAnalysisDialog(QMainWindow):
             return
 
         self.status_label.setText("Status: Processing...")
-        QApplication.processEvents()  # 刷新UI，显示处理状态
+        ##QApplication.processEvents()  # 刷新UI，显示处理状态
 
         try:
             # 提取选中的通道和特征，加载数据
@@ -685,7 +702,7 @@ class StatisticalAnalysisDialog(QMainWindow):
             for group_name in self.group_files:
                 self.group_select_features[group_name] = []
                 for dataset in self.group_files[group_name]:
-                    channel = self.channel_combo.currentText() if 'ch_names' in dataset else None
+                    channel = self.channel_combo.currentText() if self.channel_combo.isVisible() else None
                     feature = self.feature_combo.currentText()
                     # get_feature 需返回一维列表（之前已修改）
                     self.group_select_features[group_name].extend(get_feature(dataset, channel, feature))
@@ -731,6 +748,7 @@ class StatisticalAnalysisDialog(QMainWindow):
         except Exception as e:
             self.status_label.setText("Status: Failed!")
             QMessageBox.critical(self, "Error", f"Analysis failed: {str(e)}")
+
     def export_results(self):
         """Export analysis results to external format (导出结果，预留扩展接口)."""
         if not self.result:
