@@ -41,13 +41,13 @@ except ImportError as e:
 
 # --- 视觉配置 ---
 COLOR_CONTENT_BG = "white"
-COLOR_BTN_BG = "#3d85a1"
+COLOR_BTN_BG = "#4f8080"
 COLOR_BTN_FG = "white"
 COLOR_TEXT_MAIN = "#333333"
 COLOR_TEXT_SUB = "#666666"
-FONT_TITLE = ("微软雅黑", 14, "bold")
-FONT_NORMAL = ("微软雅黑", 10)
-FONT_BTN = ("Arial", 10, "bold")
+FONT_TITLE = ("微软雅黑", 16, "bold")
+FONT_NORMAL = ("微软雅黑", 14)
+FONT_BTN = ("Arial", 14, "bold")
 
 # 特征映射表（用于动态生成复选框）
 FEATURE_MAP = {
@@ -159,7 +159,7 @@ class ExtractionApp(tk.Frame):
         tk.Label(self.check_container, text="请先上传数据并选择模态...", bg="#f8f9fa", font=FONT_NORMAL,
                  fg=COLOR_TEXT_SUB).pack(anchor="w")
 
-        self.btn_extract = tk.Button(frame_step2, text="⚡ 提取已勾选特征", font=FONT_BTN, bg=COLOR_BTN_BG,
+        self.btn_extract = tk.Button(frame_step2, text="⚡ 提取已勾选特征", font=FONT_BTN, bg="#b9dcff",
                                      fg=COLOR_BTN_FG,
                                      relief="flat", padx=15, pady=6, cursor="hand2", command=self.action_extract,
                                      state="disabled")
@@ -179,8 +179,9 @@ class ExtractionApp(tk.Frame):
         table_frame.pack(fill="both", expand=True)
 
         columns = ("Name", "Value")
+        
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
-        self.tree.heading("Name", text="特征名称", anchor="w")
+        self.tree.heading("Name", text="特征名称", anchor="w",)
         self.tree.heading("Value", text="特征数值", anchor="w")
         self.tree.column("Name", width=400, anchor="w")
         self.tree.column("Value", width=300, anchor="w")
