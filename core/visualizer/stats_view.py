@@ -8,25 +8,32 @@ Tkinter版本 - 统计分析视图
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import numpy as np
-import matplotlib
 
-matplotlib.use('TkAgg')
+# ========== matplotlib 配置必须放在最前面 ==========
+import matplotlib
+matplotlib.use('TkAgg')  # 强制使用 TkAgg 后端
+import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+# =================================================
 
 from scipy import stats
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 import json
 import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
-import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 
-# 设置 matplotlib 全局字体为英文字体
-plt.rcParams['font.family'] = 'DejaVu Sans'  # 或 'Arial', 'Helvetica'
-plt.rcParams['axes.unicode_minus'] = False   # 正确显示负号
+import platform
+system = platform.system()
+if system == "Windows":
+    plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'SimSun']
+elif system == "Darwin":  # macOS
+    plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'Heiti TC', 'PingFang SC']
+else:  # Linux
+    plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'Noto Sans CJK SC']
+plt.rcParams['axes.unicode_minus'] = False
 
 
 class StatsView(tk.Frame):
@@ -58,38 +65,89 @@ class StatsView(tk.Frame):
         # 加载数据
         self._load_data()
 
+        # ========== 添加数据验证 ==========
+        print("\n" + "=" * 60)
+        print("📊 StatsView 初始化数据验证")
+        print("=" * 60)
+        print(f"data_dict: {data_dict is not None}")
+        print(f"stats_file: {stats_file}")
+        print(f"stats_results keys: {list(self.stats_results.keys())}")
+
+        if "roc" in self.stats_results:
+            roc = self.stats_results["roc"]
+            print(f"✅ ROC数据存在")
+            print(f"   y_true长度: {len(roc.get('y_true', []))}")
+            print(f"   y_score长度: {len(roc.get('y_score', []))}")
+        else:
+            print("❌ ROC数据不存在")
+
+        if "confusion_matrix" in self.stats_results:
+            cm = self.stats_results["confusion_matrix"]
+            print(f"✅ 混淆矩阵数据存在")
+            print(f"   矩阵: {cm.get('matrix', [])}")
+        else:
+            print("❌ 混淆矩阵数据不存在")
+        print("=" * 60 + "\n")
+
         # 设置UI
         self.setup_ui()
 
+        # 立即测试绘图
+        self.roc_figure.clf()
+        ax = self.roc_figure.add_subplot(111)
+        ax.plot([0, 1, 2, 3], [0, 1, 0, 1], 'g-', linewidth=3)
+        ax.set_title("初始化测试")
+        self.roc_canvas.draw()
+
         # 更新显示
-        self.update_plots()
+        self.update_plots(switch_tab=True)
 
     def _load_data(self):
         """加载统计数据"""
         if self.stats_file:
-            # 从文件加载
             try:
                 if self.stats_file.endswith('.json'):
                     with open(self.stats_file, 'r', encoding='utf-8') as f:
-                        self.stats_results = json.load(f)
+                        loaded_data = json.load(f)
+
+                    # 智能解析数据路径
+                    if "processed" in loaded_data and "stat_results" in loaded_data["processed"]:
+                        # 如果是完整数据字典格式
+                        self.stats_results = loaded_data["processed"]["stat_results"]
+                        print("从 processed.stat_results 加载数据")
+                    elif any(key in ["roc", "boxplot", "confusion_matrix"] for key in loaded_data):
+                        # 如果是直接的统计结果格式
+                        self.stats_results = loaded_data
+                        print("从顶层加载统计结果")
+                    else:
+                        # 其他情况
+                        self.stats_results = loaded_data
+                        print("使用原始加载数据")
+
                 elif self.stats_file.endswith(('.pkl', '.pickle')):
                     import pickle
                     with open(self.stats_file, 'rb') as f:
-                        self.stats_results = pickle.load(f)
-                elif self.stats_file.endswith('.csv'):
-                    df = pd.read_csv(self.stats_file)
-                    self.stats_results = df.to_dict(orient='list')
+                        loaded_data = pickle.load(f)
+                    # 同样的智能解析
+                    if isinstance(loaded_data, dict):
+                        if "processed" in loaded_data and "stat_results" in loaded_data["processed"]:
+                            self.stats_results = loaded_data["processed"]["stat_results"]
+                        else:
+                            self.stats_results = loaded_data
             except Exception as e:
                 messagebox.showerror("加载失败", f"无法加载统计文件: {str(e)}")
                 self.stats_results = self._create_demo_data()
-
         elif self.data_dict:
-            # 从数据字典加载
+            # 从数据字典加载 - 同样智能解析
             processed = self.data_dict.get("processed", {})
             self.stats_results = processed.get("stat_results", {})
 
-        # 如果没有数据，创建演示数据
-        if not self.stats_results:
+            # 如果stat_results为空，尝试直接从data_dict查找
+            if not self.stats_results:
+                for key in ["roc", "boxplot", "confusion_matrix", "statistics"]:
+                    if key in self.data_dict:
+                        self.stats_results[key] = self.data_dict[key]
+        else:
             self.stats_results = self._create_demo_data()
 
     def _create_demo_data(self) -> Dict:
@@ -155,11 +213,12 @@ class StatsView(tk.Frame):
         ttk.Label(control_frame, text="分析类型:").pack(side=tk.LEFT, padx=5)
 
         self.plot_type_var = tk.StringVar(value="箱线图")
+        self.plot_type_var = tk.StringVar(value="箱线图")
         plot_type_combo = ttk.Combobox(control_frame, textvariable=self.plot_type_var,
                                        values=["箱线图", "ROC曲线", "混淆矩阵", "所有"],
                                        state="readonly", width=15)
         plot_type_combo.pack(side=tk.LEFT, padx=5)
-        plot_type_combo.bind('<<ComboboxSelected>>', lambda e: self.update_plots())
+        plot_type_combo.bind('<<ComboboxSelected>>', self.on_plot_type_changed)  # 改成单独的方法
 
         # 显著性水平
         ttk.Label(control_frame, text="显著性水平 α:").pack(side=tk.LEFT, padx=(20, 5))
@@ -168,7 +227,7 @@ class StatsView(tk.Frame):
         alpha_spin = ttk.Spinbox(control_frame, from_=0.001, to=0.1, increment=0.005,
                                  textvariable=self.alpha_var, width=8)
         alpha_spin.pack(side=tk.LEFT, padx=5)
-        alpha_spin.bind('<Return>', lambda e: self.update_plots())
+        alpha_spin.bind('<Return>', lambda e: self.update_plots(switch_tab=False))
 
         # 保存按钮
         ttk.Button(control_frame, text="保存图表",
@@ -205,16 +264,15 @@ class StatsView(tk.Frame):
         control_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
         control_frame.pack_propagate(False)
 
-        # 大约在第180行附近
         self.show_points_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(control_frame, text="显示数据点",
                         variable=self.show_points_var,
-                        command=self.update_plots).pack(anchor=tk.W, padx=5, pady=5)
+                        command=lambda: self.update_plots(switch_tab=False)).pack(anchor=tk.W, padx=5, pady=5)
 
         self.show_stats_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(control_frame, text="显示统计标记",
                         variable=self.show_stats_var,
-                        command=self.update_plots).pack(anchor=tk.W, padx=5, pady=5)
+                        command=lambda: self.update_plots(switch_tab=False)).pack(anchor=tk.W, padx=5, pady=5)
 
         # 右侧绘图区域
         plot_frame = ttk.Frame(self.boxplot_frame)
@@ -241,12 +299,12 @@ class StatsView(tk.Frame):
         self.show_auc_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(control_frame, text="显示AUC值",
                         variable=self.show_auc_var,
-                        command=self.update_plots).pack(anchor=tk.W, padx=5, pady=5)
+                        command=lambda: self.update_plots(switch_tab=False)).pack(anchor=tk.W, padx=5, pady=5)
 
         self.show_diag_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(control_frame, text="显示对角线",
                         variable=self.show_diag_var,
-                        command=self.update_plots).pack(anchor=tk.W, padx=5, pady=5)
+                        command=lambda: self.update_plots(switch_tab=False)).pack(anchor=tk.W, padx=5, pady=5)
 
         # 右侧绘图区域
         plot_frame = ttk.Frame(self.roc_frame)
@@ -262,6 +320,7 @@ class StatsView(tk.Frame):
         toolbar_frame.pack(fill=tk.X)
         self.roc_toolbar = NavigationToolbar2Tk(self.roc_canvas, toolbar_frame)
         self.roc_toolbar.update()
+        self.roc_frame.bind('<Visibility>', lambda e: self.update_roc())
 
     def setup_cm_tab(self):
         """设置混淆矩阵选项卡"""
@@ -273,12 +332,12 @@ class StatsView(tk.Frame):
         self.show_numbers_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(control_frame, text="显示数值",
                         variable=self.show_numbers_var,
-                        command=self.update_plots).pack(anchor=tk.W, padx=5, pady=5)
+                        command=lambda: self.update_plots(switch_tab=False)).pack(anchor=tk.W, padx=5, pady=5)
 
         self.show_percent_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(control_frame, text="显示百分比",
                         variable=self.show_percent_var,
-                        command=self.update_plots).pack(anchor=tk.W, padx=5, pady=5)
+                        command=lambda: self.update_plots(switch_tab=False)).pack(anchor=tk.W, padx=5, pady=5)
 
         ttk.Label(control_frame, text="颜色映射:").pack(anchor=tk.W, padx=5, pady=(10, 2))
 
@@ -287,7 +346,7 @@ class StatsView(tk.Frame):
                                   values=['Blues', 'Reds', 'Greens', 'Purples', 'Oranges', 'viridis'],
                                   state="readonly", width=15)
         cmap_combo.pack(anchor=tk.W, padx=5, pady=2)
-        cmap_combo.bind('<<ComboboxSelected>>', lambda e: self.update_plots())
+        cmap_combo.bind('<<ComboboxSelected>>', lambda e: self.update_plots(switch_tab=False))
 
         # 右侧绘图区域
         plot_frame = ttk.Frame(self.cm_frame)
@@ -303,6 +362,7 @@ class StatsView(tk.Frame):
         toolbar_frame.pack(fill=tk.X)
         self.cm_toolbar = NavigationToolbar2Tk(self.cm_canvas, toolbar_frame)
         self.cm_toolbar.update()
+        self.cm_frame.bind('<Visibility>', lambda e: self.update_cm())
 
     def setup_stats_table_tab(self):
         """设置统计结果表格选项卡"""
@@ -359,24 +419,45 @@ class StatsView(tk.Frame):
                     )
                     self.stats_tree.insert("", tk.END, values=values)
 
-    def update_plots(self):
-        """更新所有图表"""
-        plot_type = self.plot_type_var.get()
+    def update_plots(self, switch_tab=True):
+        """更新所有图表
 
-        if plot_type in ["箱线图", "所有"]:
+        Args:
+            switch_tab: 是否切换选项卡（避免不必要的切换）
+        """
+        plot_type = self.plot_type_var.get()
+        current_tab = self.notebook.index(self.notebook.select())
+
+        print(f"update_plots 被调用: {plot_type}, current_tab={current_tab}")
+
+        # 根据当前显示的选项卡更新对应的图表
+        if current_tab == 0:  # 箱线图
             self.update_boxplot()
-        if plot_type in ["ROC曲线", "所有"]:
+        elif current_tab == 1:  # ROC曲线
+            print("正在更新ROC曲线...")
             self.update_roc()
-        if plot_type in ["混淆矩阵", "所有"]:
+        elif current_tab == 2:  # 混淆矩阵
             self.update_cm()
 
-        # 更新选项卡
-        if plot_type == "箱线图":
-            self.notebook.select(0)
-        elif plot_type == "ROC曲线":
+    # ========== 在这里添加新方法 ==========
+    def on_plot_type_changed(self, event=None):
+        """分析类型改变时的处理"""
+        plot_type = self.plot_type_var.get()
+        print(f"分析类型改变为: {plot_type}")
+
+        if plot_type == "ROC曲线":
             self.notebook.select(1)
+            self.update_roc()
+        elif plot_type == "箱线图":
+            self.notebook.select(0)
+            self.update_boxplot()
         elif plot_type == "混淆矩阵":
             self.notebook.select(2)
+            self.update_cm()
+        elif plot_type == "所有":
+            self.update_boxplot()
+            self.update_roc()
+            self.update_cm()
 
     def update_boxplot(self):
         """更新箱线图"""
@@ -396,7 +477,7 @@ class StatsView(tk.Frame):
             return
 
         # 绘制箱线图
-        bp = ax.boxplot(data, patch_artist=True, labels=labels, showfliers=False)
+        bp = ax.boxplot(data, patch_artist=True, tick_labels=labels, showfliers=False)
 
         # 设置颜色
         for patch, color in zip(bp['boxes'], colors):
@@ -433,7 +514,7 @@ class StatsView(tk.Frame):
                             # 添加星号
                             stars = '***' if p_val < 0.001 else '**' if p_val < 0.01 else '*' if p_val < 0.05 else ''
                             ax.text((x1 + x2) / 2, y_pos + y_range * 0.04, stars,
-                                    ha='center', va='bottom', fontsize=12, fontweight='bold', family='DejaVu Sans')
+                                    ha='center', va='bottom', fontsize=12, fontweight='bold')
             except:
                 pass
 
@@ -445,94 +526,164 @@ class StatsView(tk.Frame):
         self.boxplot_canvas.draw()
 
     def update_roc(self):
-        """更新ROC曲线"""
-        self.roc_figure.clear()
-        ax = self.roc_figure.add_subplot(111)
+        """更新ROC曲线 - 正式版本"""
+        print("\n" + "=" * 60)
+        print("📈 绘制ROC曲线")
+        print("=" * 60)
 
-        # 获取数据
+        print(f"self.stats_results keys: {list(self.stats_results.keys())}")
+
+        # 获取ROC数据
         roc_data = self.stats_results.get("roc", {})
+        print(f"roc_data keys: {list(roc_data.keys())}")
+
+        # 提取数据
         y_true = np.array(roc_data.get("y_true", []))
         y_score = np.array(roc_data.get("y_score", []))
         title = roc_data.get("title", "ROC曲线")
 
+        print(f"y_true长度: {len(y_true)}")
+        print(f"y_score长度: {len(y_score)}")
+
+        # 清空图形
+        self.roc_figure.clear()
+        ax = self.roc_figure.add_subplot(111)
+
+        # 检查数据
         if len(y_true) == 0 or len(y_score) == 0:
-            ax.text(0.5, 0.5, "无数据", ha='center', va='center', transform=ax.transAxes)
-            self.roc_canvas.draw()
-            return
+            ax.text(0.5, 0.5, "无数据", ha='center', va='center', transform=ax.transAxes, fontsize=14)
+            print("❌ 数据为空")
+        else:
+            try:
+                # 计算ROC
+                from sklearn.metrics import roc_curve, auc
+                fpr, tpr, _ = roc_curve(y_true, y_score)
+                roc_auc = auc(fpr, tpr)
 
-        # 计算ROC
-        fpr, tpr, thresholds = roc_curve(y_true, y_score)
-        roc_auc = auc(fpr, tpr)
+                print(f"✅ ROC计算成功, AUC={roc_auc:.3f}")
+                print(f"fpr前5个: {fpr[:5]}")
+                print(f"tpr前5个: {tpr[:5]}")
 
-        # 绘制ROC曲线
-        ax.plot(fpr, tpr, 'b-', linewidth=2, label=f'ROC曲线 (AUC = {roc_auc:.3f})')
+                # 绘制ROC曲线
+                if self.show_auc_var.get():
+                    ax.plot(fpr, tpr, 'b-', linewidth=2, label=f'ROC曲线 (AUC = {roc_auc:.3f})')
+                else:
+                    ax.plot(fpr, tpr, 'b-', linewidth=2, label='ROC曲线')
 
-        # 显示对角线
-        if self.show_diag_var.get():
-            ax.plot([0, 1], [0, 1], 'k--', linewidth=1, alpha=0.5, label='随机分类器')
+                # 显示对角线
+                if self.show_diag_var.get():
+                    ax.plot([0, 1], [0, 1], 'k--', linewidth=1, alpha=0.5, label='随机分类器')
 
-        ax.set_xlim([0.0, 1.0])
-        ax.set_ylim([0.0, 1.05])
-        ax.set_xlabel('假阳性率 (FPR)', fontsize=12)
-        ax.set_ylabel('真阳性率 (TPR)', fontsize=12)
-        ax.set_title(title, fontsize=14)
-        ax.legend(loc="lower right")
-        ax.grid(True, alpha=0.3)
+                ax.set_xlim([0.0, 1.0])
+                ax.set_ylim([0.0, 1.05])
+                ax.set_xlabel('假阳性率 (FPR)')
+                ax.set_ylabel('真阳性率 (TPR)')
+                ax.set_title(title)
+                ax.legend(loc="lower right")
+                ax.grid(True, alpha=0.3)
+
+                print("✅ ROC曲线绘制成功")
+
+            except Exception as e:
+                print(f"❌ ROC绘制失败: {e}")
+                import traceback
+                traceback.print_exc()
+                ax.text(0.5, 0.5, f"错误: {str(e)}", ha='center', va='center', transform=ax.transAxes)
 
         self.roc_figure.tight_layout()
         self.roc_canvas.draw()
+        print("=" * 60)
 
     def update_cm(self):
         """更新混淆矩阵"""
-        self.cm_figure.clear()
-        ax = self.cm_figure.add_subplot(111)
+        print("\n" + "=" * 60)
+        print("🔷 开始更新混淆矩阵")
+        print("=" * 60)
+
+        # 强制刷新画布
+        self.cm_canvas.get_tk_widget().update()
 
         # 获取数据
+        print(f"self.stats_results keys: {list(self.stats_results.keys())}")
+
         cm_data = self.stats_results.get("confusion_matrix", {})
+        print(f"cm_data keys: {list(cm_data.keys())}")
+
+        # 提取数据
         cm = np.array(cm_data.get("matrix", []))
         labels = cm_data.get("labels", ["类别1", "类别2"])
         title = cm_data.get("title", "混淆矩阵")
 
+        print(f"矩阵形状: {cm.shape if cm.size > 0 else '空'}")
+        if cm.size > 0:
+            print(f"矩阵内容:\n{cm}")
+
+        # 完全重新创建图形
+        self.cm_figure.clf()
+        ax = self.cm_figure.add_subplot(111)
+
         if cm.size == 0:
-            ax.text(0.5, 0.5, "无数据", ha='center', va='center', transform=ax.transAxes)
+            ax.text(0.5, 0.5, "无数据", ha='center', va='center', transform=ax.transAxes, fontsize=14)
             self.cm_canvas.draw()
             return
 
-        # 绘制混淆矩阵
-        cmap = plt.cm.get_cmap(self.cmap_var.get())
-        im = ax.imshow(cm, interpolation='nearest', cmap=cmap)
+        try:
+            # 绘制混淆矩阵
+            print("🔄 绘制混淆矩阵...")
+            # 获取颜色映射 - 兼容新旧版本matplotlib
+            try:
+                # matplotlib 3.7+ 的方式
+                cmap = plt.colormaps[self.cmap_var.get()]
+            except (AttributeError, KeyError, TypeError):
+                try:
+                    # matplotlib 3.5-3.6 的方式
+                    cmap = plt.cm.get_cmap(self.cmap_var.get())
+                except:
+                    # 如果都失败，使用默认
+                    cmap = plt.cm.Blues
+            im = ax.imshow(cm, interpolation='nearest', cmap=cmap)
 
-        # 添加颜色条
-        self.cm_figure.colorbar(im, ax=ax)
+            # 添加颜色条
+            self.cm_figure.colorbar(im, ax=ax)
 
-        # 设置刻度
-        ax.set_xticks(np.arange(len(labels)))
-        ax.set_yticks(np.arange(len(labels)))
-        ax.set_xticklabels(labels)
-        ax.set_yticklabels(labels)
+            # 设置刻度
+            ax.set_xticks(np.arange(len(labels)))
+            ax.set_yticks(np.arange(len(labels)))
+            ax.set_xticklabels(labels)
+            ax.set_yticklabels(labels)
 
-        # 旋转x轴标签
-        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+            # 旋转x轴标签
+            plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
 
-        # 添加数值
-        if self.show_numbers_var.get() or self.show_percent_var.get():
-            total = np.sum(cm)
-            for i in range(cm.shape[0]):
-                for j in range(cm.shape[1]):
-                    if self.show_percent_var.get():
-                        text = f"{cm[i, j]}\n({cm[i, j] / total * 100:.1f}%)"
-                    else:
-                        text = str(cm[i, j])
+            # 添加数值
+            if self.show_numbers_var.get() or self.show_percent_var.get():
+                total = np.sum(cm)
+                for i in range(cm.shape[0]):
+                    for j in range(cm.shape[1]):
+                        if self.show_percent_var.get():
+                            text = f"{cm[i, j]}\n({cm[i, j] / total * 100:.1f}%)"
+                        else:
+                            text = str(cm[i, j])
 
-                    color = "white" if cm[i, j] > cm.max() / 2 else "black"
-                    ax.text(j, i, text, ha="center", va="center", color=color)
+                        color = "white" if cm[i, j] > cm.max() / 2 else "black"
+                        ax.text(j, i, text, ha="center", va="center", color=color)
 
-        ax.set_xlabel('预测标签', fontsize=12)
-        ax.set_ylabel('真实标签', fontsize=12)
-        ax.set_title(title, fontsize=14)
+            ax.set_xlabel('预测标签', fontsize=12)
+            ax.set_ylabel('真实标签', fontsize=12)
+            ax.set_title(title, fontsize=14)
 
-        self.cm_figure.tight_layout()
-        self.cm_canvas.draw()
+            # 强制刷新
+            self.cm_figure.tight_layout()
+            self.cm_canvas.draw()
+            self.cm_canvas.flush_events()
+            self.cm_canvas.get_tk_widget().update()
+
+            print("✅ 混淆矩阵绘制完成")
+
+        except Exception as e:
+            print(f"❌ 混淆矩阵绘制失败: {e}")
+            import traceback
+            traceback.print_exc()
 
     def save_plots(self):
         """保存图表"""

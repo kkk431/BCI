@@ -350,10 +350,20 @@ class ModernVisualizationPanel(ttk.Frame):
             window = tk.Toplevel(self)
             window.title("统计分析视图")
             window.geometry("1100x800")
-            view = StatsView(window, self.data_dict)
+
+            # 直接传递整个数据字典
+            view = StatsView(window, data_dict=self.data_dict)
             view.pack(fill=tk.BOTH, expand=True)
+
+            # 添加调试信息
+            print("打开统计视图:")
+            print(f"data_dict keys: {list(self.data_dict.keys())}")
+            if "processed" in self.data_dict:
+                print(f"processed keys: {list(self.data_dict['processed'].keys())}")
         except Exception as e:
             messagebox.showerror("错误", f"打开统计视图失败:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def open_bar_view(self):
         if not self.data_dict:
