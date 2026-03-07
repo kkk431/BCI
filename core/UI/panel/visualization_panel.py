@@ -425,24 +425,13 @@ class ModernVisualizationPanel(ttk.Frame):
             messagebox.showwarning("警告", "请先加载数据")
             return
         try:
-            feature_data = self.data_dict.get("feature")
-            if not feature_data:
-                messagebox.showwarning("警告", "数据中没有特征信息")
-                return
-            channels = feature_data.get('ch_names', [])
-            features = list(feature_data.get('feature', {}).keys())
-            if not channels:
-                messagebox.showwarning("警告", "没有通道信息")
-                return
-            if not features:
-                messagebox.showwarning("警告", "没有特征信息")
-                return
-            self.ensure_pyqt_app()
-            from core.visualizer.feature_view import FeatureView
-            self.feature_window = FeatureView(feature_data, channels, features)
-            self.feature_window.show()
+            from core.visualizer.feature_view import show_feature_view
+            self.feature_window = show_feature_view(self, self.data_dict)
+
         except Exception as e:
             messagebox.showerror("错误", f"打开特征视图失败:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def ensure_pyqt_app(self):
         try:
