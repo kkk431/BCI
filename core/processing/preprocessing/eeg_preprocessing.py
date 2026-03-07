@@ -360,70 +360,85 @@ class EEGPreprocessor:
 
     def _validate_eeg_input(self, data_dict: Dict, modality: str):
         """
-        验证EEG输入数据
-
-        Args:
-            data_dict: 数据字典
-            modality: 信号模态
-
-        Raises:
-            ValueError: 如果数据格式不符合要求
+        验证EEG输入数据（增强版，支持单通道和缺失通道信息）
         """
         if "signal" not in data_dict:
             raise ValueError("数据字典必须包含'signal'键")
 
         if modality not in data_dict["signal"]:
-            raise ValueError(f"模态'{modality}'不在输入数据中")
+            # 如果指定的模态不存在，尝试创建一个默认的
+            logger.warning(f"模态'{modality}'不在输入数据中，将创建默认结构")
+            data_dict["signal"][modality] = {}
 
         signal_info = data_dict["signal"][modality]
 
-        # 检查必需字段
-        required_keys = ["data", "sampling_rate", "channel_names"]
-        for key in required_keys:
-            if key not in signal_info:
-                raise ValueError(f"EEG信号必须包含'{key}'键")
+        # 检查数据字段 - 这是必须的
+        if "data" not in signal_info:
+            raise ValueError(f"EEG信号必须包含'data'键")
 
-        # 检查数据格式
         data = signal_info["data"]
         if not isinstance(data, np.ndarray):
             raise ValueError("EEG数据必须是numpy数组")
 
         if len(data.shape) != 2:
-            raise ValueError("EEG数据必须是2维数组 (channels × samples)")
+            # 如果是一维数据，reshape为二维 (1, n_samples)
+            if len(data.shape) == 1:
+                logger.info(f"检测到一维数据，将reshape为(1, {len(data)})")
+                data = data.reshape(1, -1)
+                signal_info["data"] = data
+            else:
+                raise ValueError("EEG数据必须是2维数组 (channels × samples)")
 
-        # 检查通道数量
-        n_channels = len(signal_info["channel_names"])
-        if n_channels != data.shape[0]:
-            raise ValueError(f"通道数量({n_channels})与数据维度({data.shape[0]})不匹配")
+        # 检查采样率 - 这是必须的
+        if "sampling_rate" not in signal_info:
+            logger.warning("采样率未指定，使用默认值256Hz")
+            signal_info["sampling_rate"] = 256.0
 
-        # 检查采样率
         sampling_rate = signal_info["sampling_rate"]
         if sampling_rate <= 0:
-            raise ValueError(f"采样率必须大于0，当前为{sampling_rate}")
+            logger.warning(f"采样率必须大于0，当前为{sampling_rate}，使用默认值256Hz")
+            signal_info["sampling_rate"] = 256.0
 
-        logger.info(f"EEG数据验证通过: {n_channels}通道, {data.shape[1]}采样点, {sampling_rate}Hz")
+        # 检查通道名称 - 如果没有则创建默认名称
+        if "channel_names" not in signal_info:
+            n_channels = data.shape[0]
+            logger.warning(f"通道名称未指定，创建默认通道名称: EEG_0 到 EEG_{n_channels - 1}")
+            signal_info["channel_names"] = [f"EEG_{i}" for i in range(n_channels)]
+        else:
+            n_channels = len(signal_info["channel_names"])
+            if n_channels != data.shape[0]:
+                logger.warning(f"通道数量({n_channels})与数据维度({data.shape[0]})不匹配，将更新通道名称")
+                # 重新创建通道名称
+                signal_info["channel_names"] = [f"EEG_{i}" for i in range(data.shape[0])]
+
+        logger.info(f"EEG数据验证通过: {data.shape[0]}通道, {data.shape[1]}采样点, {sampling_rate}Hz")
 
     def _create_mne_raw(self, data_dict: Dict, modality: str) -> mne.io.RawArray:
         """
-        从数据字典创建MNE Raw对象
-
-        Args:
-            data_dict: 数据字典
-            modality: 信号模态
-
-        Returns:
-            MNE Raw对象
+        从数据字典创建MNE Raw对象（增强版，支持单通道）
         """
         signal_info = data_dict["signal"][modality]
         data = signal_info["data"]
         sfreq = signal_info["sampling_rate"]
         ch_names = signal_info["channel_names"]
 
+        # 确保数据是二维的
+        if len(data.shape) == 1:
+            data = data.reshape(1, -1)
+            logger.info(f"将一维数据reshape为: {data.shape}")
+
+        # 确保通道名称数量匹配
+        n_channels = data.shape[0]
+        if len(ch_names) != n_channels:
+            logger.warning(f"通道名称数量({len(ch_names)})与数据通道数({n_channels})不匹配，重新生成")
+            ch_names = [f"EEG_{i}" for i in range(n_channels)]
+            signal_info["channel_names"] = ch_names
+
         # 创建info对象
         info = mne.create_info(
             ch_names=ch_names,
             sfreq=sfreq,
-            ch_types='eeg'
+            ch_types=['eeg'] * n_channels  # 所有通道都设为eeg类型
         )
 
         # 创建Raw对象
@@ -435,8 +450,20 @@ class EEGPreprocessor:
             if unit.lower() in ["uv", "μv"]:
                 # MNE默认单位为V，需要转换为V
                 raw._data = raw._data * 1e-6
+                logger.info(f"数据单位从{unit}转换为伏特(V)")
+        else:
+            # 如果没有单位信息，根据数据范围推测
+            data_range = np.ptp(data)
+            if data_range > 100:  # 如果数据范围很大，可能是微伏
+                logger.info(f"数据范围较大({data_range:.2e})，假设单位为微伏(uV)，转换为伏特(V)")
+                raw._data = raw._data * 1e-6
+            elif data_range < 1e-3:  # 如果数据范围很小，可能是伏特
+                logger.info(f"数据范围较小({data_range:.2e})，假设单位为伏特(V)")
+                # 不需要转换
+            else:
+                logger.info(f"数据范围为{data_range:.2e}，假设单位为伏特(V)")
 
-        logger.info(f"创建MNE Raw对象: {len(ch_names)}通道, {sfreq}Hz, {data.shape[1] / sfreq:.2f}秒")
+        logger.info(f"创建MNE Raw对象: {n_channels}通道, {sfreq}Hz, {data.shape[1] / sfreq:.2f}秒")
 
         return raw
 
@@ -497,15 +524,16 @@ class EEGPreprocessor:
 
     def _detect_bad_channels(self, raw: mne.io.RawArray) -> Tuple[mne.io.RawArray, List[str]]:
         """
-        检测和标记坏道
-
-        Args:
-            raw: MNE Raw对象
-
-        Returns:
-            (更新后的Raw对象, 坏道列表)
+        检测和标记坏道（适配单通道情况）
         """
         bad_channels = []
+        n_channels = len(raw.ch_names)
+
+        # 如果是单通道，直接返回（无法进行坏道检测）
+        if n_channels == 1:
+            logger.info("单通道数据，跳过坏道检测")
+            raw.info['bads'] = []
+            return raw, []
 
         # 方法1: 基于振幅异常检测
         if self.config.reject_by_amplitude:
@@ -516,6 +544,10 @@ class EEGPreprocessor:
             # 检测异常通道
             median_range = np.median(channel_ranges)
             mad_range = np.median(np.abs(channel_ranges - median_range))
+
+            # 避免MAD为0
+            if mad_range == 0:
+                mad_range = np.std(channel_ranges) or 1.0
 
             # 使用MAD阈值
             threshold = median_range + self.config.bad_channel_threshold * mad_range * 1.4826
@@ -535,26 +567,41 @@ class EEGPreprocessor:
                         logger.debug(f"检测到平坦通道: {ch_name}, 标准差: {np.std(data[i, :]):.2e}")
 
         # 检查坏道数量是否超过限制
-        max_bad = int(len(raw.ch_names) * self.config.max_bad_channels)
-        if len(bad_channels) > max_bad:
-            logger.warning(f"检测到{len(bad_channels)}个坏道，超过最大限制{max_bad}，将标记最异常的{max_bad}个")
-            # 重新计算异常程度，只保留最异常的
-            data = raw.get_data()
-            anomalies = []
-            for i, ch_name in enumerate(raw.ch_names):
-                if ch_name in bad_channels:
-                    # 使用峰峰值作为异常指标
-                    anomaly_score = np.ptp(data[i, :]) / np.median(np.ptp(data, axis=1))
-                    anomalies.append((ch_name, anomaly_score))
+        if bad_channels:
+            max_bad = int(n_channels * self.config.max_bad_channels)
 
-            # 按异常程度排序，保留最异常的
-            anomalies.sort(key=lambda x: x[1], reverse=True)
-            bad_channels = [ch for ch, _ in anomalies[:max_bad]]
+            # 如果是单通道且被标记为坏道，特殊处理
+            if n_channels == 1 and bad_channels:
+                logger.warning("单通道数据被标记为坏道，但无法舍弃唯一通道，将忽略坏道标记")
+                bad_channels = []
+                raw.info['bads'] = []
+            elif max_bad <= 0:
+                # 如果最大坏道数为0，则不允许标记任何坏道
+                logger.info(
+                    f"最大坏道比例设置为{self.config.max_bad_channels}，不允许标记坏道，将忽略检测到的{len(bad_channels)}个坏道")
+                bad_channels = []
+                raw.info['bads'] = []
+            elif len(bad_channels) > max_bad:
+                logger.warning(f"检测到{len(bad_channels)}个坏道，超过最大限制{max_bad}，将标记最异常的{max_bad}个")
+                # 重新计算异常程度，只保留最异常的
+                data = raw.get_data()
+                anomalies = []
+                for i, ch_name in enumerate(raw.ch_names):
+                    if ch_name in bad_channels:
+                        # 使用峰峰值作为异常指标
+                        anomaly_score = np.ptp(data[i, :]) / np.median(np.ptp(data, axis=1))
+                        anomalies.append((ch_name, anomaly_score))
+
+                # 按异常程度排序，保留最异常的
+                anomalies.sort(key=lambda x: x[1], reverse=True)
+                bad_channels = [ch for ch, _ in anomalies[:max_bad]]
 
         # 标记坏道
         if bad_channels:
             raw.info['bads'] = bad_channels
             logger.info(f"标记了{len(bad_channels)}个坏道: {bad_channels}")
+        else:
+            logger.info("未检测到坏道")
 
         return raw, bad_channels
 
@@ -689,15 +736,15 @@ class EEGPreprocessor:
 
     def _interpolate_bad_channels(self, raw: mne.io.RawArray) -> mne.io.RawArray:
         """
-        插值坏道
-
-        Args:
-            raw: MNE Raw对象
-
-        Returns:
-            插值后的Raw对象
+        插值坏道（适配单通道情况）
         """
         if not raw.info['bads']:
+            return raw
+
+        # 单通道无法插值
+        if len(raw.ch_names) == 1:
+            logger.warning("单通道数据无法进行坏道插值，将忽略坏道标记")
+            raw.info['bads'] = []
             return raw
 
         # 检查是否有足够的电极位置信息
@@ -718,7 +765,7 @@ class EEGPreprocessor:
 
     def _apply_ica_artifact_removal(self, raw: mne.io.RawArray) -> Tuple[mne.io.RawArray, Dict]:
         """
-        应用ICA伪迹去除（修复版）
+        应用ICA伪迹去除（适配单通道情况）
         """
         ica_info = {
             "method": self.config.ica_method.value,
@@ -727,18 +774,42 @@ class EEGPreprocessor:
             "n_components_removed": 0
         }
 
+        # 单通道数据无法进行ICA
+        if len(raw.ch_names) == 1:
+            logger.warning("单通道数据无法进行ICA，跳过ICA处理")
+            ica_info["error"] = "单通道数据无法进行ICA"
+            return raw, ica_info
+
         try:
+            # 检查数据大小，如果太大则提醒用户
+            n_samples = raw.n_times
+            n_channels = len(raw.ch_names)
+            logger.info(f"开始ICA处理: {n_channels}通道, {n_samples}采样点, 预计需要一定时间...")
+
+            # 数据太大时给出警告
+            if n_samples > 1000000:  # 大于1M采样点
+                logger.warning(f"数据量较大({n_samples / 1e6:.1f}M采样点)，ICA处理可能需要几分钟时间")
+
             # 确定ICA成分数量
             if self.config.ica_n_components is None:
                 n_components = None
+                logger.info(f"ICA将自动确定成分数量 (最大{n_channels})")
             elif isinstance(self.config.ica_n_components, float) and 0 < self.config.ica_n_components < 1:
                 n_components = self.config.ica_n_components
+                logger.info(f"ICA将使用 {n_components:.0%} 的成分")
             else:
                 n_components = int(self.config.ica_n_components)
+                # 确保成分数不超过通道数
+                if n_components > n_channels:
+                    logger.warning(f"指定的成分数({n_components})超过通道数({n_channels})，将使用{n_channels}")
+                    n_components = n_channels
+                logger.info(f"ICA将使用 {n_components} 个成分")
 
             ica_info["n_components"] = n_components
 
             # 创建ICA对象
+            logger.info(f"创建ICA对象 (方法: {self.config.ica_method.value}, 最大迭代: {self.config.ica_max_iter})")
+
             ica = ICA(
                 n_components=n_components,
                 method=self.config.ica_method.value,
@@ -748,30 +819,59 @@ class EEGPreprocessor:
             )
 
             # 拟合ICA前进行1Hz高通滤波
+            logger.info("为ICA准备数据 (应用1Hz高通滤波)...")
             raw_for_ica = raw.copy()
             raw_for_ica.filter(l_freq=1.0, h_freq=None, method='fir', verbose=False)
+
+            # 拟合ICA（添加进度信息）
+            logger.info("开始拟合ICA，这可能需要几分钟...")
+
+            # 使用一个简单的进度指示器
+            import time
+            start_time = time.time()
 
             # 拟合ICA
             ica.fit(raw_for_ica, verbose=False)
 
+            elapsed_time = time.time() - start_time
+            logger.info(f"ICA拟合完成，耗时: {elapsed_time:.1f}秒")
+
             # 自动标记成分
             if self.config.artifact_removal == ArtifactRemovalMethod.ICA_AUTO:
+                logger.info("开始自动标记伪迹成分...")
+
                 # 尝试使用ICLabel自动标记
                 try:
                     from mne_icalabel import label_components
+
+                    start_time = time.time()
                     ic_labels = label_components(raw_for_ica, ica, method='iclabel')
+                    elapsed_time = time.time() - start_time
+
+                    logger.info(f"ICLabel标记完成，耗时: {elapsed_time:.1f}秒")
 
                     exclude_idx = []
                     for i, label in enumerate(ic_labels['labels']):
                         if label not in ['brain', 'other']:
                             exclude_idx.append(i)
 
+                        # 每10个成分输出一次进度
+                        if (i + 1) % 10 == 0:
+                            logger.debug(f"已处理 {i + 1}/{len(ic_labels['labels'])} 个成分")
+
                     ica_info["components_removed"] = exclude_idx
                     ica_info["n_components_removed"] = len(exclude_idx)
+                    ica_info["component_labels"] = ic_labels['labels']
+                    ica_info["component_probas"] = ic_labels['y_pred_proba']
 
                     if exclude_idx:
-                        logger.info(f"ICA自动标记排除{len(exclude_idx)}个成分")
+                        logger.info(f"ICA自动标记排除 {len(exclude_idx)}/{len(ic_labels['labels'])} 个成分")
+                        logger.info(f"排除的成分类型: {[ic_labels['labels'][i] for i in exclude_idx[:10]]}")
+                        if len(exclude_idx) > 10:
+                            logger.info(f"...等 {len(exclude_idx)} 个成分")
+
                         ica.apply(raw, exclude=exclude_idx)
+                        logger.info("已应用ICA排除")
                     else:
                         logger.info("ICA未发现需要排除的成分")
 
@@ -781,10 +881,15 @@ class EEGPreprocessor:
                     sources = ica.get_sources(raw_for_ica).get_data()
                     kurtosis_values = []
 
+                    logger.info("计算成分峰度...")
                     for i in range(sources.shape[0]):
                         source = sources[i, :]
                         kurt = np.mean((source - np.mean(source)) ** 4) / (np.std(source) ** 4) - 3
                         kurtosis_values.append(abs(kurt))
+
+                        # 每10个成分输出一次进度
+                        if (i + 1) % 10 == 0:
+                            logger.debug(f"已计算 {i + 1}/{sources.shape[0]} 个成分的峰度")
 
                     # 检测异常峰度
                     median_kurt = np.median(kurtosis_values)
@@ -798,7 +903,9 @@ class EEGPreprocessor:
 
                     if exclude_idx:
                         ica.apply(raw, exclude=exclude_idx)
-                        logger.info(f"基于峰度排除{len(exclude_idx)}个成分")
+                        logger.info(f"基于峰度排除 {len(exclude_idx)}/{len(kurtosis_values)} 个成分")
+                    else:
+                        logger.info("基于峰度未发现需要排除的成分")
 
             elif self.config.artifact_removal == ArtifactRemovalMethod.ICA_MANUAL:
                 logger.info("ICA手动标记模式，需要用户交互")
@@ -808,6 +915,8 @@ class EEGPreprocessor:
             logger.error(f"ICA处理失败: {str(e)}")
             # 如果ICA失败，记录错误但继续处理
             ica_info["error"] = str(e)
+            import traceback
+            logger.debug(traceback.format_exc())
 
         return raw, ica_info
 

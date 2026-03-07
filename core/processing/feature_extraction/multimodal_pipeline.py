@@ -111,26 +111,38 @@ class MultimodalFeaturePipeline:
                         ch_data = data[ch_idx]
                         ch_name = ch_names[ch_idx] if ch_names else f"ch{ch_idx}"
                         if 'time_domain' in selected_cats:
+                            print(f"\n提取通道{ch_name}时域特征...")
                             features.update({f"{ch_name}_{k}": v for k, v in
                                              extractor.compute_time_domain_features(ch_data).items()})
+
                         if 'freq_domain' in selected_cats:
+                            print(f"\n提取通道{ch_name}频域特征...")
                             features.update({f"{ch_name}_{k}": v for k, v in
                                              extractor.compute_freq_domain_features(ch_data).items()})
+
                         if 'wavelet' in selected_cats:
+                            print(f"\n提取通道{ch_name}小波特征...")
                             features.update(
                                 {f"{ch_name}_{k}": v for k, v in extractor.compute_wavelet_features(ch_data).items()})
+
                         if 'nonlinear' in selected_cats:
+                            print(f"\n提取通道{ch_name}非线性特征...")
                             features.update(
                                 {f"{ch_name}_{k}": v for k, v in extractor.compute_nonlinear_features(ch_data).items()})
+
                     # 2. 跨通道特征
                     if 'band_power' in selected_cats:
+                        print("\n提取频带功率特征...")
                         features.update(extractor.extract_band_powers(data))
                     if 'erp' in selected_cats and event_samples:
+                        print("\n提取事件相关电位特征...")
                         features.update(extractor.extract_erp_features(data, event_samples))
                     if 'connectivity' in selected_cats and data.shape[0] > 1:
+                        print("\n提取功能连接性特征...")
                         conn = extractor.compute_connectivity_features(data, method='coherence', freq_band=(8, 13))
                         features.update({f"{k}_alpha": v for k, v in conn.items()})
                     if 'spatial' in selected_cats and data.shape[0] > 1:
+                        print("\n提取地形图空间特征...")
                         spat = extractor.compute_topographic_features(data, freq_band=(8, 13))
                         features.update({f"{k}_alpha": v for k, v in spat.items()})
 

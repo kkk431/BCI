@@ -146,17 +146,17 @@ class EMGFeatureExtractor(CommonFeatureExtractor):
         features = {}
 
         # 使用父类方法提取通用特征
-        print("\n[1/4] 提取通用信号特征...")
+        print("\n提取通用信号特征...")
         features['common'] = super().extract_all_features(emg)
 
         # EMG特有特征
-        print("[2/4] 提取EMG时域特征...")
+        print("提取EMG时域特征...")
         features['time_domain'] = self.extract_emg_time_features(emg)
 
-        print("[3/4] 提取EMG频域特征...")
+        print("提取EMG频域特征...")
         features['frequency_domain'] = self.extract_emg_frequency_features(emg)
 
-        print("[4/4] 提取EMG非线性特征...")
+        print("提取EMG非线性特征...")
         features['nonlinear'] = self.extract_emg_nonlinear_features(emg)
 
         print("特征提取完成!")
@@ -206,15 +206,26 @@ class EMGFeatureExtractor(CommonFeatureExtractor):
         features['WL'] = float(np.sum(np.abs(np.diff(emg))))
 
         # 6. ZC (Zero Crossing)
-        threshold = 0.01 * np.max(np.abs(emg))
+        threshold = 0.001 * np.max(np.abs(emg))
         zc = np.sum(((emg[:-1] * emg[1:]) < 0) & (np.abs(emg[:-1] - emg[1:]) >= threshold))
         features['ZC'] = int(zc)
 
         # 7. SSC (Slope Sign Changes)
         diff_signal = np.diff(emg)
-        ssc = np.sum(((diff_signal[:-1] * diff_signal[1:]) < 0) &
-                     (np.abs(diff_signal[:-1] - diff_signal[1:]) >= threshold))
-        features['SSC'] = int(ssc)
+
+        # 使用基于RMS的阈值（更鲁棒）
+        ssc_threshold = 0.05 * features['RMS']  # RMS的5%
+
+        # 检测相邻斜率符号变化
+        ssc_count = 0
+        for i in range(len(diff_signal) - 1):
+            # 检查符号是否变化
+            if diff_signal[i] * diff_signal[i + 1] < 0:
+                # 检查幅值是否超过阈值（至少一个斜率足够大）
+                if abs(diff_signal[i]) > ssc_threshold or abs(diff_signal[i + 1]) > ssc_threshold:
+                    ssc_count += 1
+
+        features['SSC'] = int(ssc_count)
 
         # 额外的时域特征
         features['peak_amplitude'] = float(np.max(np.abs(emg)))

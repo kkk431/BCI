@@ -13,6 +13,7 @@ import traceback
 import numpy as np
 from pathlib import Path
 import sys
+from PIL import Image, ImageTk  # 需要安装Pillow库
 
 # 将项目根目录（即core的上一级目录）动态添加到 sys.path，确保无论从哪个位置运行都能正确导入核心模块
 start_path = Path(__file__).resolve().parent
@@ -124,7 +125,7 @@ class ExtractionApp(tk.Frame):
         btn_box1 = tk.Frame(frame_step1, bg=COLOR_CONTENT_BG)
         btn_box1.pack(fill="x")
 
-        self.btn_load = tk.Button(btn_box1, text="📁 上传本地数据文件", font=FONT_BTN, bg=COLOR_BTN_BG, fg=COLOR_BTN_FG,
+        self.btn_load = tk.Button(btn_box1, text="上传本地数据文件", font=FONT_BTN, bg=COLOR_BTN_BG, fg=COLOR_BTN_FG,
                                   relief="flat", padx=15, pady=6, cursor="hand2", command=self.action_load_data)
         self.btn_load.pack(side="left")
 
@@ -146,7 +147,7 @@ class ExtractionApp(tk.Frame):
         self.manual_mod_combo.current(0)
 
         self.btn_confirm_mod = tk.Button(self.manual_mod_frame, text="确认选择", font=FONT_BTN,
-                                         bg="#28a745", fg=COLOR_BTN_FG, relief="flat", padx=10, pady=2,
+                                         bg=COLOR_BTN_BG, fg=COLOR_BTN_FG, relief="flat", padx=10, pady=2,
                                          cursor="hand2", command=self.action_confirm_manual_mod)
         self.btn_confirm_mod.pack(side="left", padx=10)
 
