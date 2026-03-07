@@ -1,0 +1,14 @@
+{
+  "ExpandedNodes": [
+    "",
+    "\\core",
+    "\\core\\acquisition",
+    "\\core\\decoding",
+    "\\core\\processing",
+    "\\core\\processing\\fusion",
+    "\\docs",
+    "\\modules"
+  ],
+  "SelectedNode": "\\core\\processing",
+  "PreviewInSolutionExplorer": false
+}
