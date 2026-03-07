@@ -1,23 +1,61 @@
+import subprocess
+import sys
+import os
 import sys
 from pathlib import Path
-import feature_extraction_gui
 
-project_root = Path(__file__).resolve().parents[2]
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-    
+# 将项目根目录（即core的上一级目录）动态添加到 sys.path
+start_path = Path(__file__).resolve().parent
+for parent in [start_path] + list(start_path.parents):
+    if parent.name == 'core':
+        project_root = parent.parent
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+            print(f"已将项目根目录 {project_root} 添加到 sys.path")
+        break
+else:
+    raise RuntimeError("未找到名为 'core' 的目录")
+
 import tkinter as tk
+from tkinter import messagebox      # ==== 新增：导入 messagebox 用于错误提示 ====
 import os
 import re
 import time
+import math
+from PIL import Image, ImageDraw, ImageFilter, ImageTk
 
-# --- 视觉配置 ---
+# 导入 AI 相关模块
+try:
+    from core.ai_core.llm_client import SimpleAIChat
+    from core.UI.panel.ai_chat_panel import AIChatWindow
+except ImportError:
+    print("AI 模块路径配置错误或未安装 openai 库")
+    SimpleAIChat = None
+    AIChatWindow = None
+
+from core.UI.panel.extraction_panel import ExtractionApp
+
+# ==== 新增：导入统计分析模块和 PyQt5 相关 ====
+try:
+    from core.processing.Statistical_Analysis.statistical_analysis_dialog import StatisticalAnalysisDialog
+except ImportError:
+    StatisticalAnalysisDialog = None
+    print("统计分析模块未找到，请检查路径 core/processing/Statistical_Analysis/")
+
+try:
+    from PyQt5.QtWidgets import QApplication
+except ImportError:
+    QApplication = None
+    print("PyQt5 未安装，统计分析窗口将无法弹出")
+# ==========================================
+
+# 视觉配置
 COLOR_TAB_BAR_BG = "#c0c0c0"
 COLOR_TAB_INACTIVE = "#d0d0d0"
 COLOR_TAB_ACTIVE = "white"
 COLOR_CONTENT_BG = "white"
 
-# 图片资源路径（使用 os.path.join 自动处理分隔符）
+# 图片资源路径
 LOGO_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "logo.png")
 MENU_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "menu.png")
 CONTENT_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "Content.png")
@@ -27,41 +65,60 @@ BUTTON3_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "button3.
 BUTTON4_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "button4.png")
 SIGNIN_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "SignIn.png")
 BACKGROUND_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "background.png")
+A_LOGO_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "a_logo.png")
 
-# ========== 启动时预加载所有可视化模块 ==========
+# 预加载可视化模块
 print("正在预加载可视化模块...")
 preload_start = time.time()
-
-# 预导入所有需要的库
 import matplotlib
-matplotlib.use('TkAgg')  # 设置后端
 
-# 预导入可视化模块
-
+matplotlib.use('TkAgg')
 preload_time = time.time() - preload_start
 print(f"预加载完成，耗时: {preload_time:.2f}秒")
-# ===========================================
+
 
 class NeuroPioneerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("智融脑机 - 大模型赋能多模态BCI平台")
-        self.root.geometry("1100x700")  # 临时大小，稍后会被主页背景图覆盖
+        self.root.geometry("1100x700")
         self.root.configure(bg=COLOR_CONTENT_BG)
 
-        # 标签管理
-        self.tabs = {}               # {tab_id: {"frame":..., "tab_btn":..., "base_name":..., "display_name":...}}
-        self.active_tab_id = None
-        self.tab_history = []         # 记录标签激活顺序，用于关闭时返回上一个
+        # AI 相关
+        self.ai_logic = SimpleAIChat() if SimpleAIChat else None
+        self.ai_window = None
 
-        # 用于保持主页图片的引用
+        # 标签管理
+        self.tabs = {}
+        self.active_tab_id = None
+        self.tab_history = []
         self.home_images = []
+
+        # 气泡相关
+        self.bubble_size = 60
+        self.bubble_x = 0
+        self.bubble_y = 0
+        self.bubble_dragging = False
+        self.bubble_hover = False
 
         self.setup_ui()
         self.show_homepage()
 
+        # 创建灵动悬浮气泡
+        self.create_ai_bubble()
+        # self.start_qt_event_loop()
+
+    # def start_qt_event_loop(self):
+    #     """定时处理 PyQt 事件，避免窗口无响应"""
+    #
+    #     def process():
+    #         if QApplication.instance():
+    #             QApplication.processEvents()
+    #         self.root.after(100, process)
+    #
+    #     self.root.after(100, process)
+
     def setup_ui(self):
-        """构建顶栏和内容容器"""
         self.header_frame = tk.Frame(self.root, bg=COLOR_TAB_BAR_BG, height=45)
         self.header_frame.pack(side="top", fill="x")
         self.header_frame.pack_propagate(False)
@@ -70,7 +127,7 @@ class NeuroPioneerApp:
         self.tab_container.pack(side="left", fill="y")
 
         self.add_btn = tk.Label(self.header_frame, text="+", bg=COLOR_TAB_BAR_BG,
-                                 fg="black", font=("Arial", 16), width=4, cursor="hand2")
+                                fg="black", font=("Arial", 16), width=4, cursor="hand2")
         self.add_btn.pack(side="left", fill="y")
         self.add_btn.bind("<Button-1>", lambda e: self.show_launcher_popup())
         self.add_btn.bind("<Enter>", lambda e: e.widget.config(bg="#e0e0e0"))
@@ -80,7 +137,6 @@ class NeuroPioneerApp:
         self.main_container.pack(side="top", expand=True, fill="both")
 
     def create_tab_widget(self, display_name, tab_id, can_close=True):
-        """创建单个标签页 UI，并绑定对应 tab_id 的事件"""
         tab_frame = tk.Frame(self.tab_container, bg=COLOR_TAB_INACTIVE, bd=0)
         tab_frame.pack(side="left", fill="y", padx=(0, 1))
 
@@ -88,7 +144,7 @@ class NeuroPioneerApp:
         line.pack(side="left", fill="y")
 
         lbl = tk.Label(tab_frame, text=display_name, bg=COLOR_TAB_INACTIVE, padx=15,
-                       font=("微软雅黑", 9), cursor="hand2")
+                       font=("微软雅黑", 16), cursor="hand2")
         lbl.pack(side="left", fill="y")
         lbl.bind("<Button-1>", lambda e, tid=tab_id: self.switch_to_tab(tid))
         lbl.bind("<Button-3>", lambda e, tid=tab_id: self.show_context_menu(e, tid))
@@ -112,84 +168,63 @@ class NeuroPioneerApp:
             while "Homepage" in self.tab_history:
                 self.tab_history.remove("Homepage")
 
-        # 清空之前的图片引用
         self.home_images.clear()
 
-        # 加载背景图以获取尺寸
         try:
             from PIL import Image, ImageTk
             bg_img = Image.open(BACKGROUND_PATH)
             bg_width, bg_height = bg_img.size
-            # 调整窗口大小：背景高度 + 标签栏高度45
             self.root.geometry(f"{bg_width}x{bg_height + 45}")
-            self.root.resizable(False, False)  # 禁止缩放，保持绝对坐标
+            self.root.resizable(False, False)
         except Exception as e:
             print(f"背景图片加载失败: {e}")
-            # 降级处理：使用默认大小
             bg_width, bg_height = 1100, 700
             self.root.geometry(f"{bg_width}x{bg_height + 45}")
             bg_img = None
 
-        # 创建 Canvas 作为主页容器
         home_canvas = tk.Canvas(self.main_container, bg=COLOR_CONTENT_BG, highlightthickness=0,
                                 width=bg_width, height=bg_height)
-        home_canvas.pack_propagate(False)  # 禁止自动调整大小
+        home_canvas.pack_propagate(False)
         home_canvas.config(width=bg_width, height=bg_height)
 
-        # 放置背景图片
         if bg_img:
             try:
                 self.bg_photo = ImageTk.PhotoImage(bg_img)
-                # 背景图置于底层
                 home_canvas.create_image(0, 0, anchor="nw", image=self.bg_photo)
                 self.home_images.append(self.bg_photo)
             except Exception as e:
                 print(f"背景图片显示失败: {e}")
 
-        # 辅助函数：加载图片并在 canvas 上创建 image 项，返回图片对象和 canvas 项 ID
         def add_image(path, x, y, tag=None):
             try:
                 img = Image.open(path)
                 photo = ImageTk.PhotoImage(img)
                 item_id = home_canvas.create_image(x, y, anchor="nw", image=photo, tag=tag)
-                self.home_images.append(photo)  # 保持引用
+                self.home_images.append(photo)
                 return photo, item_id
             except Exception as e:
                 print(f"图片加载失败 {path}: {e}")
                 return None, None
 
-        # ① logo
-        add_image(LOGO_PATH, 56, 24)
+        add_image(MENU_PATH, 280, 100)
+        add_image(CONTENT_PATH, 60, 330)
 
-        # ② 菜单栏（暂不绑定事件）
-        add_image(MENU_PATH, 185, 31)
-
-        # ③ 文字介绍区域
-        add_image(CONTENT_PATH, 91, 250)
-
-        # ④ 四个功能按钮（绑定打开对应标签页）
         button_info = [
-            (BUTTON1_PATH, 89, 557, "Preprocessing"),
-            (BUTTON2_PATH, 249, 557, "Extraction"),
-            (BUTTON3_PATH, 436, 557, "Analysis"),
-            (BUTTON4_PATH, 625, 557, "Visualization")
+            (BUTTON1_PATH, 60, 700, "Preprocessing"),
+            (BUTTON2_PATH, 400, 700, "Extraction"),
+            (BUTTON3_PATH, 60, 800, "Analysis"),
+            (BUTTON4_PATH, 400, 800, "Visualization")
         ]
         for path, x, y, name in button_info:
             _, item_id = add_image(path, x, y, tag=f"btn_{name}")
             if item_id:
-                # 绑定点击事件
                 home_canvas.tag_bind(item_id, "<Button-1>", lambda e, n=name: self.open_functional_tab(n))
-                # 鼠标悬停时改变光标样式
                 home_canvas.tag_bind(item_id, "<Enter>", lambda e: home_canvas.config(cursor="hand2"))
                 home_canvas.tag_bind(item_id, "<Leave>", lambda e: home_canvas.config(cursor=""))
 
-        # ⑤ 登录键（暂不绑定事件）
-        add_image(SIGNIN_PATH, 1274, 24)
-
-        # 创建 Homepage 标签按钮（不可关闭）
         tab_btn = self.create_tab_widget("Homepage", tab_id="Homepage", can_close=False)
         self.tabs["Homepage"] = {
-            "frame": home_canvas,  # 注意这里存储的是 Canvas，但它是 Frame 的子类，可以正常 place
+            "frame": home_canvas,
             "tab_btn": tab_btn,
             "base_name": "Homepage",
             "display_name": "Homepage"
@@ -198,7 +233,6 @@ class NeuroPioneerApp:
         self.switch_to_tab("Homepage")
 
     def _get_next_number_for_base(self, base_name):
-        """获取当前 base_name 类型标签的下一个编号"""
         max_num = 0
         for data in self.tabs.values():
             if data.get("base_name") == base_name:
@@ -209,16 +243,15 @@ class NeuroPioneerApp:
                     max_num = max(max_num, num)
         return max_num + 1
 
+    # ==== 修改：为 "Analysis" 添加分支，直接弹出窗口 ====
     def open_functional_tab(self, base_name):
-        """打开一个新的功能标签页（总是新建）"""
         if base_name == "Visualization":
-            # 打开可视化集成面板
             self.open_visualization_tab()
         elif base_name == "Extraction":
-            # 打开特征提取面板
             self.open_extraction_tab()
+        elif base_name == "Analysis":
+            self.open_statistical_dialog()   # 直接弹出统计分析窗口
         else:
-            # 其他功能保持原样
             next_num = self._get_next_number_for_base(base_name)
             display_name = f"{base_name} ({next_num})"
             tab_id = f"{base_name}_{next_num}"
@@ -232,28 +265,22 @@ class NeuroPioneerApp:
                                  "base_name": base_name, "display_name": display_name}
 
             self.switch_to_tab(tab_id)
+    # ===================================================
 
     def open_extraction_tab(self):
-        """打开特征提取标签页（带加载动画）"""
         next_num = self._get_next_number_for_base("Extraction")
         display_name = f"Extraction ({next_num})"
         tab_id = f"Extraction_{next_num}"
 
-        # 创建框架
         new_frame = tk.Frame(self.main_container, bg=COLOR_CONTENT_BG)
 
-        # 显示加载提示
         loading_label = tk.Label(new_frame, text="正在加载特征提取模块...",
                                  font=("微软雅黑", 14), fg="#666", bg=COLOR_CONTENT_BG)
         loading_label.place(relx=0.5, rely=0.5, anchor="center")
-
-        # 更新UI显示加载提示
         new_frame.update()
 
-        # 创建标签按钮
         tab_btn = self.create_tab_widget(display_name, tab_id=tab_id)
 
-        # 存储标签信息
         self.tabs[tab_id] = {
             "frame": new_frame,
             "tab_btn": tab_btn,
@@ -261,65 +288,35 @@ class NeuroPioneerApp:
             "display_name": display_name
         }
 
-        # 切换到新标签页
         self.switch_to_tab(tab_id)
 
-        # 使用after延迟加载，不阻塞UI
         def load_extraction():
             try:
-                import time
-                start = time.time()
-
-                # 导入特征提取模块
-                import feature_extraction_gui
-
-                # 移除加载提示
                 loading_label.destroy()
-
-                # 创建特征提取应用
-                # 注意：feature_extraction_gui.py中的ExtractionApp类需要tk.Tk作为根窗口
-                # 这里我们传递new_frame作为父容器
-                app = feature_extraction_gui.ExtractionApp(new_frame)
-
-                # 如果ExtractionApp有自己的pack/grid方法，需要调整
-                # 假设ExtractionApp是一个tk.Frame子类或包含pack方法
-                if hasattr(app, 'pack'):
-                    app.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-                elif hasattr(app, 'frame') and hasattr(app.frame, 'pack'):
-                    app.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-                elapsed = time.time() - start
-                print(f"特征提取面板加载完成，耗时: {elapsed:.2f}秒")
-
+                extraction_app = ExtractionApp(new_frame)
+                extraction_app.pack(fill=tk.BOTH, expand=True)
+                print("特征提取面板加载完成")
             except Exception as e:
                 loading_label.config(text=f"加载失败: {str(e)}", fg="red")
                 import traceback
                 traceback.print_exc()
 
-        # 延迟10ms后开始加载，让UI先显示加载提示
         new_frame.after(10, load_extraction)
 
     def open_visualization_tab(self):
-        """打开可视化标签页（带加载动画）"""
         next_num = self._get_next_number_for_base("Visualization")
         display_name = f"Visualization ({next_num})"
         tab_id = f"Visualization_{next_num}"
 
-        # 创建框架
         new_frame = tk.Frame(self.main_container, bg=COLOR_CONTENT_BG)
 
-        # 显示加载提示
         loading_label = tk.Label(new_frame, text="正在加载可视化模块...",
                                  font=("微软雅黑", 14), fg="#666", bg=COLOR_CONTENT_BG)
         loading_label.place(relx=0.5, rely=0.5, anchor="center")
-
-        # 更新UI显示加载提示
         new_frame.update()
 
-        # 创建标签按钮
         tab_btn = self.create_tab_widget(display_name, tab_id=tab_id)
 
-        # 存储标签信息
         self.tabs[tab_id] = {
             "frame": new_frame,
             "tab_btn": tab_btn,
@@ -327,36 +324,44 @@ class NeuroPioneerApp:
             "display_name": display_name
         }
 
-        # 切换到新标签页
         self.switch_to_tab(tab_id)
 
-        # 使用after延迟加载，不阻塞UI
         def load_visualization():
             try:
                 import time
                 start = time.time()
-
-                # 导入模块
                 from core.UI.panel.visualization_panel import ModernVisualizationPanel as VisualizationPanel
-
-                # 移除加载提示
                 loading_label.destroy()
-
-                # 创建可视化面板
                 vis_panel = VisualizationPanel(new_frame)
                 vis_panel.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
                 elapsed = time.time() - start
                 print(f"可视化面板加载完成，耗时: {elapsed:.2f}秒")
-
             except Exception as e:
                 loading_label.config(text=f"加载失败: {str(e)}", fg="red")
 
-        # 延迟10ms后开始加载，让UI先显示加载提示
         new_frame.after(10, load_visualization)
 
+    # ==== 新增：弹出统计分析 PyQt 窗口的方法 ====
+    def open_statistical_dialog(self):
+        """弹出统计分析 PyQt 窗口（作为独立进程运行）"""
+        if StatisticalAnalysisDialog is None:
+            messagebox.showerror("错误", "统计分析模块未正确加载，请检查文件路径或依赖库。")
+            return
+
+        # 获取当前 Python 解释器路径
+        python_executable = sys.executable
+        # 获取 statistical_analysis_dialog.py 的完整路径
+        dialog_path = os.path.join(project_root, "core", "processing", "Statistical_Analysis",
+                                   "statistical_analysis_dialog.py")
+
+        try:
+            # 启动子进程，不等待
+            subprocess.Popen([python_executable, dialog_path])
+        except Exception as e:
+            messagebox.showerror("错误", f"无法启动统计分析窗口: {str(e)}")
+    # ===========================================
+
     def switch_to_tab(self, tab_id):
-        """切换到指定 ID 的标签页，并更新历史记录"""
         if tab_id not in self.tabs:
             return
 
@@ -380,7 +385,6 @@ class NeuroPioneerApp:
                         child.config(bg=COLOR_TAB_INACTIVE)
 
     def close_tab(self, tab_id):
-        """关闭指定 ID 的标签页，并自动切换到上一个激活的标签（如果是当前标签）"""
         if tab_id == "Homepage":
             return
         data = self.tabs.get(tab_id)
@@ -402,7 +406,6 @@ class NeuroPioneerApp:
             self.switch_to_tab(target_id)
 
     def show_launcher_popup(self):
-        """加号点击弹出模块列表，点击后新建标签"""
         popup = tk.Toplevel(self.root)
         popup.overrideredirect(True)
         x = self.add_btn.winfo_rootx()
@@ -410,11 +413,11 @@ class NeuroPioneerApp:
         popup.geometry(f"180x200+{x}+{y}")
         popup.config(bg="white", highlightthickness=1, highlightbackground="#ccc")
 
-        tk.Label(popup, text="快速跳转", bg="#eee", font=("微软雅黑", 9, "bold")).pack(fill="x")
+        tk.Label(popup, text="快速跳转", bg="#eee", font=("微软雅黑", 12, "bold")).pack(fill="x")
 
         others = ["Preprocessing", "Extraction", "Analysis", "Visualization", "Settings"]
         for o in others:
-            lbl = tk.Label(popup, text=o, bg="white", pady=5, cursor="hand2")
+            lbl = tk.Label(popup, text=o, bg="white", font=("微软雅黑", 12, "bold"), pady=5, cursor="hand2")
             lbl.pack(fill="x")
             lbl.bind("<Button-1>", lambda e, name=o: [self.open_functional_tab(name), popup.destroy()])
             lbl.bind("<Enter>", lambda e: e.widget.config(bg="#f0f0f0"))
@@ -424,14 +427,12 @@ class NeuroPioneerApp:
         popup.focus_set()
 
     def show_context_menu(self, event, tab_id):
-        """右键菜单：关闭其他 / 全部关闭"""
         menu = tk.Menu(self.root, tearoff=0)
         menu.add_command(label="关闭其他标签", command=lambda: self.close_others(tab_id))
         menu.add_command(label="全部关闭", command=self.close_all_functional)
         menu.post(event.x_root, event.y_root)
 
     def close_others(self, keep_tab_id):
-        """关闭除 keep_tab_id 和 Homepage 外的所有标签"""
         ids = list(self.tabs.keys())
         for tid in ids:
             if tid != keep_tab_id and tid != "Homepage":
@@ -439,17 +440,302 @@ class NeuroPioneerApp:
         self.switch_to_tab(keep_tab_id)
 
     def close_all_functional(self):
-        """关闭所有功能标签（保留 Homepage）"""
         ids = list(self.tabs.keys())
         for tid in ids:
             if tid != "Homepage":
                 self.close_tab(tid)
         self.switch_to_tab("Homepage")
 
+    # ========== AI悬浮气泡 ==========
+    def create_ai_bubble(self):
+        # 基础固定配置（全局统一，杜绝错位）
+        self.bubble_window_size = 64  # 气泡窗口固定总尺寸
+        self.bubble_core_radius = 26  # 气泡主体半径（固定值，所有圆形以此为基准）
+        # 全兼容6位十六进制颜色（Python3.8无报错）
+        self.theme_main = "#2D7DDB"  # 主色，100%匹配主界面
+        self.theme_hover = "#1E6BC6"  # hover加深色
+        self.theme_press = "#1557A0"  # 点击按压色
+        self.shadow_color = "#CCCCCC"  # 阴影底色
+        self.shadow_sub_color = "#E0E0E0"  # 阴影过渡色
+        self.theme_breath_light = "#3A88E2"  # 呼吸动画浅色
+        self.theme_breath_dark = "#2572C9"  # 呼吸动画深色
+
+        # 状态管理
+        self.is_hovering = False
+        self.is_dragging = False
+        self.drag_offset_x = 0
+        self.drag_offset_y = 0
+        # ========== 新增：防误触核心状态配置 ==========
+        self.is_valid_click = False  # 标记是否为有效点击动作
+        self.press_root_x = 0  # 鼠标按下时的屏幕x坐标
+        self.press_root_y = 0  # 鼠标按下时的屏幕y坐标
+        self.drag_threshold = 3  # 拖拽判定阈值（像素）：移动超过3px判定为拖拽，不触发点击
+        # ==================================================
+
+        # 创建气泡窗口（固定无边框、置顶、透明背景）
+        self.bubble_window = tk.Toplevel(self.root)
+        self.bubble_window.overrideredirect(True)
+        self.bubble_window.attributes("-topmost", True)
+        self.bubble_window.configure(bg="white")
+        # 透明通道兼容，消除白边
+        try:
+            self.bubble_window.wm_attributes("-transparentcolor", "white")
+        except:
+            pass
+
+        # 气泡画布（固定尺寸，全局唯一中心点，杜绝错位根源）
+        self.canvas_center_x = self.bubble_window_size / 2
+        self.canvas_center_y = self.bubble_window_size / 2
+        self.bubble_canvas = tk.Canvas(
+            self.bubble_window,
+            width=self.bubble_window_size,
+            height=self.bubble_window_size,
+            bg="white",
+            highlightthickness=0,
+            cursor="hand2"
+        )
+        self.bubble_canvas.pack()
+
+        # 初始化绘制气泡
+        self._draw_perfect_bubble(self.theme_main)
+
+        # ========== 事件绑定（核心修改：移除直接点击触发，改为松开判定触发） ==========
+        # 移除原来的直接点击触发，避免拖拽误触
+        # self.bubble_canvas.bind("<Button-1>", lambda e: self.toggle_ai())
+        # 拖拽功能（仅在主界面内拖动）
+        self.bubble_canvas.bind("<ButtonPress-1>", self._bubble_drag_start)
+        self.bubble_canvas.bind("<B1-Motion>", self._bubble_drag_move)
+        self.bubble_canvas.bind("<ButtonRelease-1>", self._bubble_drag_end)
+        # 微交互（仅变色，不改变位置大小）
+        self.bubble_canvas.bind("<Enter>", self._bubble_on_hover)
+        self.bubble_canvas.bind("<Leave>", self._bubble_on_leave)
+        self.bubble_canvas.bind("<ButtonPress-1>", self._bubble_on_press, add="+")
+        self.bubble_canvas.bind("<ButtonRelease-1>", self._bubble_on_release, add="+")
+
+        # 初始位置：主窗口右下角（固定不变）
+        self._update_bubble_position()
+        # 主窗口移动时，气泡跟随主窗口
+        self.root.bind("<Configure>", lambda e: self._update_bubble_position())
+        # 呼吸动画（仅同色系深浅变化，无位移缩放）
+        self._bubble_breath_animation()
+
+    def _draw_perfect_bubble(self, fill_color):
+        """完美同心气泡绘制：彻底解决圈错位问题，所有元素严格同心"""
+        self.bubble_canvas.delete("all")
+        r = self.bubble_core_radius
+        cx = self.canvas_center_x
+        cy = self.canvas_center_y
+
+        # ========== 1. 双层阴影（严格同心，仅固定偏移，无错位） ==========
+        shadow_offset_x = 2
+        shadow_offset_y = 3
+        # 底层主阴影
+        self.bubble_canvas.create_oval(
+            cx - r + shadow_offset_x, cy - r + shadow_offset_y,
+            cx + r + shadow_offset_x, cy + r + shadow_offset_y,
+            fill=self.shadow_color, outline=""
+        )
+        # 内层过渡阴影
+        self.bubble_canvas.create_oval(
+            cx - r + shadow_offset_x - 1, cy - r + shadow_offset_y - 1,
+            cx + r + shadow_offset_x - 1, cy + r + shadow_offset_y - 1,
+            fill=self.shadow_sub_color, outline=""
+        )
+
+        # ========== 2. 气泡主体（完美正圆，严格居中） ==========
+        self.bubble_canvas.create_oval(
+            cx - r, cy - r,
+            cx + r, cy + r,
+            fill=fill_color, outline="#4A90E2", width=1
+        )
+
+        # ========== 3. 内高光（和主体严格同心，无错位） ==========
+        highlight_r = r - 4
+        self.bubble_canvas.create_arc(
+            cx - highlight_r, cy - highlight_r,
+            cx + highlight_r, cy + highlight_r,
+            start=45, extent=90, style="arc",
+            outline="#FFFFFF", width=2
+        )
+
+        # ========== 4. 中心图标/文字（严格和主体同心，无偏移） ==========
+        try:
+            from PIL import Image, ImageTk, ImageDraw
+            # 加载并处理logo，固定尺寸，正圆形蒙版
+            logo_size = int(r * 1.4)
+            logo_img = Image.open(A_LOGO_PATH).convert("RGBA")
+            logo_img = logo_img.resize((logo_size, logo_size), Image.Resampling.LANCZOS)
+            # 强制正圆形蒙版
+            mask = Image.new('L', (logo_size, logo_size), 0)
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.ellipse((0, 0, logo_size, logo_size), fill=255)
+            logo_img.putalpha(mask)
+            # 严格居中渲染
+            self.bubble_logo = ImageTk.PhotoImage(logo_img)
+            self.bubble_canvas.create_image(cx, cy, anchor="center", image=self.bubble_logo)
+        except:
+            # 降级方案：AI文字严格居中
+            self.bubble_canvas.create_text(
+                cx, cy, text="AI",
+                fill="white", font=("Arial", 18, "bold"),
+                anchor="center"
+            )
+
+    # ========== 呼吸动画（仅颜色变化，无位移缩放） ==========
+    def _bubble_breath_animation(self):
+        if not self.is_hovering and not self.is_dragging:
+            # 正弦函数自然呼吸，仅同色系深浅切换
+            breath_progress = abs(math.sin(time.time() * 1.5))
+            current_color = self.theme_breath_light if breath_progress > 0.5 else self.theme_breath_dark
+            self._draw_perfect_bubble(current_color)
+        self.bubble_window.after(30, self._bubble_breath_animation)
+
+    # ========== 微交互（仅变色，无位移） ==========
+    def _bubble_on_hover(self, e):
+        self.is_hovering = True
+        self._draw_perfect_bubble(self.theme_hover)
+
+    def _bubble_on_leave(self, e):
+        self.is_hovering = False
+        self._draw_perfect_bubble(self.theme_main)
+
+    def _bubble_on_press(self, e):
+        self._draw_perfect_bubble(self.theme_press)
+
+    def _bubble_on_release(self, e):
+        if self.is_hovering:
+            self._draw_perfect_bubble(self.theme_hover)
+        else:
+            self._draw_perfect_bubble(self.theme_main)
+
+    # ========== 防误触拖拽逻辑 ==========
+    def _bubble_drag_start(self, e):
+        """鼠标按下：初始化状态，记录按下坐标"""
+        self.is_dragging = False
+        self.is_valid_click = True  # 初始标记为有效点击
+        # 记录鼠标按下时的屏幕绝对坐标
+        self.press_root_x = e.x_root
+        self.press_root_y = e.y_root
+        # 计算拖拽偏移量
+        self.drag_offset_x = e.x_root - self.bubble_window.winfo_x()
+        self.drag_offset_y = e.y_root - self.bubble_window.winfo_y()
+
+    def _bubble_drag_move(self, e):
+        """鼠标拖拽移动：超过阈值判定为拖拽，取消有效点击标记"""
+        # 计算当前鼠标与按下位置的移动距离
+        move_distance = math.sqrt(
+            (e.x_root - self.press_root_x) ** 2 +
+            (e.y_root - self.press_root_y) ** 2
+        )
+
+        # 移动距离超过阈值，判定为拖拽动作
+        if move_distance > self.drag_threshold:
+            self.is_valid_click = False  # 取消点击标记，不会触发窗口弹出
+            self.is_dragging = True
+
+        # 执行拖拽逻辑
+        if self.is_dragging:
+            # 计算气泡新位置（屏幕绝对坐标）
+            new_x = e.x_root - self.drag_offset_x
+            new_y = e.y_root - self.drag_offset_y
+
+            # 限制：仅允许在主界面内拖动
+            root_x = self.root.winfo_rootx()
+            root_y = self.root.winfo_rooty()
+            root_w = self.root.winfo_width()
+            root_h = self.root.winfo_height()
+
+            # 边界限制：气泡完整区域必须在主窗口内
+            min_x = root_x
+            max_x = root_x + root_w - self.bubble_window_size
+            min_y = root_y
+            max_y = root_y + root_h - self.bubble_window_size
+
+            # 强制限制坐标在范围内
+            final_x = max(min_x, min(new_x, max_x))
+            final_y = max(min_y, min(new_y, max_y))
+
+            # 更新气泡位置
+            self.bubble_window.geometry(f"+{final_x}+{final_y}")
+
+    def _bubble_drag_end(self, e):
+        """鼠标松开：仅有效点击才触发AI窗口，拖拽动作不触发"""
+        # 只有有效点击（无拖拽移动）才打开AI窗口
+        if self.is_valid_click and not self.is_dragging:
+            self.toggle_ai()
+
+        # 重置状态
+        self.is_dragging = False
+        self.is_valid_click = False
+
+        # 松开后恢复对应状态
+        if self.is_hovering:
+            self._draw_perfect_bubble(self.theme_hover)
+        else:
+            self._draw_perfect_bubble(self.theme_main)
+
+    # ========== 位置跟随：初始位置固定主窗口右下角 ==========
+    def _update_bubble_position(self):
+        # 拖拽中不更新位置，避免冲突
+        if self.is_dragging:
+            return
+        if not self.root.winfo_viewable():
+            return
+        # 获取主窗口实时坐标与尺寸
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_w = self.root.winfo_width()
+        root_h = self.root.winfo_height()
+        # 固定初始位置：主窗口右下角，距离边缘20px
+        target_x = root_x + root_w - self.bubble_window_size - 20
+        target_y = root_y + root_h - self.bubble_window_size - 20
+        self.bubble_window.geometry(f"+{target_x}+{target_y}")
+
+
+    def toggle_ai(self):
+        """切换AI窗口显示/隐藏"""
+        if not self.ai_logic:
+            print("AI模块未正确加载")
+            return
+
+        # 计算AI窗口位置（气泡左侧）
+        bubble_x = self.bubble_window.winfo_x()
+        bubble_y = self.bubble_window.winfo_y()
+        bubble_w = self.bubble_size
+        bubble_h = self.bubble_size
+
+        # AI窗口尺寸
+        chat_w = 420
+        chat_h = 600
+
+        # 位置：气泡左侧，垂直居中
+        x = bubble_x - chat_w - 10
+        y = bubble_y + (bubble_h - chat_h) // 2
+
+        # 屏幕边界检查
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        if x < 0:
+            x = bubble_x + bubble_w + 10  # 右侧放不下放左侧
+        if y < 0:
+            y = 50
+        if y + chat_h > screen_h:
+            y = screen_h - chat_h - 50
+
+        # 处理AI窗口
+        if self.ai_window is None or not self.ai_window.window.winfo_exists():
+            self.ai_window = AIChatWindow(self.root, self.ai_logic, position=(x, y))
+        else:
+            self.ai_window.window.geometry(f"{chat_w}x{chat_h}+{x}+{y}")
+            if not self.ai_window.window.winfo_viewable():
+                self.ai_window.show()
+
+
 if __name__ == "__main__":
     root = tk.Tk()
     try:
         from ctypes import windll
+
         windll.shcore.SetProcessDpiAwareness(1)
     except:
         pass
