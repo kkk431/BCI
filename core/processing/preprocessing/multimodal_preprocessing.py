@@ -253,7 +253,7 @@ class MultiModalPreprocessor:
             if layer not in data_dict:
                 raise ValueError(f"数据字典必须包含'{layer}'层")
 
-        # 验证meta层
+        # 验证meta层（此处保留原有代码，无需修改）
         meta = data_dict["meta"]
         required_meta_fields = ["subject_id", "task", "modality", "sampling_rate"]
         for field in required_meta_fields:
@@ -276,12 +276,33 @@ class MultiModalPreprocessor:
             if not isinstance(data, np.ndarray):
                 raise ValueError(f"{modality}数据必须是numpy数组")
 
-            channel_names = signal_info["channel_names"]
-            if len(data.shape) != 2:
-                raise ValueError(f"{modality}数据必须是2维数组 (channels × samples)")
+            modality_upper = modality.upper()
+            if modality_upper == "FNIRS":
+                # fNIRS 允许 2维 或 3维
+                if len(data.shape) not in [2, 3]:
+                    raise ValueError(
+                        f"{modality}数据必须是2维或3维数组 "
+                        f"(channels × [wavelengths ×] samples)，当前维度: {len(data.shape)}"
+                    )
+            else:
+                # 其他模态必须为 2维
+                if len(data.shape) != 2:
+                    raise ValueError(
+                        f"{modality}数据必须是2维数组 (channels × samples)，"
+                        f"当前维度: {len(data.shape)}"
+                    )
 
-            if data.shape[0] != len(channel_names):
-                raise ValueError(f"{modality}通道数量与数据维度不匹配")
+            channel_names = signal_info["channel_names"]
+            if len(data.shape) == 2:
+                if data.shape[0] != len(channel_names):
+                    raise ValueError(
+                        f"{modality}通道数量({len(channel_names)})与数据第一维度({data.shape[0]})不匹配"
+                    )
+            elif len(data.shape) == 3:
+                if data.shape[0] != len(channel_names):
+                    raise ValueError(
+                        f"{modality}通道数量({len(channel_names)})与数据第一维度({data.shape[0]})不匹配"
+                    )
 
         logger.info("数据格式验证通过")
 
