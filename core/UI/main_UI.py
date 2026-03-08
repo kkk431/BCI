@@ -17,7 +17,7 @@ else:
     raise RuntimeError("未找到名为 'core' 的目录")
 
 import tkinter as tk
-from tkinter import messagebox      # ==== 新增：导入 messagebox 用于错误提示 ====
+from tkinter import messagebox      # 新增：导入 messagebox 用于错误提示
 import os
 import re
 import time
@@ -33,9 +33,17 @@ except ImportError:
     SimpleAIChat = None
     AIChatWindow = None
 
+# 导入特征提取模块
 from core.UI.panel.extraction_panel import ExtractionApp
 
-# ==== 新增：导入统计分析模块和 PyQt5 相关 ====
+# 导入预处理模块
+try:
+    from core.UI.panel.preprocessing_panel import PreprocessingApp
+except ImportError:
+    PreprocessingApp = None
+    print("预处理模块未找到，请检查路径 core/UI/panel/preprocessing_panel.py")
+
+# 导入统计分析模块和 PyQt5 相关
 try:
     from core.processing.Statistical_Analysis.statistical_analysis_dialog import StatisticalAnalysisDialog
 except ImportError:
@@ -47,7 +55,6 @@ try:
 except ImportError:
     QApplication = None
     print("PyQt5 未安装，统计分析窗口将无法弹出")
-# ==========================================
 
 # 视觉配置
 COLOR_TAB_BAR_BG = "#c0c0c0"
@@ -71,7 +78,6 @@ A_LOGO_PATH = os.path.join(project_root, "core", "UI", "UI_resource", "a_logo.pn
 print("正在预加载可视化模块...")
 preload_start = time.time()
 import matplotlib
-
 matplotlib.use('TkAgg')
 preload_time = time.time() - preload_start
 print(f"预加载完成，耗时: {preload_time:.2f}秒")
@@ -243,14 +249,15 @@ class NeuroPioneerApp:
                     max_num = max(max_num, num)
         return max_num + 1
 
-    # ==== 修改：为 "Analysis" 添加分支，直接弹出窗口 ====
     def open_functional_tab(self, base_name):
         if base_name == "Visualization":
             self.open_visualization_tab()
         elif base_name == "Extraction":
             self.open_extraction_tab()
+        elif base_name == "Preprocessing":
+            self.open_preprocessing_tab()
         elif base_name == "Analysis":
-            self.open_statistical_dialog()   # 直接弹出统计分析窗口
+            self.open_statistical_dialog()
         else:
             next_num = self._get_next_number_for_base(base_name)
             display_name = f"{base_name} ({next_num})"
@@ -265,7 +272,48 @@ class NeuroPioneerApp:
                                  "base_name": base_name, "display_name": display_name}
 
             self.switch_to_tab(tab_id)
-    # ===================================================
+
+    def open_preprocessing_tab(self):
+        """打开预处理标签页"""
+        if PreprocessingApp is None:
+            messagebox.showerror("错误", "预处理模块未正确加载，请检查文件路径或依赖库。")
+            return
+
+        next_num = self._get_next_number_for_base("Preprocessing")
+        display_name = f"Preprocessing ({next_num})"
+        tab_id = f"Preprocessing_{next_num}"
+
+        new_frame = tk.Frame(self.main_container, bg=COLOR_CONTENT_BG)
+
+        # 显示加载提示
+        loading_label = tk.Label(new_frame, text="正在加载预处理模块...",
+                                 font=("微软雅黑", 14), fg="#666", bg=COLOR_CONTENT_BG)
+        loading_label.place(relx=0.5, rely=0.5, anchor="center")
+        new_frame.update()
+
+        tab_btn = self.create_tab_widget(display_name, tab_id=tab_id)
+
+        self.tabs[tab_id] = {
+            "frame": new_frame,
+            "tab_btn": tab_btn,
+            "base_name": "Preprocessing",
+            "display_name": display_name
+        }
+
+        self.switch_to_tab(tab_id)
+
+        def load_preprocessing():
+            try:
+                loading_label.destroy()
+                preprocessing_app = PreprocessingApp(new_frame)
+                preprocessing_app.pack(fill=tk.BOTH, expand=True)
+                print("预处理面板加载完成")
+            except Exception as e:
+                loading_label.config(text=f"加载失败: {str(e)}", fg="red")
+                import traceback
+                traceback.print_exc()
+
+        new_frame.after(10, load_preprocessing)
 
     def open_extraction_tab(self):
         next_num = self._get_next_number_for_base("Extraction")
@@ -341,7 +389,6 @@ class NeuroPioneerApp:
 
         new_frame.after(10, load_visualization)
 
-    # ==== 新增：弹出统计分析 PyQt 窗口的方法 ====
     def open_statistical_dialog(self):
         """弹出统计分析 PyQt 窗口（作为独立进程运行）"""
         if StatisticalAnalysisDialog is None:
@@ -359,7 +406,6 @@ class NeuroPioneerApp:
             subprocess.Popen([python_executable, dialog_path])
         except Exception as e:
             messagebox.showerror("错误", f"无法启动统计分析窗口: {str(e)}")
-    # ===========================================
 
     def switch_to_tab(self, tab_id):
         if tab_id not in self.tabs:
@@ -465,12 +511,11 @@ class NeuroPioneerApp:
         self.is_dragging = False
         self.drag_offset_x = 0
         self.drag_offset_y = 0
-        # ========== 新增：防误触核心状态配置 ==========
+        # 新增：防误触核心状态配置
         self.is_valid_click = False  # 标记是否为有效点击动作
         self.press_root_x = 0  # 鼠标按下时的屏幕x坐标
         self.press_root_y = 0  # 鼠标按下时的屏幕y坐标
         self.drag_threshold = 3  # 拖拽判定阈值（像素）：移动超过3px判定为拖拽，不触发点击
-        # ==================================================
 
         # 创建气泡窗口（固定无边框、置顶、透明背景）
         self.bubble_window = tk.Toplevel(self.root)
@@ -499,10 +544,7 @@ class NeuroPioneerApp:
         # 初始化绘制气泡
         self._draw_perfect_bubble(self.theme_main)
 
-        # ========== 事件绑定（核心修改：移除直接点击触发，改为松开判定触发） ==========
-        # 移除原来的直接点击触发，避免拖拽误触
-        # self.bubble_canvas.bind("<Button-1>", lambda e: self.toggle_ai())
-        # 拖拽功能（仅在主界面内拖动）
+        # 事件绑定（核心修改：移除直接点击触发，改为松开判定触发）
         self.bubble_canvas.bind("<ButtonPress-1>", self._bubble_drag_start)
         self.bubble_canvas.bind("<B1-Motion>", self._bubble_drag_move)
         self.bubble_canvas.bind("<ButtonRelease-1>", self._bubble_drag_end)
@@ -526,7 +568,7 @@ class NeuroPioneerApp:
         cx = self.canvas_center_x
         cy = self.canvas_center_y
 
-        # ========== 1. 双层阴影（严格同心，仅固定偏移，无错位） ==========
+        # 1. 双层阴影（严格同心，仅固定偏移，无错位）
         shadow_offset_x = 2
         shadow_offset_y = 3
         # 底层主阴影
@@ -542,14 +584,14 @@ class NeuroPioneerApp:
             fill=self.shadow_sub_color, outline=""
         )
 
-        # ========== 2. 气泡主体（完美正圆，严格居中） ==========
+        # 2. 气泡主体（完美正圆，严格居中）
         self.bubble_canvas.create_oval(
             cx - r, cy - r,
             cx + r, cy + r,
             fill=fill_color, outline="#4A90E2", width=1
         )
 
-        # ========== 3. 内高光（和主体严格同心，无错位） ==========
+        # 3. 内高光（和主体严格同心，无错位）
         highlight_r = r - 4
         self.bubble_canvas.create_arc(
             cx - highlight_r, cy - highlight_r,
@@ -558,7 +600,7 @@ class NeuroPioneerApp:
             outline="#FFFFFF", width=2
         )
 
-        # ========== 4. 中心图标/文字（严格和主体同心，无偏移） ==========
+        # 4. 中心图标/文字（严格和主体同心，无偏移）
         try:
             from PIL import Image, ImageTk, ImageDraw
             # 加载并处理logo，固定尺寸，正圆形蒙版
@@ -581,7 +623,7 @@ class NeuroPioneerApp:
                 anchor="center"
             )
 
-    # ========== 呼吸动画（仅颜色变化，无位移缩放） ==========
+    # 呼吸动画（仅颜色变化，无位移缩放）
     def _bubble_breath_animation(self):
         if not self.is_hovering and not self.is_dragging:
             # 正弦函数自然呼吸，仅同色系深浅切换
@@ -590,7 +632,7 @@ class NeuroPioneerApp:
             self._draw_perfect_bubble(current_color)
         self.bubble_window.after(30, self._bubble_breath_animation)
 
-    # ========== 微交互（仅变色，无位移） ==========
+    # 微交互（仅变色，无位移）
     def _bubble_on_hover(self, e):
         self.is_hovering = True
         self._draw_perfect_bubble(self.theme_hover)
@@ -608,7 +650,7 @@ class NeuroPioneerApp:
         else:
             self._draw_perfect_bubble(self.theme_main)
 
-    # ========== 防误触拖拽逻辑 ==========
+    # 防误触拖拽逻辑
     def _bubble_drag_start(self, e):
         """鼠标按下：初始化状态，记录按下坐标"""
         self.is_dragging = False
@@ -674,7 +716,7 @@ class NeuroPioneerApp:
         else:
             self._draw_perfect_bubble(self.theme_main)
 
-    # ========== 位置跟随：初始位置固定主窗口右下角 ==========
+    # 位置跟随：初始位置固定主窗口右下角
     def _update_bubble_position(self):
         # 拖拽中不更新位置，避免冲突
         if self.is_dragging:
@@ -690,7 +732,6 @@ class NeuroPioneerApp:
         target_x = root_x + root_w - self.bubble_window_size - 20
         target_y = root_y + root_h - self.bubble_window_size - 20
         self.bubble_window.geometry(f"+{target_x}+{target_y}")
-
 
     def toggle_ai(self):
         """切换AI窗口显示/隐藏"""
@@ -735,7 +776,6 @@ if __name__ == "__main__":
     root = tk.Tk()
     try:
         from ctypes import windll
-
         windll.shcore.SetProcessDpiAwareness(1)
     except:
         pass
