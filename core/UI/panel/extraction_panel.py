@@ -29,8 +29,6 @@ else:
 # --- 导入底层业务模块---
 try:
     from core.io.data_io import DataLoader
-    from core.processing.preprocessing.multimodal_preprocessing import MultiModalPreprocessor, MultiModalConfigFactory
-    from core.processing.preprocessing.multimodal_preprocessing import example_usage
     from core.processing.feature_extraction.multimodal_pipeline import MultimodalFeaturePipeline
 
     MODULES_LOADED = True
@@ -128,7 +126,7 @@ class ExtractionApp(tk.Frame):
                                   relief="flat", padx=15, pady=6, cursor="hand2", command=self.action_load_data)
         self.btn_load.pack(side="left")
 
-        self.lbl_status = tk.Label(btn_box1, text="请上传文件 (后台将自动完成解析与降噪)...", font=FONT_NORMAL,
+        self.lbl_status = tk.Label(btn_box1, text="请上传已预处理的数据文件...", font=FONT_NORMAL,
                                    bg=COLOR_CONTENT_BG, fg=COLOR_TEXT_SUB)
         self.lbl_status.pack(side="left", padx=15)
 
@@ -241,7 +239,7 @@ class ExtractionApp(tk.Frame):
         if manual_mod:
             self.lbl_status.config(text=f"正在以【{manual_mod}】模式重新处理数据，请稍候...", fg="#0056b3")
         else:
-            self.lbl_status.config(text="正在读取文件并进行后台降噪处理，这可能需要几秒钟，请稍候...", fg="#0056b3")
+            self.lbl_status.config(text="正在读取文件，这可能需要几秒钟，请稍候...", fg="#0056b3")
 
         # 隐藏手动选择区域
         self.manual_mod_frame.pack_forget()
@@ -312,17 +310,11 @@ class ExtractionApp(tk.Frame):
 
                         print(f"已将 UNKNOWN 模态替换为 {manual_mod}")
 
-                prep_config = MultiModalConfigFactory.create_resting_state_config()
-                preprocessor = MultiModalPreprocessor(prep_config)
-                result = preprocessor.process(raw_dict)
-
-                if not result.success:
-                    raise Exception(f"后台预处理去噪失败: {result.error_message}")
-
-                self.clean_data_dict = result.processed_data
+                # 直接将导入的源数据作为清理后的数据传给特征提取层
+                self.clean_data_dict = raw_dict
 
                 mods = list(self.clean_data_dict.get('signal', {}).keys())
-                valid_mods = [m for m in mods if m in FEATURE_MAP]
+                valid_mods =[m for m in mods if m in FEATURE_MAP]
 
                 if valid_mods:
                     self.after(0, self._ui_update_on_load_success, valid_mods)
@@ -334,6 +326,7 @@ class ExtractionApp(tk.Frame):
                 self.after(0, self._ui_update_on_error, f"处理失败: {str(e)}")
 
         threading.Thread(target=background_task, daemon=True).start()
+
     def action_confirm_manual_mod(self):
         """确认手动选择的模态"""
         selected_mod = self.manual_mod_var.get()
@@ -353,7 +346,7 @@ class ExtractionApp(tk.Frame):
         self.combo_modality.current(0)
         self.refresh_checkboxes(None)
 
-        self.lbl_status.config(text=f"数据就绪！已净化并识别出模态: {', '.join(valid_mods)}", fg="green")
+        self.lbl_status.config(text=f"数据就绪！已识别出模态: {', '.join(valid_mods)}", fg="green")
         self.btn_extract.config(state="normal", bg=COLOR_BTN_BG, cursor="hand2")
         self.btn_load.config(state="normal", bg=COLOR_BTN_BG, cursor="hand2")
 
@@ -406,7 +399,7 @@ class ExtractionApp(tk.Frame):
         if not mod or not self.clean_data_dict:
             return
 
-        selected_cats = [key for key, var in self.checkbox_vars.items() if var.get()]
+        selected_cats =[key for key, var in self.checkbox_vars.items() if var.get()]
         if not selected_cats:
             messagebox.showwarning("提示", "请至少勾选一种特征集！")
             return
