@@ -4,7 +4,18 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton,
                              QButtonGroup, QStackedWidget, QVBoxLayout)
 from PyQt5.QtCore import Qt, QRect
 from PyQt5.QtGui import QPixmap
+from pathlib import Path
 
+# 将'core'的上一级目录作为项目根目录添加到 sys.path 中，以便正确导入模块
+start_path = Path(__file__).resolve().parent
+for parent in [start_path] + list(start_path.parents):
+    if parent.name == 'core':
+        project_root = parent.parent
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+        break
+else:
+    raise RuntimeError("未找到名为 'core' 的目录")
 
 class MainWindow(QWidget):
     def __init__(self):
