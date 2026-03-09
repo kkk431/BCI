@@ -27,21 +27,22 @@ except:
 
 # 解决负号显示问题
 matplotlib.rcParams['axes.unicode_minus'] = False
+
+# ========== 设置matplotlib后端 ==========
+matplotlib.use('TkAgg')
+
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import numpy as np
-import matplotlib
-
-matplotlib.use('TkAgg')
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
 import scipy.signal
 from typing import Dict, List, Optional, Tuple, Any
 import os
 from datetime import datetime
 import copy
 import importlib.util
+import traceback
 
 # ========== 检查并导入所有预处理模块 ==========
 HAS_PREPROCESSING = False
@@ -102,8 +103,9 @@ try:
     except ImportError:
         pass
 
-except ImportError:
-    print("警告: 无法导入基础预处理模块，将使用简单实时滤波")
+except ImportError as e:
+    print(f"警告: 无法导入基础预处理模块: {e}")
+    print("将使用简单实时滤波")
 
 
 class SignalView(tk.Frame):
@@ -127,9 +129,16 @@ class SignalView(tk.Frame):
         self.original_data_dict = copy.deepcopy(data_dict)  # 备份原始数据
         self.data_dict = data_dict
         self.modality = modality
+        self.available_modalities = []  # 可用模态列表
 
-        # 解析数据
-        self._parse_data()
+        # 解析数据（添加错误处理）
+        try:
+            self._parse_data()
+        except Exception as e:
+            messagebox.showerror("数据解析错误", f"无法解析数据: {str(e)}")
+            # 创建模拟数据作为后备
+            self._create_fallback_data()
+            print(f"使用模拟数据作为后备: {e}")
 
         # 当前显示状态
         self.current_page = 0
@@ -167,8 +176,78 @@ class SignalView(tk.Frame):
         # 初始化绘图
         self.update_plot()
 
+    def _create_fallback_data(self):
+        """创建后备数据（当数据解析失败时）"""
+        print("创建后备数据...")
+        self.modality = "EEG"
+        self.subject_id = "fallback"
+        self.session_id = "session1"
+        self.task = "rest"
+
+        # 创建模拟EEG数据
+        fs = 1000
+        t = np.arange(0, 10, 1 / fs)
+        self.data = np.array([np.sin(2 * np.pi * 10 * t) + 0.5 * np.random.randn(len(t)) for _ in range(8)])
+        self.n_channels, self.n_samples = self.data.shape
+        self.sampling_rate = fs
+        self.channel_names = [f"Ch{i + 1}" for i in range(self.n_channels)]
+        self.unit = "uV"
+        self.signal_type = "eeg"
+        self.duration = self.n_samples / self.sampling_rate
+        self.event_times = []
+        self.event_labels = []
+        self.event_ids = []
+
+    def _convert_to_numpy(self, data):
+        """将各种格式的数据转换为numpy数组"""
+        if data is None:
+            raise ValueError("数据为空")
+
+        # 如果是numpy数组，直接返回
+        if isinstance(data, np.ndarray):
+            return data
+
+        # 如果是列表，转换为numpy数组
+        if isinstance(data, list):
+            try:
+                return np.array(data, dtype=np.float32)
+            except Exception as e:
+                raise ValueError(f"列表转numpy失败: {e}")
+
+        # 如果是其他类型，尝试转换
+        try:
+            return np.array(data, dtype=np.float32)
+        except Exception as e:
+            raise ValueError(f"无法转换为numpy数组: {e}")
+
+    def _ensure_2d(self, data):
+        """确保数据是2D (channels × samples)"""
+        if data.ndim == 1:
+            # 1D数据：假设是单个通道
+            return data.reshape(1, -1)
+        elif data.ndim == 2:
+            # 2D数据：检查是否需要转置
+            if data.shape[0] > data.shape[1]:
+                # 如果通道数大于样本数，可能是 (samples, channels) 格式
+                print(f"检测到数据可能为 (samples, channels) 格式，形状: {data.shape}，进行转置")
+                return data.T
+            return data
+        elif data.ndim == 3:
+            # 3D数据：可能是 (channels, frequencies, samples) 或其他格式
+            # 这里简单地取第一个频率或平均
+            print(f"检测到3D数据，形状: {data.shape}，取第一个维度")
+            return data[0, :, :] if data.shape[0] < data.shape[2] else data[:, 0, :]
+        else:
+            # 更高维度：展平
+            print(f"检测到{data.ndim}D数据，尝试展平")
+            return data.reshape(data.shape[0], -1)
+
     def _parse_data(self):
-        """解析数据字典"""
+        """解析数据字典（增强版，支持多种数据格式）"""
+        print("\n" + "=" * 60)
+        print("📊 解析数据字典")
+        print("=" * 60)
+
         # 获取元数据
         self.meta = self.data_dict.get("meta", {})
         self.subject_id = self.meta.get("subject_id", "unknown")
@@ -177,30 +256,51 @@ class SignalView(tk.Frame):
 
         # 获取信号数据
         signal_dict = self.data_dict.get("signal", {})
+        if not signal_dict:
+            raise ValueError("数据字典中没有'signal'字段")
+
+        # ========== 获取所有可用模态 ==========
+        self.available_modalities = list(signal_dict.keys())
+        print(f"可用模态: {self.available_modalities}")
 
         # 确定要显示的模态
         if self.modality is None:
-            for mod in ['EEG', 'EMG', 'ECG', 'fNIRS', 'GSR', 'ET', 'RESP']:
-                if mod in signal_dict:
-                    self.modality = mod
-                    break
-            if self.modality is None and signal_dict:
-                self.modality = list(signal_dict.keys())[0]
+            # 默认选择第一个模态
+            self.modality = self.available_modalities[0]
+            print(f"自动选择模态: {self.modality}")
 
         if self.modality not in signal_dict:
             raise ValueError(f"模态 {self.modality} 不在数据中")
 
         signal_info = signal_dict[self.modality]
+        print(f"选择模态: {self.modality}")
+        print(f"信号信息字段: {list(signal_info.keys())}")
 
-        # 信号数据
-        self.data = signal_info.get("data")
-        if self.data is None:
+        # ========== 信号数据处理（核心修改） ==========
+        raw_data = signal_info.get("data")
+        if raw_data is None:
             raise ValueError("信号数据不存在")
 
-        # 确保数据是2D (channels × samples)
-        if self.data.ndim == 1:
-            self.data = self.data.reshape(1, -1)
+        print(f"原始数据类型: {type(raw_data)}")
+        if isinstance(raw_data, list):
+            print(f"列表长度: {len(raw_data)}")
+            if len(raw_data) > 0:
+                print(f"第一个元素类型: {type(raw_data[0])}")
+                if isinstance(raw_data[0], list):
+                    print(f"第一个元素长度: {len(raw_data[0])}")
 
+        # 转换为numpy数组
+        try:
+            self.data = self._convert_to_numpy(raw_data)
+            print(f"转换为numpy后形状: {self.data.shape}")
+        except Exception as e:
+            raise ValueError(f"数据转换失败: {e}")
+
+        # 确保数据是2D
+        self.data = self._ensure_2d(self.data)
+        print(f"确保2D后形状: {self.data.shape}")
+
+        # 获取基本信息
         self.n_channels, self.n_samples = self.data.shape
         self.sampling_rate = signal_info.get("sampling_rate", 1000)
         self.channel_names = signal_info.get("channel_names",
@@ -217,6 +317,9 @@ class SignalView(tk.Frame):
         self.event_labels = self.events.get("event_label", [])
         self.event_ids = self.events.get("event_id", [])
 
+        print(f"解析完成: {self.n_channels}通道, {self.n_samples}样本, {self.sampling_rate}Hz, {self.duration:.2f}秒")
+        print("=" * 60 + "\n")
+
     def setup_ui(self):
         """设置用户界面（完整版，包含预处理控制）"""
         # 主布局
@@ -229,8 +332,17 @@ class SignalView(tk.Frame):
 
         # 左侧信息
         info_text = f"{self.modality} | {self.n_channels}通道 | {self.sampling_rate}Hz | {self.duration:.2f}秒"
-        info_label = ttk.Label(control_frame, text=info_text, font=('微软雅黑', 10))
-        info_label.pack(side=tk.LEFT, padx=5)
+        self.info_label = ttk.Label(control_frame, text=info_text, font=('微软雅黑', 10))
+        self.info_label.pack(side=tk.LEFT, padx=5)
+
+        # ========== 添加模态选择器 ==========
+        if len(self.available_modalities) > 1:
+            ttk.Label(control_frame, text="模态:").pack(side=tk.LEFT, padx=(10, 2))
+            self.modality_var = tk.StringVar(value=self.modality)
+            modality_combo = ttk.Combobox(control_frame, textvariable=self.modality_var,
+                                          values=self.available_modalities, state="readonly", width=10)
+            modality_combo.pack(side=tk.LEFT, padx=2)
+            modality_combo.bind('<<ComboboxSelected>>', self.on_modality_changed)
 
         # 右侧翻页控制
         page_frame = ttk.Frame(control_frame)
@@ -296,7 +408,7 @@ class SignalView(tk.Frame):
         self.highpass_entry.config(state='disabled')
         self.notch_entry.config(state='disabled')
 
-        # ========== 预处理控制面板（完整版）==========
+        # ========== 预处理控制面板 ==========
         preprocess_frame = ttk.LabelFrame(main_frame, text="专业预处理预览")
         preprocess_frame.pack(fill=tk.X, pady=5)
 
@@ -553,6 +665,64 @@ class SignalView(tk.Frame):
         ttk.Button(btn_frame, text="保存标记",
                    command=self.save_markers).pack(side=tk.LEFT, padx=2)
 
+    # ========== 模态切换方法 ==========
+    def on_modality_changed(self, event=None):
+        """模态切换响应"""
+        new_modality = self.modality_var.get()
+        if new_modality != self.modality:
+            print(f"切换模态: {self.modality} -> {new_modality}")
+            self.modality = new_modality
+
+            # 重新解析当前模态的数据
+            signal_dict = self.data_dict.get("signal", {})
+            signal_info = signal_dict[self.modality]
+
+            # 获取新模态的数据
+            raw_data = signal_info.get("data")
+            if raw_data is None:
+                messagebox.showerror("错误", f"模态 {self.modality} 数据不存在")
+                return
+
+            # 转换数据
+            try:
+                self.data = self._convert_to_numpy(raw_data)
+                self.data = self._ensure_2d(self.data)
+
+                self.n_channels, self.n_samples = self.data.shape
+                self.sampling_rate = signal_info.get("sampling_rate", 1000)
+                self.channel_names = signal_info.get("channel_names",
+                                                     [f"Ch{i+1}" for i in range(self.n_channels)])
+                self.unit = signal_info.get("unit", "unknown")
+                self.signal_type = signal_info.get("signal_type", self.modality.lower())
+                self.duration = self.n_samples / self.sampling_rate
+
+                # 更新通道列表
+                self.channel_listbox.delete(0, tk.END)
+                self.selected_channels = []
+                for i, name in enumerate(self.channel_names):
+                    self.channel_listbox.insert(tk.END, f"{i+1:02d}. {name}")
+                    self.channel_listbox.selection_set(i)
+                    self.selected_channels.append(i)
+
+                # 更新翻页控件
+                max_pages = max(1, int(np.ceil(self.duration / self.page_duration)))
+                self.page_spin.config(to=max_pages)
+                self.total_pages_label.config(text=str(max_pages))
+                self.current_page = 0
+                self.page_var.set("1")
+
+                # 更新信息显示
+                self.info_label.config(text=f"{self.modality} | {self.n_channels}通道 | {self.sampling_rate}Hz | {self.duration:.2f}秒")
+
+                # 重新绘图
+                self.update_plot()
+
+                print(f"模态切换成功: {self.modality}, {self.n_channels}通道, {self.sampling_rate}Hz")
+
+            except Exception as e:
+                messagebox.showerror("错误", f"切换模态失败: {str(e)}")
+                traceback.print_exc()
+
     # ========== 预处理相关方法 ==========
 
     def on_preprocess_toggled(self):
@@ -667,6 +837,7 @@ class SignalView(tk.Frame):
 
         except Exception as e:
             messagebox.showerror("配置错误", f"加载配置失败: {str(e)}")
+            traceback.print_exc()
 
     def _update_config_display(self):
         """更新配置显示"""
@@ -747,17 +918,22 @@ class SignalView(tk.Frame):
         except Exception as e:
             messagebox.showerror("预处理错误", f"预处理失败: {str(e)}")
             self.preprocess_status.config(text="预处理失败")
+            traceback.print_exc()
 
     def reset_to_original(self):
         """重置到原始数据"""
         self.data_dict = copy.deepcopy(self.original_data_dict)
         self.processed_data_dict = None
-        self._parse_data()  # 重新解析数据
+        try:
+            self._parse_data()  # 重新解析数据
+        except Exception as e:
+            messagebox.showerror("错误", f"重置数据失败: {str(e)}")
+            self._create_fallback_data()
         self.preview_preprocess_var.set(False)
         self.preprocess_status.config(text="已重置到原始数据")
         self.update_plot()
 
-    # ========== 现有方法的修改 ==========
+    # ========== 数据获取方法 ==========
 
     def get_current_data(self):
         """获取当前要显示的数据（根据预览状态选择）"""
@@ -782,92 +958,101 @@ class SignalView(tk.Frame):
             return self.sampling_rate
 
     def update_plot(self):
-        """更新绘图（修改版，支持预处理数据）"""
-        self.figure.clear()
+        """更新绘图（增强版，添加错误处理）"""
+        try:
+            self.figure.clear()
 
-        # 获取当前要显示的数据
-        current_data = self.get_current_data()
-        current_sr = self.get_current_sampling_rate()
+            # 获取当前要显示的数据
+            current_data = self.get_current_data()
+            current_sr = self.get_current_sampling_rate()
 
-        # 获取选中的通道
-        selected_channels = self.get_selected_channels()
-        n_show = len(selected_channels)
+            # 获取选中的通道
+            selected_channels = self.get_selected_channels()
+            n_show = len(selected_channels)
 
-        if n_show == 0:
-            return
+            if n_show == 0:
+                return
 
-        # 计算当前页的时间范围
-        t_start = self.current_page * self.page_duration
-        t_end = min((self.current_page + 1) * self.page_duration, self.duration)
+            # 计算当前页的时间范围
+            t_start = self.current_page * self.page_duration
+            t_end = min((self.current_page + 1) * self.page_duration, self.duration)
 
-        start_idx = int(t_start * current_sr)
-        end_idx = int(t_end * current_sr)
+            start_idx = int(t_start * current_sr)
+            end_idx = int(t_end * current_sr)
 
-        # 确保索引有效
-        start_idx = max(0, min(start_idx, current_data.shape[1] - 1))
-        end_idx = max(start_idx + 1, min(end_idx, current_data.shape[1]))
+            # 确保索引有效
+            start_idx = max(0, min(start_idx, current_data.shape[1] - 1))
+            end_idx = max(start_idx + 1, min(end_idx, current_data.shape[1]))
 
-        # 提取数据
-        data_segment = current_data[:, start_idx:end_idx]
-        time = np.arange(start_idx, end_idx) / current_sr
+            # 提取数据
+            data_segment = current_data[:, start_idx:end_idx]
+            time = np.arange(start_idx, end_idx) / current_sr
 
-        # 应用实时滤波（如果启用）
-        if self.filter_var.get():
-            data_segment = self.apply_filter(data_segment, current_sr)
+            # 应用实时滤波（如果启用）
+            if self.filter_var.get():
+                data_segment = self.apply_filter(data_segment, current_sr)
 
-        # 创建子图
-        gs = self.figure.add_gridspec(n_show, 1, hspace=0.1)
+            # 创建子图
+            gs = self.figure.add_gridspec(n_show, 1, hspace=0.1)
 
-        # 计算幅度范围
-        if self.auto_amp_var.get():
-            y_min = np.min(data_segment[selected_channels])
-            y_max = np.max(data_segment[selected_channels])
-            margin = (y_max - y_min) * 0.1
-            y_min -= margin
-            y_max += margin
-        else:
-            try:
-                y_min = float(self.amp_min_var.get())
-                y_max = float(self.amp_max_var.get())
-            except:
-                y_min = -200
-                y_max = 200
-
-        # 绘制每个通道
-        for i, ch_idx in enumerate(selected_channels):
-            ax = self.figure.add_subplot(gs[i, 0])
-            ax.plot(time, data_segment[ch_idx], 'b-', linewidth=0.8)
-
-            # 设置Y轴
-            ax.set_ylabel(f"{self.channel_names[ch_idx]}\n({self.unit})", fontsize=8)
-            ax.set_ylim(y_min, y_max)
-
-            if i < n_show - 1:
-                ax.set_xticklabels([])
+            # 计算幅度范围
+            if self.auto_amp_var.get():
+                y_min = np.min(data_segment[selected_channels])
+                y_max = np.max(data_segment[selected_channels])
+                margin = (y_max - y_min) * 0.1
+                y_min -= margin
+                y_max += margin
             else:
-                ax.set_xlabel('Time (s)', fontsize=9)
+                try:
+                    y_min = float(self.amp_min_var.get())
+                    y_max = float(self.amp_max_var.get())
+                except:
+                    y_min = -200
+                    y_max = 200
 
-            ax.grid(True, alpha=0.3)
+            # 绘制每个通道
+            for i, ch_idx in enumerate(selected_channels):
+                ax = self.figure.add_subplot(gs[i, 0])
+                ax.plot(time, data_segment[ch_idx], 'b-', linewidth=0.8)
 
-            # 绘制事件标记
-            for t in self.event_times:
-                if t_start <= t <= t_end:
-                    ax.axvline(x=t, color='r', linestyle='--', linewidth=1, alpha=0.7)
+                # 设置Y轴
+                ax.set_ylabel(f"{self.channel_names[ch_idx]}\n({self.unit})", fontsize=8)
+                ax.set_ylim(y_min, y_max)
 
-            # 绘制用户标记
-            for t, color, label in self.markers:
-                if t_start <= t <= t_end:
-                    ax.axvline(x=t, color=color, linestyle='-', linewidth=2)
-                    ax.text(t, y_min + (y_max - y_min) * 0.1, label,
-                            fontsize=8, color=color)
+                if i < n_show - 1:
+                    ax.set_xticklabels([])
+                else:
+                    ax.set_xlabel('Time (s)', fontsize=9)
 
-        # 添加标题，标明数据来源
-        title_suffix = " (预处理预览)" if self.preview_preprocess_var.get() else ""
-        self.figure.suptitle(f"{self.modality} - {self.subject_id} - {self.task}{title_suffix}\n"
-                             f"Time: {t_start:.2f} - {t_end:.2f} s",
-                             fontsize=12)
+                ax.grid(True, alpha=0.3)
 
-        self.canvas.draw()
+                # 绘制事件标记
+                for t in self.event_times:
+                    if t_start <= t <= t_end:
+                        ax.axvline(x=t, color='r', linestyle='--', linewidth=1, alpha=0.7)
+
+                # 绘制用户标记
+                for t, color, label in self.markers:
+                    if t_start <= t <= t_end:
+                        ax.axvline(x=t, color=color, linestyle='-', linewidth=2)
+                        ax.text(t, y_min + (y_max - y_min) * 0.1, label,
+                                fontsize=8, color=color)
+
+            # 添加标题，标明数据来源
+            title_suffix = " (预处理预览)" if self.preview_preprocess_var.get() else ""
+            self.figure.suptitle(f"{self.modality} - {self.subject_id} - {self.task}{title_suffix}\n"
+                                 f"Time: {t_start:.2f} - {t_end:.2f} s",
+                                 fontsize=12)
+
+            self.canvas.draw()
+
+        except Exception as e:
+            print(f"绘图错误: {e}")
+            traceback.print_exc()
+            self.figure.clear()
+            ax = self.figure.add_subplot(111)
+            ax.text(0.5, 0.5, f"绘图错误: {str(e)}", ha='center', va='center', transform=ax.transAxes)
+            self.canvas.draw()
 
     def apply_filter(self, data: np.ndarray, fs: float) -> np.ndarray:
         """应用实时滤波"""
@@ -892,12 +1077,12 @@ class SignalView(tk.Frame):
                 Q = 30
                 b, a = scipy.signal.iirnotch(notch, Q, fs)
                 filtered = scipy.signal.filtfilt(b, a, filtered, axis=1)
-        except:
-            pass
+        except Exception as e:
+            print(f"滤波错误: {e}")
 
         return filtered
 
-    # ========== 现有的事件处理方法 ==========
+    # ========== 事件处理方法 ==========
 
     def on_filter_toggled(self):
         """滤波开关"""
