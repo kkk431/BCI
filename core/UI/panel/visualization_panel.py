@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
 visualization_panel.py
-可视化集成面板 - 纯图片按钮 + 透明文本版本
+可视化集成面板 - 严格按照设计稿1440×1024绝对坐标布局
+包含导航按钮选中/未选中状态切换
 """
 import sys
 from pathlib import Path
 
 # 将项目根目录动态添加到 sys.path
 start_path = Path(__file__).resolve().parent
-for parent in [start_path] + list(start_path.parents):
-    if parent.name == 'core':
-        project_root = parent.parent
+current_path = start_path
+for path in [current_path] + list(current_path.parents):
+    if path.name == 'core':
+        project_root = path.parent
         if str(project_root) not in sys.path:
             sys.path.insert(0, str(project_root))
         break
@@ -32,193 +34,298 @@ from core.io.data_io import DataLoader
 
 try:
     from PIL import Image, ImageTk
+
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
     print("警告: PIL 未安装，无法加载 PNG 图片，请安装 Pillow 库。")
 
 
-class ModernVisualizationPanel(ttk.Frame):
-    """
-    可视化集成面板 - 纯图片按钮 + 透明文本
-    """
-
+class NeuroPioneerPanel(ttk.Frame):
     def __init__(self, parent, data_dict=None, file_path=None, **kwargs):
         super().__init__(parent, **kwargs)
         self.parent = parent
         self.data_dict = data_dict
         self.file_path = file_path
         self.data_loader = DataLoader()
-        self.current_views = {}
-        self.qt_app = None
-
-        # 图片资源根目录
-        self.resource_dir = project_root / "core" / "UI" / "UI_resource" / "virtualization_panel_resource"
-
-        # 存储图片引用
-        self.images = {}
-
-        # 文件路径变量（用于更新显示）
+        self.images = {}  # 保持图片引用
         self.file_path_var = tk.StringVar()
 
-        # 设置UI
+        # 资源目录
+        self.resource_dir = project_root / "core" / "UI" / "UI_resource" / "Virtualization_Panel"
+        self.navigation_dir = project_root / "core" / "UI" / "UI_resource" / "Navigation"
+        self.buttons_function_dir = self.resource_dir / "Buttons" / "Function"
+        self.buttons_loading_dir = self.resource_dir / "Buttons" / "Data_Loading"
+
+        # 导航按钮目录
+        self.nav_buttons_unselected_dir = self.navigation_dir / "Buttons" / "Unselected"
+        self.nav_buttons_selected_dir = self.navigation_dir / "Buttons" / "Selected"
+
+        # 初始化 UI
         self.setup_ui()
 
         if file_path and not data_dict:
             self.load_file(file_path)
 
     def setup_ui(self):
-        """创建纯 Canvas 界面，所有元素均为图像或文本"""
-        # 主 Canvas
-        self.canvas = tk.Canvas(self, highlightthickness=0)
+        """初始化UI - 直接使用设计稿绝对坐标 (1440×1024)"""
+        # Canvas 直接设为设计稿尺寸
+        self.canvas = tk.Canvas(self, width=1440, height=1024, highlightthickness=0, bg="#FFFFFF")
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        # 加载背景图并获取尺寸
-        self._load_and_place_background()
+        # ============ 1. 左侧导航区 ============
+        # 导航背景 - left:9, top:9, width:270, height:1006
+        nav_bg = self._load_image(self.navigation_dir, "Background.png", (270, 1006))
+        if nav_bg:
+            self.images["nav_bg"] = nav_bg
+            self.canvas.create_image(9, 9, image=nav_bg, anchor="nw")
 
-        # 放置文件地址显示框（背景图）
-        self._place_file_address_box()
+        # 当前选中的导航按钮（默认为"可视化"）
+        self.current_nav_button = "virtualization"
 
-        # 放置四个控制按钮（纯图片，无灰色背景）
-        self._place_control_buttons()
+        # 导航按钮定义
+        nav_buttons = [
+            ("Home_Button.png", 39, 231, self.home, "home"),
+            ("Preprocessing_Button.png", 39, 323, self.preprocessing, "preprocessing"),
+            ("Feature_Extraction_Button.png", 39, 415, self.feature_extraction, "feature_extraction"),
+            ("Statistical_Analysis_Button.png", 39, 507, self.statistical_analysis, "statistical_analysis"),
+            ("Virtualization_Button.png", 39, 599, self.virtualization, "virtualization"),
+        ]
 
-        # 放置数据信息显示框（背景图）及内部文本
-        self._place_info_box()
+        # 存储按钮ID和对应信息的字典
+        self.nav_button_ids = {}
 
-        # 放置六个功能模块按钮（纯图片）
-        self._place_function_buttons()
+        for filename, x, y, command, button_id in nav_buttons:
+            # 默认使用未选中状态的图片
+            btn = self._load_image(self.nav_buttons_unselected_dir, filename, (213, 62))
+            if btn:
+                key = f"nav_{filename}"
+                self.images[key] = btn
+                img_id = self.canvas.create_image(x, y, image=btn, anchor="nw")
 
-        # 初始化显示
+                # 存储按钮信息
+                self.nav_button_ids[img_id] = {
+                    "id": button_id,
+                    "command": command,
+                    "x": x,
+                    "y": y,
+                    "filename": filename
+                }
+
+                # 绑定点击事件
+                self.canvas.tag_bind(img_id, "<Button-1>", lambda e, iid=img_id: self.on_nav_button_click(iid))
+
+        # 设置默认选中"可视化"按钮
+        self.highlight_nav_button("virtualization")
+
+        # ============ 2. 顶部文件选择区 ============
+        # 文件选择背景 - left:298, top:9, width:1134, height:201
+        file_bg = self._load_image(self.resource_dir, "File_Selection_Background.png", (1134, 201))
+        if file_bg:
+            self.images["file_bg"] = file_bg
+            self.canvas.create_image(298, 9, image=file_bg, anchor="nw")
+
+        # 地址栏 - left:510, top:33, width:889, height:55
+        addr_bar = self._load_image(self.resource_dir, "File_Address_Bar.png", (889, 55))
+        if addr_bar:
+            self.images["addr_bar"] = addr_bar
+            self.canvas.create_image(510, 33, image=addr_bar, anchor="nw")
+
+        # 真实Entry（放在地址栏上）
+        self.path_entry = tk.Entry(
+            self,
+            textvariable=self.file_path_var,
+            font=("微软雅黑", 11),
+            bd=0,
+            relief=tk.FLAT,
+            state="readonly",
+            readonlybackground="white"
+        )
+        self.canvas.create_window(
+            510 + 889 // 2, 33 + 55 // 2,
+            window=self.path_entry,
+            width=849,
+            height=45
+        )
+
+        # ============ 3. 顶部四个操作按钮 ============
+        top_buttons = [
+            ("browse_button.png", 329, 120, self.browse_file),
+            ("load_button.png", 576, 120, self.load_current_file),
+            ("demonstration_button.png", 823, 120, self.load_demo_data),
+            ("reset_button.png", 1070, 120, self.reset_data),
+        ]
+
+        for filename, x, y, command in top_buttons:
+            btn_img = self._load_image(self.buttons_loading_dir, filename, (211, 55))
+            if btn_img:
+                btn = tk.Button(
+                    self,
+                    image=btn_img,
+                    bd=0,
+                    cursor="hand2",
+                    command=command
+                )
+                btn.image = btn_img
+                self.canvas.create_window(
+                    x + 211 // 2,
+                    y + 55 // 2,
+                    window=btn,
+                    width=211,
+                    height=55
+                )
+
+        # ============ 4. 功能区背景 ============
+        func_bg = self._load_image(self.resource_dir, "Function_Selection.png", (516, 775))
+        if func_bg:
+            self.images["func_bg"] = func_bg
+            self.canvas.create_image(298, 240, image=func_bg, anchor="nw")
+
+        # ============ 5. 六个功能卡片 ============
+        function_cards = [
+            ("waveform_button.png", self.open_signal_view, 312, 331),
+            ("analysis_button.png", self.open_stats_view, 559, 331),
+            ("barchart_button.png", self.open_bar_view, 312, 557),
+            ("time_frequency_button.png", self.open_time_frequency, 559, 557),
+            ("topographic_map_button.png", self.open_topography, 312, 783),
+            ("feature_map_button.png", self.open_feature_view, 559, 783),
+        ]
+
+        for filename, command, left, top in function_cards:
+            card_img = self._load_image(self.buttons_function_dir, filename, (222, 205))
+            if card_img:
+                key = f"card_{filename}"
+                self.images[key] = card_img
+                img_id = self.canvas.create_image(left, top, image=card_img, anchor="nw")
+                self.canvas.tag_bind(img_id, "<Button-1>", lambda e, c=command: c())
+
+        # ============ 6. 右侧数据信息面板 ============
+        info_img = self._load_image(self.resource_dir, "Data_Information.png", (583, 451))
+        if info_img:
+            self.images["info_bg"] = info_img
+            self.canvas.create_image(837, 240, image=info_img, anchor="nw")
+
+        # 数据信息内容（动态更新）
+        self.info_text_id = self.canvas.create_text(
+            837 + 583 // 2,
+            240 + 451 // 2,
+            text="请加载数据文件或使用演示数据",
+            width=583 - 80,
+            font=("微软雅黑", 12),
+            fill="#333333"
+        )
+
+        # ============ 7. 右下品牌区 ============
+        # 智融脑机 - left:896, top:754, width:502, height:133
+        znrj = self._load_image(self.resource_dir, "znrj.png", (502, 133))
+        if znrj:
+            self.images["znrj"] = znrj
+            self.canvas.create_image(896, 754, image=znrj, anchor="nw")
+
+        # dmxfnd - left:996, top:870, width:235, height:56
+        dmxfnd = self._load_image(self.resource_dir, "dmxfnd.png", (235, 56))
+        if dmxfnd:
+            self.images["dmxfnd"] = dmxfnd
+            self.canvas.create_image(996, 870, image=dmxfnd, anchor="nw")
+
+        # mtbci - left:1203, top:884, width:209, height:46
+        mtbci = self._load_image(self.resource_dir, "mtbci.png", (209, 46))
+        if mtbci:
+            self.images["mtbci"] = mtbci
+            self.canvas.create_image(1203, 884, image=mtbci, anchor="nw")
+
+        # 初次刷新信息
         self.update_file_info()
 
-    def _load_image(self, filename):
-        """加载图片并返回 PhotoImage 对象，若失败则返回 None"""
+    def on_nav_button_click(self, img_id):
+        """导航按钮点击事件"""
+        if img_id in self.nav_button_ids:
+            button_info = self.nav_button_ids[img_id]
+            button_id = button_info["id"]
+
+            # 高亮当前按钮
+            self.highlight_nav_button(button_id)
+
+            # 执行对应的命令
+            button_info["command"]()
+
+    def highlight_nav_button(self, button_id):
+        """高亮指定的导航按钮"""
+        # 按钮ID和文件名的对应关系
+        button_files = {
+            "home": "Home_Button.png",
+            "preprocessing": "Preprocessing_Button.png",
+            "feature_extraction": "Feature_Extraction_Button.png",
+            "statistical_analysis": "Statistical_Analysis_Button.png",
+            "virtualization": "Virtualization_Button.png",
+        }
+
+        # 遍历所有按钮
+        for img_id, info in self.nav_button_ids.items():
+            if info["id"] == button_id:
+                # 当前选中的按钮：使用选中状态的图片
+                selected_img = self._load_image(
+                    self.nav_buttons_selected_dir,
+                    button_files[button_id],
+                    (213, 62)
+                )
+                if selected_img:
+                    key = f"nav_selected_{button_id}"
+                    self.images[key] = selected_img
+                    self.canvas.itemconfig(img_id, image=selected_img)
+            else:
+                # 未选中的按钮：使用未选中状态的图片
+                unselected_img = self._load_image(
+                    self.nav_buttons_unselected_dir,
+                    button_files[info["id"]],
+                    (213, 62)
+                )
+                if unselected_img:
+                    key = f"nav_unselected_{info['id']}"
+                    self.images[key] = unselected_img
+                    self.canvas.itemconfig(img_id, image=unselected_img)
+
+    def _load_image(self, directory, filename, size=None):
+        """加载图片并缩放到指定尺寸"""
         if not PIL_AVAILABLE:
             return None
-        img_path = self.resource_dir / filename
+
+        img_path = Path(directory) / filename
         if not img_path.exists():
-            print(f"图片不存在: {img_path}")
+            print(f"⚠️ 图片不存在: {img_path}")
             return None
+
         try:
-            pil_img = Image.open(img_path)
-            return ImageTk.PhotoImage(pil_img)
+            img = Image.open(img_path)
+            if size:
+                img = img.resize(size, Image.Resampling.LANCZOS)
+            return ImageTk.PhotoImage(img)
         except Exception as e:
-            print(f"加载图片失败 {filename}: {e}")
+            print(f"❌ 加载图片失败 {filename}: {e}")
             return None
 
-    def _load_and_place_background(self):
-        """加载并放置背景图，记录尺寸"""
-        bg_img = self._load_image("virtualization_panel_background.png")
-        if bg_img:
-            self.images["background"] = bg_img
-            self.bg_width = bg_img.width()
-            self.bg_height = bg_img.height()
-            self.canvas.create_image(0, 0, image=bg_img, anchor="nw", tags="background")
-            # 设置 Canvas 滚动区域为背景图大小（如果需要滚动，但这里我们让窗口匹配背景）
-            self.canvas.config(scrollregion=(0, 0, self.bg_width, self.bg_height))
-        else:
-            # 降级：使用空白画布
-            self.bg_width, self.bg_height = 1200, 1000
+    # ============ 导航按钮功能 ============
+    def home(self):
+        print("首页")
+        messagebox.showinfo("提示", "首页功能待实现")
 
-    def _place_file_address_box(self):
-        """放置文件地址显示框图片及透明路径文本"""
-        box_img = self._load_image("file_address_display_box.png")
-        if box_img:
-            self.images["file_address_box"] = box_img
-            self.canvas.create_image(200, 190, image=box_img, anchor="nw", tags="file_address_box")
+    def preprocessing(self):
+        print("预处理")
+        messagebox.showinfo("提示", "预处理功能待实现")
 
-            # 计算文本显示位置（图片内适当偏移，使文字居中）
-            # 假设图片内部有效区域从 (10,10) 到 (width-10, height-10)
-            # 我们根据实际图片微调：这里以图片宽度 400，高度 40 为例，您可以手动调整
-            # 更好的方法是读取图片后获取尺寸并计算
-            box_width = box_img.width()
-            box_height = box_img.height()
-            text_x = 200 + box_width // 2   # 水平居中
-            text_y = 190 + box_height // 2  # 垂直居中
+    def feature_extraction(self):
+        print("特征提取")
+        messagebox.showinfo("提示", "特征提取功能待实现")
 
-            # 创建透明文本显示文件路径
-            self.file_path_text_id = self.canvas.create_text(
-                text_x, text_y,
-                text="",
-                font=('微软雅黑', 16,"bold"),
-                fill="#000000",      # 文字颜色
-                anchor='center',
-                tags="file_path_text"
-            )
-            # 点击文本同样打开文件选择（方便操作）
-            self.canvas.tag_bind("file_path_text", "<Button-1>", lambda e: self.browse_file())
-        else:
-            # 备用：直接显示普通文本
-            self.file_path_text_id = self.canvas.create_text(
-                400, 210, text="", font=('微软雅黑', 16,'bold'), fill='black', anchor='center'
-            )
+    def statistical_analysis(self):
+        print("数据分析")
+        messagebox.showinfo("提示", "数据分析功能待实现")
 
-    def _place_control_buttons(self):
-        """放置四个控制按钮（纯图片，绑定点击）"""
-        # 按钮坐标（新坐标）
-        btn_specs = [
-            ("browse_button.png",       70, 250, self.browse_file),
-            ("load_button.png",        274, 250, self.load_current_file),
-            ("demonstration_button.png",478, 250, self.load_demo_data),
-            ("reset_button.png",        682, 250, self.reset_data),
-        ]
-        for fname, x, y, cmd in btn_specs:
-            img = self._load_image(fname)
-            if img:
-                self.images[f"ctrl_{fname}"] = img
-                # 创建图片项
-                item_id = self.canvas.create_image(x, y, image=img, anchor="nw", tags=("ctrl_btn", fname))
-                # 绑定点击事件
-                self.canvas.tag_bind(item_id, "<Button-1>", lambda e, c=cmd: c())
+    def virtualization(self):
+        print("可视化")
+        messagebox.showinfo("提示", "可视化功能待实现")
 
-    def _place_info_box(self):
-        """放置数据信息显示框图片及内部文本"""
-        info_img = self._load_image("data_information_display_box.png")
-        if info_img:
-            self.images["info_box"] = info_img
-            self.canvas.create_image(50, 320, image=info_img, anchor="nw", tags="info_box")
-
-            # 计算文本居中位置
-            img_width = info_img.width()
-            img_height = info_img.height()
-            center_x = 50 + img_width // 2
-            center_y = 320 + img_height // 2
-
-            # 创建文本项（多行文本）
-            self.info_text_id = self.canvas.create_text(
-                center_x, center_y,
-                text="",
-                font=('微软雅黑',16,'bold'),
-                fill="#000000",
-                width=img_width - 40,      # 文本换行宽度，留出边距
-                anchor='center',
-                justify='left',
-                tags="info_text"
-            )
-        else:
-            # 备用
-            self.info_text_id = self.canvas.create_text(
-                300, 400, text="", font=('微软雅黑',16,'bold'), fill='black', anchor='center'
-            )
-
-    def _place_function_buttons(self):
-        """放置六个功能模块按钮（纯图片）"""
-        btn_specs = [
-            ("waveform_button.png",       80, 720, self.open_signal_view),
-            ("analysis_button.png",      595, 720, self.open_stats_view),
-            ("barchart_button.png",     1110, 720, self.open_bar_view),
-            ("time_frequency_button.png", 80, 900, self.open_time_frequency),
-            ("topographic_map_button.png",595, 900, self.open_topography),
-            ("feature_map_button.png",   1110, 900, self.open_feature_view),
-        ]
-        for fname, x, y, cmd in btn_specs:
-            img = self._load_image(fname)
-            if img:
-                self.images[f"func_{fname}"] = img
-                item_id = self.canvas.create_image(x, y, image=img, anchor="nw", tags=("func_btn", fname))
-                self.canvas.tag_bind(item_id, "<Button-1>", lambda e, c=cmd: c())
-
-    # ========== 文件操作方法 ==========
+    # ============ 文件/数据操作 ============
     def browse_file(self):
         file_path = filedialog.askopenfilename(
             title="选择数据文件",
@@ -232,7 +339,7 @@ class ModernVisualizationPanel(ttk.Frame):
         )
         if file_path:
             self.file_path_var.set(file_path)
-            self.update_file_info()  # 更新显示
+            self.update_file_info()
 
     def load_current_file(self):
         file_path = self.file_path_var.get().strip()
@@ -262,27 +369,21 @@ class ModernVisualizationPanel(ttk.Frame):
         fs = 1000
         t = np.arange(0, 30, 1 / fs)
         self.data_dict = {
-            "meta": {
-                "subject_id": "demo", "session_id": "session1", "task": "rest",
-                "modality": ["EEG", "fNIRS"]
-            },
+            "meta": {"subject_id": "demo", "session_id": "session1", "task": "rest", "modality": ["EEG", "fNIRS"]},
             "signal": {
                 "EEG": {
                     "data": np.array([np.sin(2 * np.pi * 10 * t) + 0.5 * np.random.randn(len(t)) for _ in range(8)]),
-                    "sampling_rate": fs, "channel_names": [f"EEG_{i}" for i in range(8)], "unit": "uV"
+                    "sampling_rate": fs,
+                    "channel_names": [f"EEG_{i}" for i in range(8)],
+                    "unit": "uV"
                 },
                 "fNIRS": {
                     "data": np.array([np.sin(2 * np.pi * 0.1 * t) + 0.1 * np.random.randn(len(t)) for _ in range(4)]),
-                    "sampling_rate": fs, "channel_names": [f"NIRS_{i}" for i in range(4)], "unit": "uM"
+                    "sampling_rate": fs,
+                    "channel_names": [f"NIRS_{i}" for i in range(4)],
+                    "unit": "uM"
                 }
             },
-            "feature": {
-                "type": "eeg_psd", "ch_names": [f"EEG_{i}" for i in range(8)],
-                "feature": {
-                    "Delta": np.random.rand(8), "Theta": np.random.rand(8),
-                    "Alpha": np.random.rand(8), "Beta": np.random.rand(8), "Gamma": np.random.rand(8)
-                }
-            }
         }
         self.file_path = None
         self.file_path_var.set("")
@@ -296,14 +397,7 @@ class ModernVisualizationPanel(ttk.Frame):
         self.update_file_info()
 
     def update_file_info(self):
-        """更新文件地址文本和数据信息文本"""
-        # 更新文件地址显示
-        self.canvas.itemconfig(self.file_path_text_id, text=self.file_path_var.get())
-
-        # 更新数据信息显示
-        if not hasattr(self, 'info_text_id'):
-            return
-
+        """更新文件信息显示"""
         if not self.data_dict:
             info = "请加载数据文件或使用演示数据"
         else:
@@ -311,19 +405,23 @@ class ModernVisualizationPanel(ttk.Frame):
             subject = meta.get("subject_id", "unknown")
             task = meta.get("task", "unknown")
             modalities = meta.get("modality", [])
-            info = f"🧑 被试: {subject}\n📋 任务: {task}\n🔬 模态: {', '.join(modalities)}\n"
+            lines = [f"被试: {subject}", f"任务: {task}", f"模态: {', '.join(modalities)}", ""]
 
-            signal_dict = self.data_dict.get("signal", {})
-            for mod, sig in signal_dict.items():
+            for mod, sig in self.data_dict.get("signal", {}).items():
                 if isinstance(sig, dict) and 'data' in sig:
                     data = sig['data']
-                    n_ch = data.shape[0] if hasattr(data, 'shape') else 1
+                    n_ch = data.shape[0] if hasattr(data, 'shape') and len(data.shape) > 1 else 1
                     fs = sig.get('sampling_rate', '?')
-                    info += f"📊 {mod}: {n_ch}通道, {fs}Hz\n"
+                    lines.append(f"{mod}: {n_ch}通道, {fs}Hz")
 
-        self.canvas.itemconfig(self.info_text_id, text=info)
+            info = "\n".join(lines)
 
-    # ========== 功能模块打开方法（保持不变） ==========
+        try:
+            self.canvas.itemconfig(self.info_text_id, text=info)
+        except Exception:
+            pass
+
+    # ============ 打开各视图 ============
     def open_signal_view(self):
         if not self.data_dict:
             messagebox.showwarning("警告", "请先加载数据")
@@ -350,20 +448,10 @@ class ModernVisualizationPanel(ttk.Frame):
             window = tk.Toplevel(self)
             window.title("统计分析视图")
             window.geometry("1100x800")
-
-            # 直接传递整个数据字典
             view = StatsView(window, data_dict=self.data_dict)
             view.pack(fill=tk.BOTH, expand=True)
-
-            # 添加调试信息
-            print("打开统计视图:")
-            print(f"data_dict keys: {list(self.data_dict.keys())}")
-            if "processed" in self.data_dict:
-                print(f"processed keys: {list(self.data_dict['processed'].keys())}")
         except Exception as e:
             messagebox.showerror("错误", f"打开统计视图失败:\n{str(e)}")
-            import traceback
-            traceback.print_exc()
 
     def open_bar_view(self):
         if not self.data_dict:
@@ -383,20 +471,8 @@ class ModernVisualizationPanel(ttk.Frame):
             messagebox.showwarning("警告", "请先加载数据")
             return
         try:
-            from core.visualizer.time_frequency_view import short_time_Fourier_transform
-            signal_dict = self.data_dict.get("signal", {})
-            if not signal_dict:
-                messagebox.showwarning("警告", "数据中没有信号")
-                return
-            modality = list(signal_dict.keys())[0]
-            signal_info = signal_dict[modality]
-            raw_data = signal_info.get('data')
-            fs = signal_info.get('sampling_rate', 1000)
-            ch_names = signal_info.get('channel_names', [])
-            stft_input = {'data': raw_data, 'srate': fs, 'ch_names': ch_names}
-            stft_result = short_time_Fourier_transform(stft_input)
             self.ensure_pyqt_app()
-            self.tf_window = TimeFrequencyView(stft_result)
+            self.tf_window = TimeFrequencyView(self.data_dict, modality=None)
             self.tf_window.show()
         except Exception as e:
             messagebox.showerror("错误", f"打开时频分析视图失败:\n{str(e)}")
@@ -406,29 +482,11 @@ class ModernVisualizationPanel(ttk.Frame):
             messagebox.showwarning("警告", "请先加载数据")
             return
         try:
-            feature_data = self.data_dict.get("feature")
-            if not feature_data:
-                self.prepare_topography_data()
-                feature_data = self.data_dict.get("feature")
-            if not feature_data:
-                messagebox.showwarning("警告", "无法准备地形图数据")
-                return
             self.ensure_pyqt_app()
-            self.topo_window = TopographyView(feature_data)
+            self.topo_window = TopographyView(self.data_dict, modality=None)
             self.topo_window.show()
         except Exception as e:
             messagebox.showerror("错误", f"打开地形图视图失败:\n{str(e)}")
-
-    def prepare_topography_data(self):
-        standard_channels = ['Fz', 'Cz', 'Pz', 'Oz', 'F3', 'F4', 'C3', 'C4',
-                             'P3', 'P4', 'O1', 'O2', 'F7', 'F8', 'T7', 'T8']
-        self.data_dict["feature"] = {
-            'type': 'eeg_psd', 'ch_names': standard_channels[:10],
-            'feature': {
-                'Delta': np.random.rand(10), 'Theta': np.random.rand(10),
-                'Alpha': np.random.rand(10), 'Beta': np.random.rand(10), 'Gamma': np.random.rand(10)
-            }
-        }
 
     def open_feature_view(self):
         if not self.data_dict:
@@ -437,36 +495,25 @@ class ModernVisualizationPanel(ttk.Frame):
         try:
             from core.visualizer.feature_view import show_feature_view
             self.feature_window = show_feature_view(self, self.data_dict)
-
         except Exception as e:
             messagebox.showerror("错误", f"打开特征视图失败:\n{str(e)}")
-            import traceback
-            traceback.print_exc()
 
     def ensure_pyqt_app(self):
         try:
             from PyQt5.QtWidgets import QApplication
             if not QApplication.instance():
                 self.qt_app = QApplication(sys.argv)
-        except ImportError:
+        except Exception:
             pass
 
 
-# 测试代码
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("可视化面板测试 - 纯图片按钮 + 透明文本")
+    root.title("NeuroPioneer 可视化面板")
+    root.geometry("1440x1024")
+    root.resizable(False, False)
 
-    # 创建面板，但不立即 pack，先获取背景尺寸
-    panel = ModernVisualizationPanel(root)
-    # 如果有背景图片，设置窗口大小为背景尺寸
-    if hasattr(panel, 'bg_width') and hasattr(panel, 'bg_height'):
-        root.geometry(f"{panel.bg_width}x{panel.bg_height}")
-    else:
-        root.geometry("1300x1000")  # 降级尺寸
+    app = NeuroPioneerPanel(root)
+    app.pack(fill=tk.BOTH, expand=True)
 
-    panel.pack(fill=tk.BOTH, expand=True)
-
-    # 确保关闭窗口时退出程序
-    root.protocol("WM_DELETE_WINDOW", root.quit)
     root.mainloop()
