@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-特征可视化模块 - 最佳布局版本
+特征可视化模块 - 最佳布局版本（添加模态选择器）
 """
 
 import tkinter as tk
@@ -331,7 +331,7 @@ class TopomapCanvas(BaseCanvas):
 
         if is_relative:
             norm_data = (chan_data - chan_data.min(axis=1, keepdims=True)) / (
-                        chan_data.max(axis=1, keepdims=True) - chan_data.min(axis=1, keepdims=True) + 1e-10)
+                    chan_data.max(axis=1, keepdims=True) - chan_data.min(axis=1, keepdims=True) + 1e-10)
             norm_data = norm_data * 2 - 1
         else:
             norm_data = (chan_data - chan_data.min()) / (chan_data.max() - chan_data.min() + 1e-10)
@@ -368,9 +368,9 @@ class TopomapCanvas(BaseCanvas):
 
 # ---------- 主窗口 ----------
 class FeatureView(tk.Toplevel):
-    """特征可视化主窗口 - 最佳布局"""
+    """特征可视化主窗口 - 最佳布局（添加模态选择器）"""
 
-    def __init__(self, parent, data, channels, features):
+    def __init__(self, parent, data, channels, features, available_modalities=None, current_modality=None):
         super().__init__(parent)
         self.parent = parent
         self.data = data
@@ -379,6 +379,11 @@ class FeatureView(tk.Toplevel):
         self.settings = {"width": 10, "height": 7, "title": "", "xlabel": "", "ylabel": ""}
         self.current_canvas = None
         self.info = None
+
+        # ===== 添加模态相关变量 =====
+        self.available_modalities = available_modalities if available_modalities else []
+        self.current_modality = current_modality
+        # ===========================
 
         self.title("特征可视化")
         self.geometry("1400x850")
@@ -394,8 +399,8 @@ class FeatureView(tk.Toplevel):
         self._create_menu()
         self._create_layout()
 
-       # self.transient(parent)
-       # self.grab_set()
+    # self.transient(parent)
+    # self.grab_set()
 
     def _create_menu(self):
         """创建菜单栏"""
@@ -450,26 +455,56 @@ class FeatureView(tk.Toplevel):
         self._create_right_panel(right_frame)
 
     def _create_left_panel(self, parent):
-        """创建左侧控制面板 - 优化布局填满整个面板"""
+        """创建左侧控制面板 - 优化布局填满整个面板（添加模态选择器）"""
 
         # 使用网格布局让各部分按比例分配高度
-        parent.grid_rowconfigure(0, weight=0)  # 标题
-        parent.grid_rowconfigure(1, weight=2)  # 通道选择
-        parent.grid_rowconfigure(2, weight=3)  # 特征选择
-        parent.grid_rowconfigure(3, weight=0)  # 绘图类型
-        parent.grid_rowconfigure(4, weight=0)  # 地形图选项
-        parent.grid_rowconfigure(5, weight=0)  # 操作按钮
+        # 根据是否有模态选择器动态调整行索引
+        has_modality = len(self.available_modalities) > 0
+
+        if has_modality:
+            # 有模态选择器：模态(0) + 标题(1) + 通道(2) + 特征(3) + 类型(4) + 地形图(5) + 按钮(6)
+            parent.grid_rowconfigure(0, weight=0)  # 模态
+            parent.grid_rowconfigure(1, weight=0)  # 标题
+            parent.grid_rowconfigure(2, weight=2)  # 通道选择
+            parent.grid_rowconfigure(3, weight=3)  # 特征选择
+            parent.grid_rowconfigure(4, weight=0)  # 绘图类型
+            parent.grid_rowconfigure(5, weight=0)  # 地形图选项
+            parent.grid_rowconfigure(6, weight=0)  # 操作按钮
+        else:
+            # 无模态选择器：标题(0) + 通道(1) + 特征(2) + 类型(3) + 地形图(4) + 按钮(5)
+            parent.grid_rowconfigure(0, weight=0)  # 标题
+            parent.grid_rowconfigure(1, weight=2)  # 通道选择
+            parent.grid_rowconfigure(2, weight=3)  # 特征选择
+            parent.grid_rowconfigure(3, weight=0)  # 绘图类型
+            parent.grid_rowconfigure(4, weight=0)  # 地形图选项
+            parent.grid_rowconfigure(5, weight=0)  # 操作按钮
+
         parent.grid_columnconfigure(0, weight=1)
+
+        row_offset = 0
+
+        # ===== 添加模态选择器（如果有）=====
+        if has_modality:
+            modality_frame = ttk.LabelFrame(parent, text="模态选择", padding=2)
+            modality_frame.grid(row=0, column=0, sticky="ew", padx=1, pady=1)
+
+            self.modality_var = tk.StringVar(value=self.current_modality if self.current_modality else "")
+            modality_combo = ttk.Combobox(modality_frame, textvariable=self.modality_var,
+                                          values=self.available_modalities, state="readonly")
+            modality_combo.pack(fill=tk.X, padx=2, pady=2)
+            modality_combo.bind('<<ComboboxSelected>>', self.on_modality_changed)
+
+            row_offset = 1
 
         # ===== 标题 =====
         title_label = tk.Label(parent, text="控制面板",
                                font=('微软雅黑', 14, 'bold'),
                                fg='#2c3e50', bg='#f5f5f5')
-        title_label.grid(row=0, column=0, sticky="ew", pady=(5, 2))
+        title_label.grid(row=0 + row_offset, column=0, sticky="ew", pady=(5, 2))
 
         # ===== 通道选择区域 =====
         ch_frame = ttk.LabelFrame(parent, text="通道选择", padding=2)
-        ch_frame.grid(row=1, column=0, sticky="nsew", padx=1, pady=1)
+        ch_frame.grid(row=1 + row_offset, column=0, sticky="nsew", padx=1, pady=1)
 
         ch_frame.grid_rowconfigure(0, weight=1)
         ch_frame.grid_columnconfigure(0, weight=1)
@@ -504,7 +539,7 @@ class FeatureView(tk.Toplevel):
 
         # ===== 特征选择区域 =====
         feat_frame = ttk.LabelFrame(parent, text="特征选择", padding=2)
-        feat_frame.grid(row=2, column=0, sticky="nsew", padx=1, pady=1)
+        feat_frame.grid(row=2 + row_offset, column=0, sticky="nsew", padx=1, pady=1)
 
         feat_frame.grid_rowconfigure(0, weight=1)
         feat_frame.grid_columnconfigure(0, weight=1)
@@ -539,7 +574,7 @@ class FeatureView(tk.Toplevel):
 
         # ===== 绘图类型区域 =====
         type_frame = ttk.LabelFrame(parent, text="绘图类型", padding=2)
-        type_frame.grid(row=3, column=0, sticky="ew", padx=1, pady=1)
+        type_frame.grid(row=3 + row_offset, column=0, sticky="ew", padx=1, pady=1)
 
         self.plot_type = tk.StringVar(value="曲线图")
 
@@ -565,7 +600,7 @@ class FeatureView(tk.Toplevel):
 
         # ===== 地形图选项区域 =====
         self.topo_frame = ttk.LabelFrame(parent, text="地形图设置", padding=2)
-        self.topo_frame.grid(row=4, column=0, sticky="ew", padx=1, pady=1)
+        self.topo_frame.grid(row=4 + row_offset, column=0, sticky="ew", padx=1, pady=1)
 
         # 信息文件选择
         info_row = ttk.Frame(self.topo_frame)
@@ -591,7 +626,7 @@ class FeatureView(tk.Toplevel):
 
         # ===== 操作按钮区域 =====
         btn_frame = ttk.Frame(parent)
-        btn_frame.grid(row=5, column=0, sticky="ew", padx=1, pady=2)
+        btn_frame.grid(row=5 + row_offset, column=0, sticky="ew", padx=1, pady=2)
 
         # 生成图形按钮 - 最突出
         generate_btn = tk.Button(btn_frame, text="生成图形",
@@ -709,6 +744,17 @@ class FeatureView(tk.Toplevel):
             'ax': self.ax,
             'get_widget': lambda: self.canvas.get_tk_widget()
         })
+
+    # ========== 模态切换方法 ==========
+    def on_modality_changed(self, event=None):
+        """模态切换 - 只更新显示，不改变数据"""
+        new_modality = self.modality_var.get()
+        if new_modality != self.current_modality:
+            self.current_modality = new_modality
+            self.title(f"特征可视化 - {self.current_modality}")
+            # 可以在这里添加提示信息
+            print(f"切换到模态: {new_modality}")
+            # 不改变数据，只更新标题
 
     # ========== 辅助方法 ==========
     def select_all_channels(self):
@@ -893,9 +939,14 @@ def show_feature_view(parent, data_dict):
 
         # 获取通道列表
         channels = []
+        available_modalities = []
+        current_modality = None
+
         if 'signal' in data_dict and data_dict['signal']:
-            first_mod = list(data_dict['signal'].keys())[0]
-            channels = data_dict['signal'][first_mod].get('channel_names', [])
+            available_modalities = list(data_dict['signal'].keys())
+            if available_modalities:
+                current_modality = available_modalities[0]
+                channels = data_dict['signal'][current_modality].get('channel_names', [])
 
         if not channels:
             messagebox.showerror("错误", "没有通道信息")
@@ -929,8 +980,9 @@ def show_feature_view(parent, data_dict):
             'feature': converted_features
         }
 
-        # 创建视图
-        view = FeatureView(parent, converted_data, channels, feature_names)
+        # 创建视图（传递模态信息）
+        view = FeatureView(parent, converted_data, channels, feature_names,
+                           available_modalities, current_modality)
         return view
 
     except Exception as e:
@@ -938,3 +990,36 @@ def show_feature_view(parent, data_dict):
         import traceback
         traceback.print_exc()
         return None
+
+
+if __name__ == "__main__":
+    import sys
+
+    root = tk.Tk()
+    root.title("特征视图测试")
+    root.geometry("800x600")
+
+    # 测试数据
+    test_data = {
+        "signal": {
+            "EEG": {
+                "channel_names": [f"EEG_{i}" for i in range(16)]
+            },
+            "EMG": {
+                "channel_names": [f"EMG_{i}" for i in range(8)]
+            }
+        },
+        "feature": {
+            'ch_names': [f"EEG_{i}" for i in range(16)],
+            'feature': {
+                'Delta': np.random.rand(16).tolist(),
+                'Theta': np.random.rand(16).tolist(),
+                'Alpha': np.random.rand(16).tolist(),
+                'Beta': np.random.rand(16).tolist(),
+                'Gamma': np.random.rand(16).tolist()
+            }
+        }
+    }
+
+    view = show_feature_view(root, test_data)
+    root.mainloop()
