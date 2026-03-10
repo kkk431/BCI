@@ -74,10 +74,11 @@ except ImportError as e:
 BG_COLOR = "#ffffff"  # 为匹配UI图片内部颜色，统一为白色
 FG_COLOR = "#333333"
 
-FONT_TITLE = ("微软雅黑", 18, "bold")
-FONT_HEADING = ("微软雅黑", 14, "bold")
-FONT_NORMAL = ("微软雅黑", 11)
-FONT_SMALL = ("微软雅黑", 10)
+# 更美观的字体定义（跨平台无衬线字体族）
+FONT_TITLE = ("Segoe UI", 18, "bold")      # 标题字体
+FONT_HEADING = ("Segoe UI", 14, "bold")    # 副标题字体
+FONT_NORMAL = ("Segoe UI", 11)             # 常规字体
+FONT_SMALL = ("Segoe UI", 10)              # 小号字体
 
 ALL_MODALITIES = ["EEG", "EMG", "ECG", "fNIRS"]
 
@@ -255,6 +256,9 @@ class PreprocessingApp(tk.Frame):
     def _load_all_images(self):
         """预加载UI图片，并存放到字典中防止被垃圾回收"""
         img_map = {
+            # 新增全局背景图片
+            "global_bg": "core/UI/UI_resource/Global_Background.png",
+
             "nav_bg": "core/UI/UI_resource/Navigation/Background.png",
             "nav_home_unsel": "core/UI/UI_resource/Navigation/Buttons/Unselected/Home_Button.png",
             "nav_prep_unsel": "core/UI/UI_resource/Navigation/Buttons/Unselected/Preprocessing_Button.png",
@@ -309,6 +313,10 @@ class PreprocessingApp(tk.Frame):
         self.canvas.pack(fill="both", expand=True)
 
         # ------------------- 绘制静态 UI 背景 -------------------
+        # 先绘制全局背景 (left:289, top:0, width:1151, height:1024)
+        self.canvas.create_image(289, 0, image=self.images["global_bg"], anchor="nw")
+
+        # 其他背景图片
         self.canvas.create_image(9, 9, image=self.images["nav_bg"], anchor="nw")
         self.canvas.create_image(297, 9, image=self.images["prep_bg"], anchor="nw")
         self.canvas.create_image(511, 31, image=self.images["file_bar"], anchor="nw")
@@ -353,33 +361,15 @@ class PreprocessingApp(tk.Frame):
             panel.place_forget()
 
         # ========== 3. 处理信息区域 ==========
-        # 改用类似全局设置的标签-数值对形式
+        # 使用普通 Frame，无滚动条；位置 x=318, y=825（比原820下移5像素），宽度900，高度280
         self.proc_frame = tk.Frame(self, bg=BG_COLOR)
-        self.proc_frame.place(x=318, y=820, width=1094, height=201)
+        self.proc_frame.place(x=318, y=825, width=900, height=280)
 
-        # 创建滚动区域
-        self.proc_canvas = tk.Canvas(self.proc_frame, borderwidth=0, highlightthickness=0, bg=BG_COLOR)
-        self.proc_scrollbar = ttk.Scrollbar(self.proc_frame, orient="vertical", command=self.proc_canvas.yview)
-        self.proc_scrollable = tk.Frame(self.proc_canvas, bg=BG_COLOR)
+        # 内部内容容器
+        self.proc_content = tk.Frame(self.proc_frame, bg=BG_COLOR)
+        self.proc_content.pack(fill="both", expand=True)
 
-        self.proc_scrollable.bind(
-            "<Configure>",
-            lambda e: self.proc_canvas.configure(scrollregion=self.proc_canvas.bbox("all"))
-        )
-
-        def _on_mousewheel(event):
-            self.proc_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        self.proc_canvas.bind('<Enter>', lambda e: self.proc_canvas.bind_all("<MouseWheel>", _on_mousewheel))
-        self.proc_canvas.bind('<Leave>', lambda e: self.proc_canvas.unbind_all("<MouseWheel>"))
-
-        self.proc_canvas.create_window((0, 0), window=self.proc_scrollable, anchor="nw")
-        self.proc_canvas.configure(yscrollcommand=self.proc_scrollbar.set)
-
-        self.proc_canvas.pack(side="left", fill="both", expand=True)
-        self.proc_scrollbar.pack(side="right", fill="y")
-
-        # 在 scrollable 中创建用于显示处理结果的标签行
+        # 在 content 中创建用于显示处理结果的标签行
         self._create_result_display()
 
     def _create_nav_buttons(self):
@@ -525,7 +515,7 @@ class PreprocessingApp(tk.Frame):
         return tab
 
     def _create_result_display(self):
-        """创建处理结果展示区域，采用标签-数值对形式"""
+        """创建处理结果展示区域，采用标签-数值对形式（无滚动条）"""
         # 预定义要显示的结果项
         result_items = [
             ("处理时间", "processing_time"),
@@ -535,13 +525,13 @@ class PreprocessingApp(tk.Frame):
             # 模态质量将在运行时动态添加
         ]
         # 使用grid布局，两列
-        self.proc_scrollable.columnconfigure(1, weight=1)
+        self.proc_content.columnconfigure(1, weight=1)
         row = 0
         for label_text, key in result_items:
-            lbl = ttk.Label(self.proc_scrollable, text=label_text + ":", font=FONT_NORMAL, background=BG_COLOR)
+            lbl = ttk.Label(self.proc_content, text=label_text + ":", font=FONT_NORMAL, background=BG_COLOR)
             lbl.grid(row=row, column=0, sticky="w", padx=10, pady=6)
             var = tk.StringVar(value="")
-            val_lbl = ttk.Label(self.proc_scrollable, textvariable=var, font=FONT_NORMAL, background=BG_COLOR)
+            val_lbl = ttk.Label(self.proc_content, textvariable=var, font=FONT_NORMAL, background=BG_COLOR)
             val_lbl.grid(row=row, column=1, sticky="w", padx=10, pady=6)
             self.result_vars[key] = var
             row += 1
@@ -569,7 +559,7 @@ class PreprocessingApp(tk.Frame):
         # 模态质量
         mod_quality = quality_report.get("modality_quality", {})
         # 删除之前动态添加的模态质量行（如果有）
-        for widget in self.proc_scrollable.grid_slaves():
+        for widget in self.proc_content.grid_slaves():
             if int(widget.grid_info()["row"]) >= len(self.result_vars):  # 基础行之后的是动态添加的
                 widget.destroy()
         self.mod_quality_vars.clear()
@@ -577,10 +567,10 @@ class PreprocessingApp(tk.Frame):
         # 重新添加
         row = len(self.result_vars)
         for mod, mq in mod_quality.items():
-            lbl = ttk.Label(self.proc_scrollable, text=f"{mod} 质量分数:", font=FONT_NORMAL, background=BG_COLOR)
+            lbl = ttk.Label(self.proc_content, text=f"{mod} 质量分数:", font=FONT_NORMAL, background=BG_COLOR)
             lbl.grid(row=row, column=0, sticky="w", padx=10, pady=6)
             var = tk.StringVar(value=f"{mq.get('quality_score', 0):.2f}")
-            val_lbl = ttk.Label(self.proc_scrollable, textvariable=var, font=FONT_NORMAL, background=BG_COLOR)
+            val_lbl = ttk.Label(self.proc_content, textvariable=var, font=FONT_NORMAL, background=BG_COLOR)
             val_lbl.grid(row=row, column=1, sticky="w", padx=10, pady=6)
             self.mod_quality_vars[mod] = var
             row += 1
@@ -704,7 +694,6 @@ class PreprocessingApp(tk.Frame):
             var.set("")
         for var in self.mod_quality_vars.values():
             var.set("")
-
         # 删除模态质量行（会在_update_result_display中重建）
 
         def background_task():
@@ -919,37 +908,37 @@ if __name__ == "__main__":
     # 通过 ttk Style 设置统一样式，避免出现底色突兀
     style = ttk.Style()
     style.theme_use("clam")
-
-    # 基础样式
+    
+    # 基础样式 - 使用新字体
     style.configure("TLabel", background=BG_COLOR, foreground=FG_COLOR, font=FONT_NORMAL)
     style.configure("TFrame", background=BG_COLOR)
     style.configure("TCheckbutton", background=BG_COLOR, font=FONT_NORMAL)
     style.configure("TEntry", font=FONT_NORMAL)
 
-    # 自定义 Combobox 样式
+    # 自定义 Combobox 样式 - 使用新字体
     style.configure("TCombobox",
-                    fieldbackground="#f0f0f0",  # 下拉框背景
-                    background="#f0f0f0",  # 按钮背景
-                    foreground=FG_COLOR,  # 文字颜色
-                    arrowcolor="#4f8080",  # 箭头颜色（深青色）
+                    fieldbackground="#f0f0f0",      # 下拉框背景
+                    background="#f0f0f0",            # 按钮背景
+                    foreground=FG_COLOR,              # 文字颜色
+                    arrowcolor="#4f8080",             # 箭头颜色（深青色）
                     borderwidth=1,
-                    relief="solid")
+                    relief="solid",
+                    font=FONT_NORMAL)                  # 设置字体
     style.map("TCombobox",
               fieldbackground=[("readonly", "#f0f0f0"), ("disabled", "#e0e0e0")],
               foreground=[("readonly", FG_COLOR)],
               arrowcolor=[("active", "#2a5a5a"), ("!active", "#4f8080")])
 
-    # 自定义 Scrollbar 样式
+    # 自定义 Scrollbar 样式（用于其他区域）
     style.configure("Vertical.TScrollbar",
-                    background="#f0f0f0",  # 滑块背景
-                    troughcolor="#e0e0e0",  # 滑槽背景
-                    bordercolor="#cccccc",  # 边框颜色
-                    arrowcolor="#4f8080",  # 箭头颜色
-                    width=16)  # 滑块宽度
+                    background="#f0f0f0",
+                    troughcolor="#e0e0e0",
+                    bordercolor="#cccccc",
+                    arrowcolor="#4f8080",
+                    width=16)
     style.map("Vertical.TScrollbar",
               background=[("active", "#d0d0d0")],
               arrowcolor=[("active", "#2a5a5a")])
-    # 水平滚动条（虽未使用，但保留一致性）
     style.configure("Horizontal.TScrollbar",
                     background="#f0f0f0",
                     troughcolor="#e0e0e0",
