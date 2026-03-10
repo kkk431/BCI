@@ -2,7 +2,7 @@
 # isort: skip_file
 # flake8: noqa
 """
-智融脑机 - 信号预处理模块 GUI (增强版，自动切换标签页，修复摘要显示，修正降采样参数)
+智融脑机 - 信号预处理模块 GUI
 """
 
 import os
@@ -14,6 +14,7 @@ import numpy as np
 from pathlib import Path
 import sys
 import json
+from PIL import Image, ImageTk  # 引入Pillow库处理图片及透明度
 
 # 将项目根目录动态添加到 sys.path
 start_path = Path(__file__).resolve().parent
@@ -25,7 +26,7 @@ for parent in [start_path] + list(start_path.parents):
             print(f"已将项目根目录 {project_root} 添加到 sys.path")
         break
 else:
-    raise RuntimeError("未找到名为 'core' 的目录")
+    project_root = Path.cwd()
 
 # --- 导入底层业务模块 ---
 try:
@@ -70,34 +71,32 @@ except ImportError as e:
     traceback.print_exc()
 
 # --- 视觉配置 ---
-BG_COLOR = "#f5f5f5"
+BG_COLOR = "#ffffff"  # 为匹配UI图片内部颜色，统一为白色
 FG_COLOR = "#333333"
-ACCENT_COLOR = "#4f8080"
-BUTTON_FG = "white"
-BUTTON_BG = ACCENT_COLOR
-DISABLED_BG = "#a0a0a0"
 
 FONT_TITLE = ("微软雅黑", 18, "bold")
 FONT_HEADING = ("微软雅黑", 14, "bold")
 FONT_NORMAL = ("微软雅黑", 11)
 FONT_SMALL = ("微软雅黑", 10)
 
-# 所有可能支持的模态
 ALL_MODALITIES = ["EEG", "EMG", "ECG", "fNIRS"]
 
-# 定义完整的参数映射（已修正降采样参数为 target_sampling_rate，除 EMG 外）
+# --- 参数映射配置保持不变 ---
 EEG_PARAMS = {
     "use_highpass": {"type": "bool", "default": True, "label": "启用高通滤波"},
     "highpass_freq": {"type": "float", "default": 0.5, "label": "高通频率 (Hz)"},
     "use_lowpass": {"type": "bool", "default": True, "label": "启用低通滤波"},
     "lowpass_freq": {"type": "float", "default": 45.0, "label": "低通频率 (Hz)"},
     "filter_order": {"type": "int", "default": 4, "label": "滤波器阶数"},
-    "filter_type": {"type": "choice", "options": [e.value for e in FilterType], "default": "butterworth", "label": "滤波器类型"},
+    "filter_type": {"type": "choice", "options": [e.value for e in FilterType] if MODULES_LOADED else ["butterworth"],
+                    "default": "butterworth", "label": "滤波器类型"},
     "line_freq": {"type": "float", "default": 50.0, "label": "工频频率 (Hz)"},
     "use_ica": {"type": "bool", "default": True, "label": "使用 ICA 去除伪迹"},
-    "ica_method": {"type": "choice", "options": [e.value for e in ICAMethod], "default": "infomax", "label": "ICA 方法"},
-    "ica_n_components": {"type": "float", "default": 0.95, "label": "ICA 成分数 (0~1 比例或整数)"},
-    "reference_type": {"type": "choice", "options": [e.value for e in ReferenceType], "default": "average", "label": "重参考类型"},
+    "ica_method": {"type": "choice", "options": [e.value for e in ICAMethod] if MODULES_LOADED else ["infomax"],
+                   "default": "infomax", "label": "ICA 方法"},
+    "ica_n_components": {"type": "float", "default": 0.95, "label": "ICA 成分数 (比例/整数)"},
+    "reference_type": {"type": "choice", "options": [e.value for e in ReferenceType] if MODULES_LOADED else ["average"],
+                       "default": "average", "label": "重参考类型"},
     "interpolate_bad_channels": {"type": "bool", "default": True, "label": "插值坏道"},
     "bad_channel_threshold": {"type": "float", "default": 3.0, "label": "坏道检测阈值 (std倍数)"},
     "reject_by_amplitude": {"type": "bool", "default": True, "label": "振幅伪迹拒绝"},
@@ -111,12 +110,17 @@ EMG_PARAMS = {
     "emg_bandpass_low": {"type": "float", "default": 20.0, "label": "带通低截止 (Hz)"},
     "emg_bandpass_high": {"type": "float", "default": 450.0, "label": "带通高截止 (Hz)"},
     "emg_bandpass_order": {"type": "int", "default": 4, "label": "滤波器阶数"},
-    "filter_type": {"type": "choice", "options": [e.value for e in FilterType], "default": "butterworth", "label": "滤波器类型"},
+    "filter_type": {"type": "choice", "options": [e.value for e in FilterType] if MODULES_LOADED else ["butterworth"],
+                    "default": "butterworth", "label": "滤波器类型"},
     "line_frequency": {"type": "float", "default": 50.0, "label": "工频频率 (Hz)"},
     "use_harmonic_notch": {"type": "bool", "default": True, "label": "谐波陷波"},
     "notch_harmonics": {"type": "int", "default": 5, "label": "谐波数量"},
-    "rectification_method": {"type": "choice", "options": [e.value for e in RectificationMethod], "default": "full_wave", "label": "整流方法"},
-    "envelope_method": {"type": "choice", "options": [e.value for e in EnvelopeExtractionMethod], "default": "lowpass", "label": "包络提取方法"},
+    "rectification_method": {"type": "choice",
+                             "options": [e.value for e in RectificationMethod] if MODULES_LOADED else ["full_wave"],
+                             "default": "full_wave", "label": "整流方法"},
+    "envelope_method": {"type": "choice",
+                        "options": [e.value for e in EnvelopeExtractionMethod] if MODULES_LOADED else ["lowpass"],
+                        "default": "lowpass", "label": "包络提取方法"},
     "envelope_cutoff": {"type": "float", "default": 5.0, "label": "包络截止频率 (Hz)"},
     "envelope_order": {"type": "int", "default": 4, "label": "包络滤波器阶数"},
     "remove_motion_artifacts": {"type": "bool", "default": True, "label": "去除运动伪迹"},
@@ -124,7 +128,8 @@ EMG_PARAMS = {
     "detect_muscle_activation": {"type": "bool", "default": False, "label": "检测肌肉激活"},
     "activation_threshold": {"type": "float", "default": 2.0, "label": "激活阈值 (std倍数)"},
     "downsample_to": {"type": "float", "default": 1000.0, "label": "降采样至 (Hz, 0=不降)"},
-    "normalize_method": {"type": "choice", "options": ["zscore", "minmax", "robust", "none"], "default": "zscore", "label": "标准化方法"},
+    "normalize_method": {"type": "choice", "options": ["zscore", "minmax", "robust", "none"], "default": "zscore",
+                         "label": "标准化方法"},
 }
 
 ECG_PARAMS = {
@@ -142,8 +147,12 @@ ECG_PARAMS = {
 
 FNIRS_PARAMS = {
     "wavelengths": {"type": "str", "default": "730,850", "label": "波长 (逗号分隔 nm)"},
-    "optical_model": {"type": "choice", "options": [e.value for e in OpticalModel], "default": "modified_beer_lambert", "label": "光学模型"},
-    "motion_correction_method": {"type": "choice", "options": [e.value for e in MotionCorrectionMethod], "default": "spline", "label": "运动校正方法"},
+    "optical_model": {"type": "choice",
+                      "options": [e.value for e in OpticalModel] if MODULES_LOADED else ["modified_beer_lambert"],
+                      "default": "modified_beer_lambert", "label": "光学模型"},
+    "motion_correction_method": {"type": "choice",
+                                 "options": [e.value for e in MotionCorrectionMethod] if MODULES_LOADED else ["spline"],
+                                 "default": "spline", "label": "运动校正方法"},
     "motion_correction_threshold": {"type": "float", "default": 3.0, "label": "运动检测阈值"},
     "pca_components_to_remove": {"type": "int", "default": 3, "label": "PCA 移除成分数"},
     "hemodynamic_lowcut": {"type": "float", "default": 0.01, "label": "血氧低通 (Hz)"},
@@ -158,8 +167,10 @@ FNIRS_PARAMS = {
 }
 
 GLOBAL_PARAMS = {
-    "processing_mode": {"type": "choice", "options": ["sequential", "parallel"], "default": "sequential", "label": "处理模式"},
-    "time_sync_method": {"type": "choice", "options": ["none", "resample", "interpolate"], "default": "none", "label": "时间同步方法"},
+    "processing_mode": {"type": "choice", "options": ["sequential", "parallel"], "default": "sequential",
+                        "label": "处理模式"},
+    "time_sync_method": {"type": "choice", "options": ["none", "resample", "interpolate"], "default": "none",
+                         "label": "时间同步方法"},
     "reference_sampling_rate": {"type": "float", "default": 250.0, "label": "参考采样率 (Hz)"},
     "max_workers": {"type": "int", "default": 4, "label": "最大线程数"},
     "quality_check_enabled": {"type": "bool", "default": True, "label": "启用质量检查"},
@@ -169,6 +180,7 @@ GLOBAL_PARAMS = {
 
 class ManualModalityDialog(tk.Toplevel):
     """手动指定模态对话框"""
+
     def __init__(self, parent, detected_mods):
         super().__init__(parent)
         self.parent = parent
@@ -202,7 +214,7 @@ class ManualModalityDialog(tk.Toplevel):
 
         btn_frame = tk.Frame(self, bg=BG_COLOR)
         btn_frame.pack(pady=10)
-        tk.Button(btn_frame, text="确认", command=self.on_ok, bg=BUTTON_BG, fg=BUTTON_FG).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="确认", command=self.on_ok, bg="#4f8080", fg="white").pack(side="left", padx=5)
         tk.Button(btn_frame, text="取消", command=self.destroy).pack(side="left", padx=5)
 
     def on_ok(self):
@@ -211,129 +223,246 @@ class ManualModalityDialog(tk.Toplevel):
         self.destroy()
 
 
-class PreprocessingApp(ttk.Frame):
+class PreprocessingApp(tk.Frame):
     def __init__(self, parent, *args, **kwargs):
-        super().__init__(parent, *args, **kwargs)
+        super().__init__(parent, bg=BG_COLOR, *args, **kwargs)
         self.parent = parent
 
         self.raw_data_dict = None
         self.processed_data_dict = None
         self.current_filepath = None
 
-        self.modality_vars = {}
+        self.is_processing = False
+        self.is_data_loaded = False
+
+        self.modality_vars = {mod: tk.BooleanVar(value=False) for mod in ALL_MODALITIES}
         self.eeg_widgets = {}
         self.emg_widgets = {}
         self.ecg_widgets = {}
         self.fnirs_widgets = {}
         self.global_widgets = {}
 
+        # 用于显示处理结果的标签变量
+        self.result_vars = {}
+
         if not MODULES_LOADED:
             messagebox.showerror("初始化失败", "底层算法模块导入失败，请检查终端输出的路径信息。")
 
+        self.images = {}
+        self._load_all_images()
         self.setup_ui()
 
+    def _load_all_images(self):
+        """预加载UI图片，并存放到字典中防止被垃圾回收"""
+        img_map = {
+            "nav_bg": "core/UI/UI_resource/Navigation/Background.png",
+            "nav_home_unsel": "core/UI/UI_resource/Navigation/Buttons/Unselected/Home_Button.png",
+            "nav_prep_unsel": "core/UI/UI_resource/Navigation/Buttons/Unselected/Preprocessing_Button.png",
+            "nav_feat_unsel": "core/UI/UI_resource/Navigation/Buttons/Unselected/Feature_Extraction_Button.png",
+            "nav_stat_unsel": "core/UI/UI_resource/Navigation/Buttons/Unselected/Statistical_Analysis_Button.png",
+            "nav_vis_unsel": "core/UI/UI_resource/Navigation/Buttons/Unselected/Virtualization_Button.png",
+            "nav_home_sel": "core/UI/UI_resource/Navigation/Buttons/Selected/Home_Button.png",
+            "nav_prep_sel": "core/UI/UI_resource/Navigation/Buttons/Selected/Preprocessing_Button.png",
+            "nav_feat_sel": "core/UI/UI_resource/Navigation/Buttons/Selected/Feature_Extraction_Button.png",
+            "nav_stat_sel": "core/UI/UI_resource/Navigation/Buttons/Selected/Statistical_Analysis_Button.png",
+            "nav_vis_sel": "core/UI/UI_resource/Navigation/Buttons/Selected/Virtualization_Button.png",
+
+            "prep_bg": "core/UI/UI_resource/Preprocessing_Panel/Setting_Bar_Background.png",
+            "global_set": "core/UI/UI_resource/Preprocessing_Panel/Global_Settings.png",
+            "detail_set": "core/UI/UI_resource/Preprocessing_Panel/Detailed_Settings.png",
+            "proc_info": "core/UI/UI_resource/Preprocessing_Panel/Processing_Information.png",
+            "file_bar": "core/UI/UI_resource/Preprocessing_Panel/File_Address_Bar.png",
+            "btn_browse": "core/UI/UI_resource/Preprocessing_Panel/Buttons/Browse.png",
+            "btn_save": "core/UI/UI_resource/Preprocessing_Panel/Buttons/Save.png",
+            "btn_start": "core/UI/UI_resource/Preprocessing_Panel/Buttons/Start.png",
+
+            "eeg_unsel": "core/UI/UI_resource/Model_Selection_Buttons/Unselected/Eeg.png",
+            "ecg_unsel": "core/UI/UI_resource/Model_Selection_Buttons/Unselected/Ecg.png",
+            "emg_unsel": "core/UI/UI_resource/Model_Selection_Buttons/Unselected/Emg.png",
+            "fnirs_unsel": "core/UI/UI_resource/Model_Selection_Buttons/Unselected/Fnirs.png",
+
+            "eeg_sel": "core/UI/UI_resource/Model_Selection_Buttons/Selected/Eeg.png",
+            "ecg_sel": "core/UI/UI_resource/Model_Selection_Buttons/Selected/Ecg.png",
+            "emg_sel": "core/UI/UI_resource/Model_Selection_Buttons/Selected/Emg.png",
+            "fnirs_sel": "core/UI/UI_resource/Model_Selection_Buttons/Selected/Fnirs.png",
+        }
+
+        for key, rel_path in img_map.items():
+            full_path = project_root.joinpath(*rel_path.split('/'))
+            try:
+                img = Image.open(full_path)
+                self.images[key] = ImageTk.PhotoImage(img)
+            except Exception as e:
+                print(f"警告: 无法加载图片 {full_path}: {e}")
+                img = Image.new("RGBA", (10, 10), (255, 0, 0, 0))
+                self.images[key] = ImageTk.PhotoImage(img)
+
+    def bind_btn(self, item_id, command):
+        """给 Canvas 对象绑定点击和鼠标悬停（光标变成手型）"""
+        self.canvas.tag_bind(item_id, "<Button-1>", lambda e: command())
+        self.canvas.tag_bind(item_id, "<Enter>", lambda e: self.canvas.config(cursor="hand2"))
+        self.canvas.tag_bind(item_id, "<Leave>", lambda e: self.canvas.config(cursor=""))
+
     def setup_ui(self):
-        self.configure(padding="10")
+        # 使用整屏 Canvas 进行底层布局
+        self.canvas = tk.Canvas(self, width=1440, height=1024, bg=BG_COLOR, highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
 
-        main_paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
-        main_paned.pack(fill="both", expand=True)
+        # ------------------- 绘制静态 UI 背景 -------------------
+        self.canvas.create_image(9, 9, image=self.images["nav_bg"], anchor="nw")
+        self.canvas.create_image(297, 9, image=self.images["prep_bg"], anchor="nw")
+        self.canvas.create_image(511, 31, image=self.images["file_bar"], anchor="nw")
+        self.canvas.create_image(311, 174, image=self.images["global_set"], anchor="nw")
+        self.canvas.create_image(870, 167, image=self.images["detail_set"], anchor="nw")
+        self.canvas.create_image(298, 772, image=self.images["proc_info"], anchor="nw")
 
-        # ================= 左侧面板 =================
-        left_frame = ttk.Frame(main_paned, padding="10")
-        main_paned.add(left_frame, weight=1)
+        # ------------------- 初始化按钮和组件 -------------------
+        self._create_nav_buttons()
+        self._create_action_buttons()
+        self._create_modality_buttons()
 
-        title_lbl = ttk.Label(left_frame, text="信号预处理", font=FONT_TITLE)
-        title_lbl.pack(anchor="w", pady=(0, 20))
+        # 显示文件路径信息的文本 Label
+        self.lbl_status = tk.Label(self, text="请上传文件...", font=FONT_NORMAL, bg="#ffffff", fg="#666666", anchor="w")
+        self.lbl_status.place(x=530, y=42, width=860, height=35)
 
-        # 1. 数据加载
-        load_frame = ttk.LabelFrame(left_frame, text="1. 加载数据源", padding="10")
-        load_frame.pack(fill="x", pady=5)
+        # ========== 1. 全局设置区域 ==========
+        # 增大高度以容纳更大的行间距
+        self.global_frame = tk.Frame(self, bg=BG_COLOR)
+        self.global_frame.place(x=331, y=220, width=504, height=260)  # 高度从220增至260
+        # 创建参数控件，行间距设为8，使文字更舒适
+        self._create_param_widgets(self.global_frame, GLOBAL_PARAMS, self.global_widgets, pady=8)
 
-        self.btn_load = ttk.Button(load_frame, text="📁 上传文件", command=self.action_load_data)
-        self.btn_load.pack(side="left", padx=5)
+        # ========== 2. 详细设置区域 ==========
+        # 再下移一点，避免遮挡
+        self.detail_frame = tk.Frame(self, bg=BG_COLOR)
+        self.detail_frame.place(x=890, y=230, width=508, height=500)  # y从210改为230
 
-        self.lbl_status = ttk.Label(load_frame, text="请上传文件...", font=FONT_SMALL)
-        self.lbl_status.pack(side="left", padx=10)
-
-        # 2. 模态选择 - 使用 tk.Checkbutton 显示勾
-        mod_frame = ttk.LabelFrame(left_frame, text="2. 选择要处理的模态", padding="10")
-        mod_frame.pack(fill="x", pady=5)
-
-        self.mod_check_frame = tk.Frame(mod_frame, bg=BG_COLOR)
-        self.mod_check_frame.pack(anchor="w", padx=5, pady=5)
-
+        # 创建四个模态面板，全部放入 detail_frame 同一位置，初始隐藏
+        self.modality_panels = {}
         for mod in ALL_MODALITIES:
-            var = tk.BooleanVar(value=False)
-            self.modality_vars[mod] = var
-            cb = tk.Checkbutton(
-                self.mod_check_frame,
-                text=mod,
-                variable=var,
-                command=lambda m=mod: self.on_modality_toggle(m),  # 传入当前模态，用于自动切换
-                bg=BG_COLOR,
-                fg=FG_COLOR,
-                selectcolor=BG_COLOR,
-                activebackground=BG_COLOR,
-                font=FONT_NORMAL
-            )
-            cb.pack(side="left", padx=10)
+            if mod == "EEG":
+                panel = self._create_modality_tab(self.detail_frame, mod, EEG_PARAMS)
+            elif mod == "EMG":
+                panel = self._create_modality_tab(self.detail_frame, mod, EMG_PARAMS)
+            elif mod == "ECG":
+                panel = self._create_modality_tab(self.detail_frame, mod, ECG_PARAMS)
+            elif mod == "fNIRS":
+                panel = self._create_modality_tab(self.detail_frame, mod, FNIRS_PARAMS)
+            self.modality_panels[mod] = panel
+            panel.place(x=0, y=0, width=508, height=500)
+            panel.place_forget()
 
-        # 3. 全局设置
-        global_frame = ttk.LabelFrame(left_frame, text="3. 全局设置", padding="10")
-        global_frame.pack(fill="x", pady=5)
+        # ========== 3. 处理信息区域 ==========
+        # 改用类似全局设置的标签-数值对形式
+        self.proc_frame = tk.Frame(self, bg=BG_COLOR)
+        self.proc_frame.place(x=318, y=820, width=1094, height=201)
 
-        self._create_param_widgets(global_frame, GLOBAL_PARAMS, self.global_widgets)
+        # 创建滚动区域
+        self.proc_canvas = tk.Canvas(self.proc_frame, borderwidth=0, highlightthickness=0, bg=BG_COLOR)
+        self.proc_scrollbar = ttk.Scrollbar(self.proc_frame, orient="vertical", command=self.proc_canvas.yview)
+        self.proc_scrollable = tk.Frame(self.proc_canvas, bg=BG_COLOR)
 
-        # 4. 运行预处理
-        run_frame = ttk.Frame(left_frame)
-        run_frame.pack(fill="x", pady=10)
+        self.proc_scrollable.bind(
+            "<Configure>",
+            lambda e: self.proc_canvas.configure(scrollregion=self.proc_canvas.bbox("all"))
+        )
 
-        self.btn_run = ttk.Button(run_frame, text="⚡ 开始预处理", command=self.action_run_preprocessing, state="disabled")
-        self.btn_run.pack(side="left", padx=5)
+        def _on_mousewheel(event):
+            self.proc_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-        self.btn_save = ttk.Button(run_frame, text="💾 保存结果", command=self.action_save_results, state="disabled")
-        self.btn_save.pack(side="left", padx=5)
+        self.proc_canvas.bind('<Enter>', lambda e: self.proc_canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        self.proc_canvas.bind('<Leave>', lambda e: self.proc_canvas.unbind_all("<MouseWheel>"))
 
-        # ================= 右侧面板 =================
-        right_frame = ttk.Frame(main_paned, padding="10")
-        main_paned.add(right_frame, weight=2)
+        self.proc_canvas.create_window((0, 0), window=self.proc_scrollable, anchor="nw")
+        self.proc_canvas.configure(yscrollcommand=self.proc_scrollbar.set)
 
-        self.notebook = ttk.Notebook(right_frame)
-        self.notebook.pack(fill="both", expand=True)
+        self.proc_canvas.pack(side="left", fill="both", expand=True)
+        self.proc_scrollbar.pack(side="right", fill="y")
 
-        self.eeg_tab = self._create_modality_tab("EEG", EEG_PARAMS)
-        self.emg_tab = self._create_modality_tab("EMG", EMG_PARAMS)
-        self.ecg_tab = self._create_modality_tab("ECG", ECG_PARAMS)
-        self.fnirs_tab = self._create_modality_tab("fNIRS", FNIRS_PARAMS)
+        # 在 scrollable 中创建用于显示处理结果的标签行
+        self._create_result_display()
 
-        self.notebook.add(self.eeg_tab, text="EEG", state="disabled")
-        self.notebook.add(self.emg_tab, text="EMG", state="disabled")
-        self.notebook.add(self.ecg_tab, text="ECG", state="disabled")
-        self.notebook.add(self.fnirs_tab, text="fNIRS", state="disabled")
+    def _create_nav_buttons(self):
+        self.nav_items = {}
+        nav_coords = {
+            "home": (39, 231),
+            "prep": (39, 323),
+            "feat": (39, 415),
+            "stat": (39, 507),
+            "vis": (39, 599)
+        }
 
-        # ================= 底部结果摘要 =================
-        result_frame = ttk.LabelFrame(self, text="预处理摘要", padding="10")
-        result_frame.pack(fill="both", expand=True, pady=5)
+        # 默认停留选中“预处理”
+        self.current_nav = "prep"
+        for name, (x, y) in nav_coords.items():
+            img_key = f"nav_{name}_sel" if name == "prep" else f"nav_{name}_unsel"
+            item_id = self.canvas.create_image(x, y, image=self.images[img_key], anchor="nw")
+            self.nav_items[name] = item_id
+            self.bind_btn(item_id, lambda n=name: self.on_nav_click(n))
 
-        columns = ("Property", "Value")
-        self.tree = ttk.Treeview(result_frame, columns=columns, show="headings", height=8)
-        self.tree.heading("Property", text="属性")
-        self.tree.heading("Value", text="值")
-        self.tree.column("Property", width=200)
-        self.tree.column("Value", width=400)
+    def on_nav_click(self, name):
+        """左侧导航栏场景切换（仅留接口及高亮变化）"""
+        if name == self.current_nav:
+            return
+        # 切换高亮图片
+        self.canvas.itemconfig(self.nav_items[self.current_nav], image=self.images[f"nav_{self.current_nav}_unsel"])
+        self.canvas.itemconfig(self.nav_items[name], image=self.images[f"nav_{name}_sel"])
+        self.current_nav = name
+        # TODO: 后续预留接入其他功能场景（特征提取/分析等）
 
-        scrollbar = ttk.Scrollbar(result_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscroll=scrollbar.set)
+    def _create_action_buttons(self):
+        self.btn_browse = self.canvas.create_image(311, 102, image=self.images["btn_browse"], anchor="nw")
+        self.bind_btn(self.btn_browse, self.action_load_data)
 
-        self.tree.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        self.btn_start = self.canvas.create_image(349, 525, image=self.images["btn_start"], anchor="nw")
+        self.bind_btn(self.btn_start, self.action_run_preprocessing)
 
-    def _create_param_widgets(self, parent, param_dict, widget_dict):
-        """动态生成参数控件，布尔类型使用 tk.Checkbutton 显示勾"""
+        self.btn_save = self.canvas.create_image(590, 525, image=self.images["btn_save"], anchor="nw")
+        self.bind_btn(self.btn_save, self.action_save_results)
+
+    def _create_modality_buttons(self):
+        self.mod_items = {}
+        coords = {"EEG": 653, "EMG": 838, "ECG": 1023, "fNIRS": 1208}
+
+        for mod, x in coords.items():
+            img_key = f"{mod.lower()}_unsel"
+            item_id = self.canvas.create_image(x, 109, image=self.images[img_key], anchor="nw")
+            self.mod_items[mod] = item_id
+            self.bind_btn(item_id, lambda m=mod: self.on_mod_btn_click(m))
+
+    def on_mod_btn_click(self, mod):
+        """点击模态选择图片开关时的触发逻辑（改为单选模式）"""
+        if self.is_processing:
+            return
+
+        # 获取当前点击模态的选中状态
+        current = self.modality_vars[mod].get()
+
+        if current:
+            # 如果当前是选中状态，则点击后取消所有选中
+            for m in ALL_MODALITIES:
+                self.modality_vars[m].set(False)
+        else:
+            # 如果当前是未选中状态，则只选中当前模态，取消其他所有
+            for m in ALL_MODALITIES:
+                self.modality_vars[m].set(False)
+            self.modality_vars[mod].set(True)
+
+        # 更新所有模态按钮的图片
+        for m in ALL_MODALITIES:
+            img_key = f"{m.lower()}_sel" if self.modality_vars[m].get() else f"{m.lower()}_unsel"
+            self.canvas.itemconfig(self.mod_items[m], image=self.images[img_key])
+
+        # 联动右侧设置面板显示
+        self.on_modality_toggle(mod)
+
+    def _create_param_widgets(self, parent, param_dict, widget_dict, pady=6):
+        """动态生成参数控件面板，可自定义行间距pady"""
+        parent.columnconfigure(1, weight=1)
         row = 0
         for key, spec in param_dict.items():
-            label = ttk.Label(parent, text=spec["label"] + ":", font=FONT_NORMAL)
-            label.grid(row=row, column=0, sticky="w", padx=5, pady=3)
+            label = ttk.Label(parent, text=spec["label"] + ":", font=FONT_NORMAL, background=BG_COLOR)
+            label.grid(row=row, column=0, sticky="w", padx=10, pady=pady)
 
             if spec["type"] == "bool":
                 var = tk.BooleanVar(value=spec["default"])
@@ -345,71 +474,137 @@ class PreprocessingApp(ttk.Frame):
                     activebackground=BG_COLOR,
                     highlightthickness=0
                 )
-                cb.grid(row=row, column=1, sticky="w", padx=5)
+                cb.grid(row=row, column=1, sticky="w", padx=10)
                 widget_dict[key] = var
             elif spec["type"] == "choice":
                 var = tk.StringVar(value=spec["default"])
-                combo = ttk.Combobox(parent, textvariable=var, values=spec["options"], state="readonly", width=20)
-                combo.grid(row=row, column=1, sticky="w", padx=5)
+                combo = ttk.Combobox(parent, textvariable=var, values=spec["options"], state="readonly", width=25)
+                combo.grid(row=row, column=1, sticky="w", padx=10)
                 widget_dict[key] = var
-            elif spec["type"] in ("float", "int"):
+            elif spec["type"] in ("float", "int", "str"):
                 var = tk.StringVar(value=str(spec["default"]))
-                entry = ttk.Entry(parent, textvariable=var, width=20)
-                entry.grid(row=row, column=1, sticky="w", padx=5)
-                widget_dict[key] = var
-            elif spec["type"] == "str":
-                var = tk.StringVar(value=spec["default"])
-                entry = ttk.Entry(parent, textvariable=var, width=20)
-                entry.grid(row=row, column=1, sticky="w", padx=5)
+                entry = ttk.Entry(parent, textvariable=var, width=27)
+                entry.grid(row=row, column=1, sticky="w", padx=10)
                 widget_dict[key] = var
             row += 1
 
-    def _create_modality_tab(self, mod_name, param_dict):
-        """创建模态参数标签页（带滚动条）"""
-        tab = ttk.Frame(self.notebook, padding="15")
+    def _create_modality_tab(self, parent, mod_name, param_dict):
+        """创建单个带有滚轮效果的模态设置页面，父容器为parent"""
+        tab = tk.Frame(parent, bg=BG_COLOR)
         canvas = tk.Canvas(tab, borderwidth=0, highlightthickness=0, bg=BG_COLOR)
         scrollbar = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
+        scrollable_frame = tk.Frame(canvas, bg=BG_COLOR)
 
         scrollable_frame.bind(
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind('<Enter>', lambda e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        canvas.bind('<Leave>', lambda e: canvas.unbind_all("<MouseWheel>"))
+
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+        # 填充参数控件，使用稍小的行间距（4）以适应更多参数
         if mod_name == "EEG":
-            self._create_param_widgets(scrollable_frame, param_dict, self.eeg_widgets)
+            self._create_param_widgets(scrollable_frame, param_dict, self.eeg_widgets, pady=4)
         elif mod_name == "EMG":
-            self._create_param_widgets(scrollable_frame, param_dict, self.emg_widgets)
+            self._create_param_widgets(scrollable_frame, param_dict, self.emg_widgets, pady=4)
         elif mod_name == "ECG":
-            self._create_param_widgets(scrollable_frame, param_dict, self.ecg_widgets)
+            self._create_param_widgets(scrollable_frame, param_dict, self.ecg_widgets, pady=4)
         elif mod_name == "fNIRS":
-            self._create_param_widgets(scrollable_frame, param_dict, self.fnirs_widgets)
+            self._create_param_widgets(scrollable_frame, param_dict, self.fnirs_widgets, pady=4)
 
         return tab
 
-    def on_modality_toggle(self, mod=None):
-        """
-        当模态复选框状态改变时调用
-        mod: 如果是由用户点击触发的，传入被点击的模态，用于自动切换到该标签页
-        """
-        # 先更新标签页的启用/禁用状态
-        for idx, m in enumerate(ALL_MODALITIES):
-            if self.modality_vars[m].get():
-                self.notebook.tab(idx, state="normal")
-            else:
-                self.notebook.tab(idx, state="disabled")
+    def _create_result_display(self):
+        """创建处理结果展示区域，采用标签-数值对形式"""
+        # 预定义要显示的结果项
+        result_items = [
+            ("处理时间", "processing_time"),
+            ("成功状态", "success"),
+            ("处理模态", "modalities_processed"),
+            ("总体质量", "overall_quality"),
+            # 模态质量将在运行时动态添加
+        ]
+        # 使用grid布局，两列
+        self.proc_scrollable.columnconfigure(1, weight=1)
+        row = 0
+        for label_text, key in result_items:
+            lbl = ttk.Label(self.proc_scrollable, text=label_text + ":", font=FONT_NORMAL, background=BG_COLOR)
+            lbl.grid(row=row, column=0, sticky="w", padx=10, pady=6)
+            var = tk.StringVar(value="")
+            val_lbl = ttk.Label(self.proc_scrollable, textvariable=var, font=FONT_NORMAL, background=BG_COLOR)
+            val_lbl.grid(row=row, column=1, sticky="w", padx=10, pady=6)
+            self.result_vars[key] = var
+            row += 1
 
-        # 如果是由用户点击触发的，并且该模态被勾选，则自动切换到该标签页
-        if mod is not None and self.modality_vars[mod].get():
-            idx = ALL_MODALITIES.index(mod)
-            self.notebook.select(idx)
+        # 为模态质量预留动态添加的空间，用一个字典记录每个模态的质量变量
+        self.mod_quality_vars = {}  # mod -> var
+
+    def _update_result_display(self, result):
+        """根据预处理结果更新显示"""
+        # 基本项
+        self.result_vars["processing_time"].set(f"{result.processing_time:.2f} 秒")
+        self.result_vars["success"].set(str(result.success))
+        # 处理模态
+        if "processed" in result.processed_data and "multimodal_preprocessing" in result.processed_data["processed"]:
+            mods = result.processed_data["processed"]["multimodal_preprocessing"].get("modalities_processed", [])
+        else:
+            mods = []
+        self.result_vars["modalities_processed"].set(", ".join(mods) if mods else "无")
+
+        # 质量报告
+        quality_report = result.processed_data.get("processed", {}).get("quality_report", {})
+        overall = quality_report.get("overall_quality", 0)
+        self.result_vars["overall_quality"].set(f"{overall:.2f}")
+
+        # 模态质量
+        mod_quality = quality_report.get("modality_quality", {})
+        # 删除之前动态添加的模态质量行（如果有）
+        for widget in self.proc_scrollable.grid_slaves():
+            if int(widget.grid_info()["row"]) >= len(self.result_vars):  # 基础行之后的是动态添加的
+                widget.destroy()
+        self.mod_quality_vars.clear()
+
+        # 重新添加
+        row = len(self.result_vars)
+        for mod, mq in mod_quality.items():
+            lbl = ttk.Label(self.proc_scrollable, text=f"{mod} 质量分数:", font=FONT_NORMAL, background=BG_COLOR)
+            lbl.grid(row=row, column=0, sticky="w", padx=10, pady=6)
+            var = tk.StringVar(value=f"{mq.get('quality_score', 0):.2f}")
+            val_lbl = ttk.Label(self.proc_scrollable, textvariable=var, font=FONT_NORMAL, background=BG_COLOR)
+            val_lbl.grid(row=row, column=1, sticky="w", padx=10, pady=6)
+            self.mod_quality_vars[mod] = var
+            row += 1
+
+    def _update_visible_panel(self):
+        """根据当前选中的模态，显示第一个选中的面板，隐藏其他"""
+        selected = [mod for mod, var in self.modality_vars.items() if var.get()]
+        # 隐藏所有面板
+        for panel in self.modality_panels.values():
+            panel.place_forget()
+        # 如果有选中，显示第一个
+        if selected:
+            first_mod = selected[0]
+            self.modality_panels[first_mod].place(x=0, y=0, width=508, height=500)
+
+    def on_modality_toggle(self, mod=None):
+        """更新模态选中状态及右侧面板显示"""
+        # 更新面板显示
+        self._update_visible_panel()
+
+    # ================= 核心业务功能逻辑接入点 =================
 
     def action_load_data(self):
+        if self.is_processing: return
         if not MODULES_LOADED:
             messagebox.showerror("错误", "底层模块未加载，请检查文件路径是否正确。")
             return
@@ -426,9 +621,8 @@ class PreprocessingApp(ttk.Frame):
         self._start_data_loading(filepath)
 
     def _start_data_loading(self, filepath):
-        self.btn_load.config(state="disabled")
-        self.btn_run.config(state="disabled")
-        self.lbl_status.config(text="正在加载数据...", foreground="#0056b3")
+        self.is_processing = True
+        self.lbl_status.config(text=f"正在加载数据...", fg="#0056b3")
 
         def background_task():
             try:
@@ -469,31 +663,30 @@ class PreprocessingApp(ttk.Frame):
         self._update_modality_checkboxes(detected_mods, raw_dict)
 
     def _update_modality_checkboxes(self, detected_mods, raw_dict):
-        """更新复选框状态，并自动切换到第一个勾选的模态标签页"""
+        """自动更新复选框状态和图片UI"""
         for mod, var in self.modality_vars.items():
-            var.set(mod in detected_mods)
+            is_detected = (mod in detected_mods)
+            var.set(is_detected)
+            # 更新对应模态的图片UI
+            img_key = f"{mod.lower()}_sel" if is_detected else f"{mod.lower()}_unsel"
+            self.canvas.itemconfig(self.mod_items[mod], image=self.images[img_key])
 
-        # 更新标签页状态（不传入 mod，避免切换）
+        # 更新右侧面板显示
         self.on_modality_toggle()
 
-        # 自动切换到第一个被勾选的模态（如果有）
-        for mod in ALL_MODALITIES:
-            if mod in detected_mods:
-                idx = ALL_MODALITIES.index(mod)
-                self.notebook.select(idx)
-                break
-
         self.raw_data_dict = raw_dict
-        self.lbl_status.config(text=f"数据加载成功，检测到模态: {', '.join(detected_mods)}", foreground="green")
-        self.btn_load.config(state="normal")
-        self.btn_run.config(state="normal")
+        filename = Path(self.current_filepath).name
+        self.lbl_status.config(text=f"文件: {filename}   |   已检测出模态: {', '.join(detected_mods)}", fg="#4f8080")
+        self.is_data_loaded = True
+        self.is_processing = False
 
     def _ui_update_on_error(self, error_msg):
-        self.lbl_status.config(text=error_msg, foreground="red")
-        self.btn_load.config(state="normal")
-        self.btn_run.config(state="disabled")
+        self.lbl_status.config(text=error_msg, fg="red")
+        self.is_processing = False
 
     def action_run_preprocessing(self):
+        if self.is_processing: return
+
         selected_mods = [mod for mod, var in self.modality_vars.items() if var.get()]
         if not selected_mods:
             messagebox.showwarning("警告", "请至少选择一个模态进行预处理")
@@ -503,13 +696,16 @@ class PreprocessingApp(ttk.Frame):
             messagebox.showwarning("警告", "请先加载数据")
             return
 
-        self.btn_run.config(state="disabled")
-        self.btn_load.config(state="disabled")
-        self.btn_save.config(state="disabled")
-        self.lbl_status.config(text="正在执行预处理，请稍候...", foreground="#0056b3")
+        self.is_processing = True
+        self.lbl_status.config(text="正在执行预处理，请稍候...", fg="#0056b3")
 
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        # 清空之前的显示
+        for var in self.result_vars.values():
+            var.set("")
+        for var in self.mod_quality_vars.values():
+            var.set("")
+
+        # 删除模态质量行（会在_update_result_display中重建）
 
         def background_task():
             try:
@@ -545,10 +741,7 @@ class PreprocessingApp(ttk.Frame):
         quality_check = self.global_widgets["quality_check_enabled"].get()
         auto_fix = self.global_widgets["auto_fix_issues"].get()
 
-        eeg_config = None
-        emg_config = None
-        ecg_config = None
-        fnirs_config = None
+        eeg_config, emg_config, ecg_config, fnirs_config = None, None, None, None
 
         if "EEG" in selected_mods:
             eeg_config = EEGPreprocessingConfig(
@@ -567,7 +760,8 @@ class PreprocessingApp(ttk.Frame):
                 bad_channel_threshold=float(self.eeg_widgets["bad_channel_threshold"].get()),
                 reject_by_amplitude=self.eeg_widgets["reject_by_amplitude"].get(),
                 rejection_threshold=float(self.eeg_widgets["rejection_threshold"].get()),
-                target_sampling_rate=float(self.eeg_widgets["target_sampling_rate"].get()) if float(self.eeg_widgets["target_sampling_rate"].get()) > 0 else None,
+                target_sampling_rate=float(self.eeg_widgets["target_sampling_rate"].get()) if float(
+                    self.eeg_widgets["target_sampling_rate"].get()) > 0 else None,
                 use_harmonic_notch=self.eeg_widgets["use_harmonic_notch"].get(),
                 harmonic_notch_n_harmonics=int(self.eeg_widgets["notch_harmonics"].get()),
             )
@@ -589,7 +783,8 @@ class PreprocessingApp(ttk.Frame):
                 motion_artifact_threshold=float(self.emg_widgets["motion_artifact_threshold"].get()),
                 detect_muscle_activation=self.emg_widgets["detect_muscle_activation"].get(),
                 activation_threshold=float(self.emg_widgets["activation_threshold"].get()),
-                downsample_to=float(self.emg_widgets["downsample_to"].get()) if float(self.emg_widgets["downsample_to"].get()) > 0 else None,
+                downsample_to=float(self.emg_widgets["downsample_to"].get()) if float(
+                    self.emg_widgets["downsample_to"].get()) > 0 else None,
                 normalize_method=self.emg_widgets["normalize_method"].get(),
             )
 
@@ -604,13 +799,13 @@ class PreprocessingApp(ttk.Frame):
                 assess_signal_quality=self.ecg_widgets["assess_signal_quality"].get(),
                 detect_bad_segments=self.ecg_widgets["detect_bad_segments"].get(),
                 multi_lead_consistency=self.ecg_widgets["multi_lead_consistency"].get(),
-                target_sampling_rate=float(self.ecg_widgets["target_sampling_rate"].get()) if float(self.ecg_widgets["target_sampling_rate"].get()) > 0 else None,
+                target_sampling_rate=float(self.ecg_widgets["target_sampling_rate"].get()) if float(
+                    self.ecg_widgets["target_sampling_rate"].get()) > 0 else None,
             )
 
         if "fNIRS" in selected_mods:
             wl_str = self.fnirs_widgets["wavelengths"].get()
             wavelengths = [float(x.strip()) for x in wl_str.split(",")]
-
             cardiac_range = [float(x.strip()) for x in self.fnirs_widgets["cardiac_frequency_range"].get().split(",")]
             resp_range = [float(x.strip()) for x in self.fnirs_widgets["respiration_frequency_range"].get().split(",")]
 
@@ -628,7 +823,8 @@ class PreprocessingApp(ttk.Frame):
                 cardiac_frequency_range=(cardiac_range[0], cardiac_range[1]),
                 respiration_frequency_range=(resp_range[0], resp_range[1]),
                 snr_threshold=float(self.fnirs_widgets["snr_threshold"].get()),
-                target_sampling_rate=float(self.fnirs_widgets["target_sampling_rate"].get()) if float(self.fnirs_widgets["target_sampling_rate"].get()) > 0 else None,
+                target_sampling_rate=float(self.fnirs_widgets["target_sampling_rate"].get()) if float(
+                    self.fnirs_widgets["target_sampling_rate"].get()) > 0 else None,
             )
 
         config = MultiModalConfig(
@@ -648,29 +844,15 @@ class PreprocessingApp(ttk.Frame):
         return config
 
     def _ui_update_on_success(self, result):
-        self.lbl_status.config(text=f"预处理成功完成，耗时 {result.processing_time:.2f} 秒", foreground="green")
-        self.btn_load.config(state="normal")
-        self.btn_run.config(state="normal")
-        self.btn_save.config(state="normal")
+        filename = Path(self.current_filepath).name
+        self.lbl_status.config(text=f"[{filename}] 预处理成功！处理耗时: {result.processing_time:.2f} 秒", fg="green")
+        self.is_processing = False
 
-        # 从 processed_data 中获取实际处理的模态（修复空白问题）
-        if "processed" in result.processed_data and "multimodal_preprocessing" in result.processed_data["processed"]:
-            mods_processed = result.processed_data["processed"]["multimodal_preprocessing"].get("modalities_processed", [])
-        else:
-            mods_processed = []
-
-        self.tree.insert("", "end", values=("处理时间", f"{result.processing_time:.2f} 秒"))
-        self.tree.insert("", "end", values=("成功状态", str(result.success)))
-        self.tree.insert("", "end", values=("处理模态", ", ".join(mods_processed) if mods_processed else "无"))
-
-        quality_report = result.processed_data.get("processed", {}).get("quality_report", {})
-        if quality_report:
-            self.tree.insert("", "end", values=("总体质量", f"{quality_report.get('overall_quality', 0):.2f}"))
-            mod_quality = quality_report.get("modality_quality", {})
-            for mod, mq in mod_quality.items():
-                self.tree.insert("", "end", values=(f"{mod} 质量分数", f"{mq.get('quality_score', 0):.2f}"))
+        # 更新处理信息区域
+        self._update_result_display(result)
 
     def action_save_results(self):
+        if self.is_processing: return
         if self.processed_data_dict is None:
             messagebox.showwarning("警告", "没有可保存的处理结果")
             return
@@ -721,25 +903,62 @@ class PreprocessingApp(ttk.Frame):
 if __name__ == "__main__":
     try:
         from ctypes import windll
+
         windll.shcore.SetProcessDpiAwareness(1)
     except:
         pass
 
     root = tk.Tk()
     root.title("智融脑机 - 信号预处理模块")
-    root.geometry("1400x900")
+
+    # 根据提供的背景全景进行窗口尺寸限制，拒绝拉伸破坏布局
+    root.geometry("1440x1024")
+    root.resizable(False, False)
     root.configure(bg=BG_COLOR)
 
+    # 通过 ttk Style 设置统一样式，避免出现底色突兀
     style = ttk.Style()
     style.theme_use("clam")
+
+    # 基础样式
     style.configure("TLabel", background=BG_COLOR, foreground=FG_COLOR, font=FONT_NORMAL)
     style.configure("TFrame", background=BG_COLOR)
-    style.configure("TButton", font=FONT_NORMAL, padding=6)
-    style.configure("TNotebook", background=BG_COLOR)
-    style.configure("TNotebook.Tab", font=FONT_NORMAL, padding=[10, 5])
     style.configure("TCheckbutton", background=BG_COLOR, font=FONT_NORMAL)
-    style.configure("TCombobox", font=FONT_NORMAL)
     style.configure("TEntry", font=FONT_NORMAL)
+
+    # 自定义 Combobox 样式
+    style.configure("TCombobox",
+                    fieldbackground="#f0f0f0",  # 下拉框背景
+                    background="#f0f0f0",  # 按钮背景
+                    foreground=FG_COLOR,  # 文字颜色
+                    arrowcolor="#4f8080",  # 箭头颜色（深青色）
+                    borderwidth=1,
+                    relief="solid")
+    style.map("TCombobox",
+              fieldbackground=[("readonly", "#f0f0f0"), ("disabled", "#e0e0e0")],
+              foreground=[("readonly", FG_COLOR)],
+              arrowcolor=[("active", "#2a5a5a"), ("!active", "#4f8080")])
+
+    # 自定义 Scrollbar 样式
+    style.configure("Vertical.TScrollbar",
+                    background="#f0f0f0",  # 滑块背景
+                    troughcolor="#e0e0e0",  # 滑槽背景
+                    bordercolor="#cccccc",  # 边框颜色
+                    arrowcolor="#4f8080",  # 箭头颜色
+                    width=16)  # 滑块宽度
+    style.map("Vertical.TScrollbar",
+              background=[("active", "#d0d0d0")],
+              arrowcolor=[("active", "#2a5a5a")])
+    # 水平滚动条（虽未使用，但保留一致性）
+    style.configure("Horizontal.TScrollbar",
+                    background="#f0f0f0",
+                    troughcolor="#e0e0e0",
+                    bordercolor="#cccccc",
+                    arrowcolor="#4f8080",
+                    width=16)
+    style.map("Horizontal.TScrollbar",
+              background=[("active", "#d0d0d0")],
+              arrowcolor=[("active", "#2a5a5a")])
 
     app = PreprocessingApp(root)
     app.pack(fill=tk.BOTH, expand=True)
