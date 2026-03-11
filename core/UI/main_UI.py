@@ -1,271 +1,385 @@
-# import sys
-# import os
-# from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton,
-#                              QButtonGroup, QStackedWidget, QVBoxLayout)
-# from PyQt5.QtCore import Qt, QRect
-# from PyQt5.QtGui import QPixmap
-# from pathlib import Path
-#
-# # 将'core'的上一级目录作为项目根目录添加到 sys.path 中，以便正确导入模块
-# start_path = Path(__file__).resolve().parent
-# for parent in [start_path] + list(start_path.parents):
-#     if parent.name == 'core':
-#         project_root = parent.parent
-#         if str(project_root) not in sys.path:
-#             sys.path.insert(0, str(project_root))
-#         break
-# else:
-#     raise RuntimeError("未找到名为 'core' 的目录")
-#
-# class MainWindow(QWidget):
-#     def __init__(self):
-#         super().__init__()
-#         self.initUI()
-#
-#     def initUI(self):
-#         # 设置固定窗口大小
-#         self.setFixedSize(1440, 1024)
-#         self.setWindowTitle("主界面")
-#
-#         # ========== 左侧导航栏容器 ==========
-#         self.left_nav = QWidget(self)
-#         self.left_nav.setGeometry(0, 0, 289, 1024)
-#         self.left_nav.setObjectName("left_nav")
-#
-#         # ---------- 导航栏背景 ----------
-#         self.bg_label = QLabel(self.left_nav)
-#         self.bg_label.setGeometry(9, 9, 270, 1006)
-#         bg_path = os.path.join("core", "UI", "UI_resource", "Navigation", "Background.png")
-#         if os.path.exists(bg_path):
-#             pixmap = QPixmap(bg_path)
-#             # 缩放背景以适应标签大小（假设图片尺寸不完全匹配）
-#             self.bg_label.setPixmap(pixmap.scaled(270, 1006, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
-#             self.bg_label.setScaledContents(True)
-#         else:
-#             self.bg_label.setText("背景图片缺失")
-#             self.bg_label.setStyleSheet("background-color: gray;")
-#
-#         # ---------- 五个导航按钮 ----------
-#         # 按钮基本信息：名称、未选中图片文件名、选中图片文件名、Y坐标
-#         buttons_info = [
-#             ("首页", "Home_Button.png", "Home_Button.png", 231),
-#             ("预处理", "Preprocessing_Button.png", "Preprocessing_Button.png", 323),
-#             ("特征提取", "Feature_Extraction_Button.png", "Feature_Extraction_Button.png", 415),
-#             ("统计分析", "Statistical_Analysis_Button.png", "Statistical_Analysis_Button.png", 507),
-#             ("可视化", "Virtualization_Button.png", "Virtualization_Button.png", 599)
-#         ]
-#
-#         self.buttons = []
-#         self.button_group = QButtonGroup(self)
-#         self.button_group.setExclusive(True)   # 同一时刻只有一个按钮被选中
-#
-#         # 获取按钮图片尺寸（假设所有按钮图片尺寸一致）
-#         example_path = os.path.join("core", "UI", "UI_resource", "Navigation", "Buttons", "Unselected", "Home_Button.png")
-#         if os.path.exists(example_path):
-#             pix = QPixmap(example_path)
-#             btn_width = pix.width()
-#             btn_height = pix.height()
-#         else:
-#             # 如果图片不存在，使用默认尺寸（后续可手动调整）
-#             btn_width, btn_height = 200, 80
-#             print("警告：未找到示例图片，使用默认按钮尺寸 200x80")
-#
-#         for idx, (name, unsel_file, sel_file, y) in enumerate(buttons_info):
-#             btn = QPushButton(self.left_nav)
-#             btn.setGeometry(39, y, btn_width, btn_height)
-#             btn.setCheckable(True)
-#             btn.setCursor(Qt.PointingHandCursor)
-#
-#             # 构建未选中和选中图片的完整路径
-#             unsel_path = os.path.join("core", "UI", "UI_resource", "Navigation", "Buttons", "Unselected", unsel_file)
-#             sel_path = os.path.join("core", "UI", "UI_resource", "Navigation", "Buttons", "Selected", sel_file)
-#
-#             # 样式表中的路径需要使用正斜杠，且如果是本地文件无需额外协议
-#             unsel_path = unsel_path.replace('\\', '/')
-#             sel_path = sel_path.replace('\\', '/')
-#
-#             # 设置样式表：未选中状态使用未选中图片，选中状态使用选中图片
-#             style = f"""
-#             QPushButton {{
-#                 background-image: url({unsel_path});
-#                 background-repeat: no-repeat;
-#                 background-position: center;
-#                 border: none;
-#             }}
-#             QPushButton:checked {{
-#                 background-image: url({sel_path});
-#             }}
-#             """
-#             btn.setStyleSheet(style)
-#
-#             self.buttons.append(btn)
-#             self.button_group.addButton(btn, idx)   # 将索引作为按钮 ID
-#
-#         # 默认选中“首页”按钮
-#         self.buttons[0].setChecked(True)
-#
-#         # ========== 右侧功能区（堆叠窗口） ==========
-#         self.stacked_widget = QStackedWidget(self)
-#         self.stacked_widget.setGeometry(289, 0, 1151, 1024)
-#
-#         # 创建五个场景页面（预留接口，目前仅放置一个标签）
-#         scene_names = ["首页", "预处理", "特征提取", "统计分析", "可视化"]
-#         self.pages = []
-#         for name in scene_names:
-#             page = QWidget()
-#             layout = QVBoxLayout(page)
-#             label = QLabel(f"这是 {name} 场景")
-#             label.setAlignment(Qt.AlignCenter)
-#             layout.addWidget(label)
-#             self.stacked_widget.addWidget(page)
-#             self.pages.append(page)
-#
-#         # 默认显示首页场景
-#         self.stacked_widget.setCurrentIndex(0)
-#
-#         # 连接按钮组的点击信号（传递按钮 ID）
-#         self.button_group.buttonClicked[int].connect(self.on_nav_button_clicked)
-#
-#     def on_nav_button_clicked(self, btn_id):
-#         """导航按钮点击时，切换右侧场景"""
-#         self.stacked_widget.setCurrentIndex(btn_id)
-#
-#
-# if __name__ == '__main__':
-#     app = QApplication(sys.argv)
-#     window = MainWindow()
-#     window.show()
-#     sys.exit(app.exec_())
-#
-#
-
-
+#!/usr/bin/env python3
+"""
+main_ui.py
+智融脑机 - 主界面 (tkinter版本)
+完全保持原主界面的布局和功能
+"""
 import sys
-import os
-from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton,
-                             QButtonGroup, QStackedWidget, QVBoxLayout)
-from PyQt5.QtCore import Qt, QRect
-from PyQt5.QtGui import QPixmap
 from pathlib import Path
 
-# 添加项目根目录到 sys.path
+# 将项目根目录动态添加到 sys.path
 start_path = Path(__file__).resolve().parent
-for parent in [start_path] + list(start_path.parents):
-    if parent.name == 'core':
-        project_root = parent.parent
+current_path = start_path
+for path in [current_path] + list(current_path.parents):
+    if path.name == 'core':
+        project_root = path.parent
         if str(project_root) not in sys.path:
             sys.path.insert(0, str(project_root))
         break
 else:
     raise RuntimeError("未找到名为 'core' 的目录")
 
-# ========== 新增：导入统计分析面板 ==========
-from core.UI.panel.analysis_panel import AnalysisPanel
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+# 导入功能面板
+from core.UI.panel.visualization_panel import NeuroPioneerPanel
+from core.UI.panel.preprocessing_panel import PreprocessingApp
+from core.UI.panel.ai_chat_panel import AIChatWindow
+from core.ai_core.llm_client import SimpleAIChat
+
+try:
+    from PIL import Image, ImageTk
+
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    print("警告: PIL 未安装，无法加载 PNG 图片，请安装 Pillow 库。")
 
 
-class MainWindow(QWidget):
+class MainUI(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.initUI()
+        self.title("智融脑机 - 主界面")
+        self.geometry("1440x1024")
+        self.resizable(False, False)
 
-    def initUI(self):
-        self.setFixedSize(1440, 1024)
-        self.setWindowTitle("主界面")
+        # 动态获取项目根目录
+        self.project_root = project_root
+        print(f"项目根目录: {self.project_root}")
 
-        self.left_nav = QWidget(self)
-        self.left_nav.setGeometry(0, 0, 289, 1024)
-        self.left_nav.setObjectName("left_nav")
+        # 资源目录
+        self.navigation_dir = self.project_root / "core" / "UI" / "UI_resource" / "Navigation"
+        self.homepage_dir = self.project_root / "core" / "UI" / "UI_resource" / "Homepage"
 
-        self.bg_label = QLabel(self.left_nav)
-        self.bg_label.setGeometry(9, 9, 270, 1006)
-        bg_path = os.path.join("core", "UI", "UI_resource", "Navigation", "Background.png")
-        if os.path.exists(bg_path):
-            pixmap = QPixmap(bg_path)
-            self.bg_label.setPixmap(pixmap.scaled(270, 1006, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
-            self.bg_label.setScaledContents(True)
-        else:
-            self.bg_label.setText("背景图片缺失")
-            self.bg_label.setStyleSheet("background-color: gray;")
+        # 导航按钮目录
+        self.nav_buttons_unselected_dir = self.navigation_dir / "Buttons" / "Unselected"
+        self.nav_buttons_selected_dir = self.navigation_dir / "Buttons" / "Selected"
 
-        buttons_info = [
-            ("首页", "Home_Button.png", "Home_Button.png", 231),
-            ("预处理", "Preprocessing_Button.png", "Preprocessing_Button.png", 323),
-            ("特征提取", "Feature_Extraction_Button.png", "Feature_Extraction_Button.png", 415),
-            ("统计分析", "Statistical_Analysis_Button.png", "Statistical_Analysis_Button.png", 507),
-            ("可视化", "Virtualization_Button.png", "Virtualization_Button.png", 599)
+        # 存储图片引用
+        self.images = {}
+
+        # 当前选中的按钮（默认为"首页"）
+        self.current_button = "首页"
+
+        # 初始化UI
+        self.setup_ui()
+        # 初始化 AI 科研助手小气泡
+        self.init_ai_assistant()
+
+    def setup_ui(self):
+        """初始化UI - 完全保持原主界面布局"""
+        # 创建Canvas作为主画布
+        self.canvas = tk.Canvas(
+            self,
+            width=1440,
+            height=1024,
+            highlightthickness=0,
+            bg="#FFFFFF"
+        )
+        self.canvas.pack()
+
+        # ============ 1. 左侧导航背景 ============
+        # 导航背景 - left:9, top:9, width:270, height:1006
+        nav_bg = self._load_image(self.navigation_dir, "Background.png", (270, 1006))
+        if nav_bg:
+            self.images["nav_bg"] = nav_bg
+            self.canvas.create_image(9, 9, image=nav_bg, anchor="nw")
+
+        # ============ 2. 首页所有静态图片 ============
+        # 严格按照原坐标放置
+        homepage_images = [
+            ("Files.png", 899, 267),      # 610+289=899
+            ("Group.png", 899, 813),      # 610+289=899
+            ("Project_Name.png", 296, 142),  # 7+289=296
+            ("Search.png", 899, 182),     # 610+289=899
+            ("User.png", 296, 665),       # 7+289=296
+            ("Welcome.png", 296, 7)       # 7+289=296
         ]
-        self.buttons = []
-        self.button_group = QButtonGroup(self)
-        self.button_group.setExclusive(True)
 
-        example_path = os.path.join("core", "UI", "UI_resource", "Navigation", "Buttons", "Unselected",
-                                    "Home_Button.png")
-        if os.path.exists(example_path):
-            pix = QPixmap(example_path)
-            btn_width = pix.width()
-            btn_height = pix.height()
+        for filename, x, y in homepage_images:
+            img = self._load_image(self.homepage_dir, filename)
+            if img:
+                key = f"home_{filename}"
+                self.images[key] = img
+                self.canvas.create_image(x, y, image=img, anchor="nw")
+
+        # ============ 3. 创建导航按钮 ============
+        self.create_nav_buttons()
+
+        # ============ 4. 右侧面板容器 ============
+        # 创建一个容器Frame放在右侧区域，但不覆盖首页图片（通过 place 控制覆盖）
+        self.panel_container = tk.Frame(
+            self,
+            bg="#FFFFFF",
+            highlightthickness=0
+        )
+        # 初始隐藏
+        self.panel_container.place(x=289, y=0, width=1151, height=1024)
+        self.panel_container.place_forget()
+
+        # ============ 5. 初始化各个功能面板 ============
+        self.init_panels()
+
+    def init_ai_assistant(self):
+        """初始化右下角 AI 科研助手小气泡按钮和对话窗口"""
+        # 创建 AI 对话逻辑
+        self.ai_logic = SimpleAIChat()
+        # 创建对话窗口（初始隐藏）
+        self.ai_window = AIChatWindow(self, self.ai_logic)
+        self.ai_window.hide()
+
+        # 右下角小气泡按钮：优先使用 ai_chat.png 图片
+        self.ai_icon_img = None
+        if PIL_AVAILABLE:
+            try:
+                # 默认放在 core/UI/UI_resource/ai_chat.png
+                ai_icon_path = self.project_root / "core" / "UI" / "UI_resource" / "ai_chat.png"
+                if ai_icon_path.exists():
+                    img = Image.open(ai_icon_path)
+                    # 等比例缩放（最长边不超过 90），避免拉伸变形
+                    max_side = max(img.size)
+                    if max_side > 90:
+                        scale = 90 / max_side
+                        new_size = (int(img.size[0] * scale), int(img.size[1] * scale))
+                        img = img.resize(new_size, Image.Resampling.LANCZOS)
+                    self.ai_icon_img = ImageTk.PhotoImage(img)
+            except Exception as e:
+                print(f"⚠️ 加载 AI 小气泡图标失败: {e}")
+
+        if self.ai_icon_img is not None:
+            self.ai_button = tk.Button(
+                self,
+                image=self.ai_icon_img,
+                command=self.toggle_ai_chat,
+                bg="#FFFFFF",
+                activebackground="#FFFFFF",
+                relief="flat",
+                bd=0,
+                cursor="hand2"
+            )
         else:
-            btn_width, btn_height = 200, 80
-            print("警告：未找到示例图片，使用默认按钮尺寸 200x80")
+            # 回退为文字按钮
+            self.ai_button = tk.Button(
+                self,
+                text="💬 AI助手",
+                command=self.toggle_ai_chat,
+                bg="#2D7DDB",
+                fg="white",
+                activebackground="#1E6BC6",
+                activeforeground="white",
+                relief="flat",
+                bd=0,
+                font=("微软雅黑", 9, "bold"),
+                cursor="hand2",
+                padx=10,
+                pady=6
+            )
+        # 悬浮在主窗口右下角，不随页面切换消失
+        self.ai_button.place(relx=1.0, rely=1.0, x=-24, y=-24, anchor="se")
 
-        for idx, (name, unsel_file, sel_file, y) in enumerate(buttons_info):
-            btn = QPushButton(self.left_nav)
-            btn.setGeometry(39, y, btn_width, btn_height)
-            btn.setCheckable(True)
-            btn.setCursor(Qt.PointingHandCursor)
-
-            unsel_path = os.path.join("core", "UI", "UI_resource", "Navigation", "Buttons", "Unselected", unsel_file)
-            sel_path = os.path.join("core", "UI", "UI_resource", "Navigation", "Buttons", "Selected", sel_file)
-            unsel_path = unsel_path.replace('\\', '/')
-            sel_path = sel_path.replace('\\', '/')
-
-            style = f"""
-            QPushButton {{
-                background-image: url({unsel_path});
-                background-repeat: no-repeat;
-                background-position: center;
-                border: none;
-            }}
-            QPushButton:checked {{
-                background-image: url({sel_path});
-            }}
-            """
-            btn.setStyleSheet(style)
-            self.buttons.append(btn)
-            self.button_group.addButton(btn, idx)
-
-        self.buttons[0].setChecked(True)
-
-        self.stacked_widget = QStackedWidget(self)
-        self.stacked_widget.setGeometry(289, 0, 1151, 1024)
-
-        # ========== 修改：创建场景页面 ==========
-        scene_names = ["首页", "预处理", "特征提取", "统计分析", "可视化"]
-        self.pages = []
-        for idx, name in enumerate(scene_names):
-            if name == "统计分析":
-                # 统计分析页面使用我们的 AnalysisPanel
-                page = AnalysisPanel()
+    def toggle_ai_chat(self):
+        """显示/隐藏 AI 科研助手窗口"""
+        # 如果窗口当前是最小化状态，则显示；否则切换隐藏
+        try:
+            # 简单判断：如果窗口不可见，则显示
+            if not self.ai_window.window.winfo_viewable():
+                self.ai_window.show()
             else:
-                # 其他页面暂时放标签
-                page = QWidget()
-                layout = QVBoxLayout(page)
-                label = QLabel(f"这是 {name} 场景")
-                label.setAlignment(Qt.AlignCenter)
-                layout.addWidget(label)
+                self.ai_window.hide()
+        except Exception:
+            # 如有异常，尝试重新创建窗口
+            self.ai_window = AIChatWindow(self, self.ai_logic)
+            self.ai_window.hide()
 
-            self.stacked_widget.addWidget(page)
-            self.pages.append(page)
+    def create_nav_buttons(self):
+        """创建导航按钮 - 保持原位置和样式"""
+        nav_buttons = [
+            ("首页", "Home_Button.png", 39, 231),
+            ("预处理", "Preprocessing_Button.png", 39, 323),
+            ("特征提取", "Feature_Extraction_Button.png", 39, 415),
+            ("统计分析", "Statistical_Analysis_Button.png", 39, 507),
+            ("可视化", "Virtualization_Button.png", 39, 599),
+        ]
 
-        self.stacked_widget.setCurrentIndex(0)
-        self.button_group.buttonClicked[int].connect(self.on_nav_button_clicked)
+        self.nav_button_ids = {}
 
-    def on_nav_button_clicked(self, btn_id):
-        self.stacked_widget.setCurrentIndex(btn_id)
+        for text, filename, x, y in nav_buttons:
+            # 根据当前选中状态决定使用哪张图片
+            if text == self.current_button:
+                btn = self._load_image(self.nav_buttons_selected_dir, filename, (213, 62))
+            else:
+                btn = self._load_image(self.nav_buttons_unselected_dir, filename, (213, 62))
+
+            if btn:
+                key = f"nav_{text}"
+                self.images[key] = btn
+                img_id = self.canvas.create_image(x, y, image=btn, anchor="nw")
+
+                # 存储按钮信息
+                self.nav_button_ids[img_id] = {
+                    "text": text,
+                    "filename": filename
+                }
+
+                # 绑定点击事件
+                self.canvas.tag_bind(img_id, "<Button-1>", lambda e, iid=img_id: self.on_nav_click(iid))
+                self.canvas.tag_bind(img_id, "<Enter>", lambda e: self.canvas.config(cursor="hand2"))
+                self.canvas.tag_bind(img_id, "<Leave>", lambda e: self.canvas.config(cursor=""))
+
+    def init_panels(self):
+        """初始化所有功能面板"""
+        self.panels = {}
+
+        # 预处理面板（作为子面板嵌入右侧容器，仅显示右侧功能区，左侧导航复用主界面）
+        try:
+            self.panels["预处理"] = PreprocessingApp(
+                self.panel_container,
+                show_navigation=False
+            )
+        except Exception as e:
+            print(f"加载预处理面板失败: {e}")
+            self.panels["预处理"] = None
+
+        # 可视化面板 - 使用其自带的 show_navigation 参数隐藏内部导航
+        try:
+            self.panels["可视化"] = NeuroPioneerPanel(
+                self.panel_container,
+                show_navigation=False
+            )
+        except Exception as e:
+            print(f"加载可视化面板失败: {e}")
+            self.panels["可视化"] = None
+
+        # 其他面板暂未实现
+        self.panels["特征提取"] = None
+        self.panels["统计分析"] = None
+
+        # 预加载面板但不显示
+        for panel in self.panels.values():
+            if panel:
+                panel.place_forget()
+
+    def on_nav_click(self, img_id):
+        """导航按钮点击事件"""
+        if img_id not in self.nav_button_ids:
+            return
+
+        button_info = self.nav_button_ids[img_id]
+        button_text = button_info["text"]
+
+        if button_text == self.current_button:
+            return
+
+        print(f"切换到: {button_text}")
+
+        # 更新按钮状态
+        self.update_button_states(button_text)
+
+        # 处理面板切换
+        if button_text == "首页":
+            # 显示首页图片，隐藏面板容器
+            self.show_home()
+        else:
+            # 隐藏首页图片，显示对应的功能面板
+            self.show_panel(button_text)
+
+        # 更新当前按钮
+        self.current_button = button_text
+
+    def update_button_states(self, selected_text):
+        """更新所有按钮的状态"""
+        for img_id, info in self.nav_button_ids.items():
+            if info["text"] == selected_text:
+                # 选中状态
+                btn = self._load_image(
+                    self.nav_buttons_selected_dir,
+                    info["filename"],
+                    (213, 62)
+                )
+                if btn:
+                    key = f"nav_sel_{info['text']}"
+                    self.images[key] = btn
+                    self.canvas.itemconfig(img_id, image=btn)
+            else:
+                # 未选中状态
+                btn = self._load_image(
+                    self.nav_buttons_unselected_dir,
+                    info["filename"],
+                    (213, 62)
+                )
+                if btn:
+                    key = f"nav_unsel_{info['text']}"
+                    self.images[key] = btn
+                    self.canvas.itemconfig(img_id, image=btn)
+
+    def show_home(self):
+        """显示首页"""
+        # 隐藏面板容器
+        self.panel_container.place_forget()
+        # 首页图片本身就在主 canvas 上，无需额外显示/隐藏处理
+
+    def show_panel(self, panel_name):
+        """显示指定的功能面板"""
+        # 显示面板容器（覆盖右侧首页图片区域）
+        self.panel_container.place(x=289, y=0, width=1151, height=1024)
+
+        # 隐藏容器内所有面板
+        for panel in self.panels.values():
+            if panel:
+                panel.place_forget()
+
+        # 显示选中的面板
+        if panel_name in self.panels and self.panels[panel_name]:
+            self.panels[panel_name].place(x=0, y=0, width=1151, height=1024)
+        else:
+            # 显示未实现提示
+            self.show_not_implemented(panel_name)
+
+    def show_not_implemented(self, panel_name):
+        """显示未实现提示"""
+        temp_frame = tk.Frame(self.panel_container, bg="#FFFFFF")
+        temp_frame.place(x=0, y=0, width=1151, height=1024)
+
+        tk.Label(
+            temp_frame,
+            text=f"{panel_name}功能开发中",
+            font=("微软雅黑", 24),
+            bg="#FFFFFF",
+            fg="#999999"
+        ).place(relx=0.5, rely=0.5, anchor="center")
+
+        # 3秒后自动销毁
+        self.after(3000, temp_frame.destroy)
+
+    def _load_image(self, directory, filename, size=None):
+        """加载图片"""
+        if not PIL_AVAILABLE:
+            return None
+
+        img_path = Path(directory) / filename
+        if not img_path.exists():
+            print(f"⚠️ 图片不存在: {img_path}")
+            return None
+
+        try:
+            img = Image.open(img_path)
+            if size:
+                img = img.resize(size, Image.Resampling.LANCZOS)
+            return ImageTk.PhotoImage(img)
+        except Exception as e:
+            print(f"❌ 加载图片失败 {filename}: {e}")
+            return None
 
 
-if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec_())
+if __name__ == "__main__":
+    # 尝试设置DPI感知
+    try:
+        from ctypes import windll
+
+        windll.shcore.SetProcessDpiAwareness(1)
+    except:
+        pass
+
+    app = MainUI()
+    app.mainloop()

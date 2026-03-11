@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 visualization_panel.py
-可视化集成面板 - 严格按照设计稿1440×1024绝对坐标布局
+可视化集成面板 - 固定尺寸1440×1024绝对坐标布局（与预处理模块一致）
 包含导航按钮选中/未选中状态切换
 """
 import sys
@@ -42,7 +42,11 @@ except ImportError:
 
 
 class NeuroPioneerPanel(ttk.Frame):
-    def __init__(self, parent, data_dict=None, file_path=None, **kwargs):
+    def __init__(self, parent, data_dict=None, file_path=None, show_navigation=True, **kwargs):
+        """
+        show_navigation: 是否显示左侧导航栏，默认为True
+                        在主界面作为子面板时设为False
+        """
         super().__init__(parent, **kwargs)
         self.parent = parent
         self.data_dict = data_dict
@@ -50,6 +54,7 @@ class NeuroPioneerPanel(ttk.Frame):
         self.data_loader = DataLoader()
         self.images = {}  # 保持图片引用
         self.file_path_var = tk.StringVar()
+        self.show_navigation = show_navigation  # 新增参数
 
         # 资源目录
         self.resource_dir = project_root / "core" / "UI" / "UI_resource" / "Virtualization_Panel"
@@ -68,84 +73,105 @@ class NeuroPioneerPanel(ttk.Frame):
             self.load_file(file_path)
 
     def setup_ui(self):
-        """初始化UI - 直接使用设计稿绝对坐标 (1440×1024)"""
-        # Canvas 直接设为设计稿尺寸
-        self.canvas = tk.Canvas(self, width=1440, height=1024, highlightthickness=0, bg="#FFFFFF")
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        """初始化UI - 使用设计稿绝对坐标 (1440×1024) - 固定尺寸"""
+        # 设置固定尺寸
+        self.configure(width=1440, height=1024)
+        self.pack_propagate(False)  # 禁止子控件改变Frame大小
 
-        # ============ 1. 左侧导航区 ============
-        # 导航背景 - left:9, top:9, width:270, height:1006
-        nav_bg = self._load_image(self.navigation_dir, "Background.png", (270, 1006))
-        if nav_bg:
-            self.images["nav_bg"] = nav_bg
-            self.canvas.create_image(9, 9, image=nav_bg, anchor="nw")
+        # 创建Canvas，固定尺寸
+        self.canvas = tk.Canvas(
+            self,
+            width=1440,
+            height=1024,
+            highlightthickness=0,
+            bg="#FFFFFF"
+        )
+        self.canvas.pack(fill=tk.BOTH, expand=False)  # 不扩展
 
-        # 当前选中的导航按钮（默认为"可视化"）
-        self.current_nav_button = "virtualization"
+        # 计算内容区域的起始X坐标
+        if self.show_navigation:
+            # 显示导航栏时，内容从298开始（导航栏宽度270 + 左边距9 + 右边距19）
+            self.content_start_x = 298
+        else:
+            # 不显示导航栏时，内容从9开始（紧贴左边）
+            self.content_start_x = 9
 
-        # 导航按钮定义
-        nav_buttons = [
-            ("Home_Button.png", 39, 231, self.home, "home"),
-            ("Preprocessing_Button.png", 39, 323, self.preprocessing, "preprocessing"),
-            ("Feature_Extraction_Button.png", 39, 415, self.feature_extraction, "feature_extraction"),
-            ("Statistical_Analysis_Button.png", 39, 507, self.statistical_analysis, "statistical_analysis"),
-            ("Virtualization_Button.png", 39, 599, self.virtualization, "virtualization"),
-        ]
+        # ============ 1. 左侧导航区（可选） ============
+        if self.show_navigation:
+            # 导航背景 - left:9, top:9, width:270, height:1006
+            nav_bg = self._load_image(self.navigation_dir, "Background.png", (270, 1006))
+            if nav_bg:
+                self.images["nav_bg"] = nav_bg
+                self.canvas.create_image(9, 9, image=nav_bg, anchor="nw")
 
-        # 存储按钮ID和对应信息的字典
-        self.nav_button_ids = {}
+            # 当前选中的导航按钮（默认为"可视化"）
+            self.current_nav_button = "virtualization"
 
-        for filename, x, y, command, button_id in nav_buttons:
-            # 默认使用未选中状态的图片
-            btn = self._load_image(self.nav_buttons_unselected_dir, filename, (213, 62))
-            if btn:
-                key = f"nav_{filename}"
-                self.images[key] = btn
-                img_id = self.canvas.create_image(x, y, image=btn, anchor="nw")
+            # 导航按钮定义
+            nav_buttons = [
+                ("Home_Button.png", 39, 231, self.home, "home"),
+                ("Preprocessing_Button.png", 39, 323, self.preprocessing, "preprocessing"),
+                ("Feature_Extraction_Button.png", 39, 415, self.feature_extraction, "feature_extraction"),
+                ("Statistical_Analysis_Button.png", 39, 507, self.statistical_analysis, "statistical_analysis"),
+                ("Virtualization_Button.png", 39, 599, self.virtualization, "virtualization"),
+            ]
 
-                # 存储按钮信息
-                self.nav_button_ids[img_id] = {
-                    "id": button_id,
-                    "command": command,
-                    "x": x,
-                    "y": y,
-                    "filename": filename
-                }
+            # 存储按钮ID和对应信息的字典
+            self.nav_button_ids = {}
 
-                # 绑定点击事件
-                self.canvas.tag_bind(img_id, "<Button-1>", lambda e, iid=img_id: self.on_nav_button_click(iid))
+            for filename, x, y, command, button_id in nav_buttons:
+                # 默认使用未选中状态的图片
+                btn = self._load_image(self.nav_buttons_unselected_dir, filename, (213, 62))
+                if btn:
+                    key = f"nav_{filename}"
+                    self.images[key] = btn
+                    img_id = self.canvas.create_image(x, y, image=btn, anchor="nw")
 
-        # 设置默认选中"可视化"按钮
-        self.highlight_nav_button("virtualization")
+                    # 存储按钮信息
+                    self.nav_button_ids[img_id] = {
+                        "id": button_id,
+                        "command": command,
+                        "x": x,
+                        "y": y,
+                        "filename": filename
+                    }
+
+                    # 绑定点击事件
+                    self.canvas.tag_bind(img_id, "<Button-1>", lambda e, iid=img_id: self.on_nav_button_click(iid))
+
+                    # 添加鼠标悬停效果
+                    self.canvas.tag_bind(img_id, "<Enter>", lambda e: self.canvas.config(cursor="hand2"))
+                    self.canvas.tag_bind(img_id, "<Leave>", lambda e: self.canvas.config(cursor=""))
+
+            # 设置默认选中"可视化"按钮
+            self.highlight_nav_button("virtualization")
 
         # ============ 2. 顶部文件选择区 ============
-        # 文件选择背景 - left:298, top:9, width:1134, height:201
+        # 文件选择背景 - left:content_start_x, top:9, width:1134, height:201
         file_bg = self._load_image(self.resource_dir, "File_Selection_Background.png", (1134, 201))
         if file_bg:
             self.images["file_bg"] = file_bg
-            self.canvas.create_image(298, 9, image=file_bg, anchor="nw")
+            self.canvas.create_image(self.content_start_x, 9, image=file_bg, anchor="nw")
 
         # 地址栏 - left:510, top:33, width:889, height:55
+        # 注意：地址栏相对于文件选择背景的位置是固定的
         addr_bar = self._load_image(self.resource_dir, "File_Address_Bar.png", (889, 55))
         if addr_bar:
+            # 地址栏在文件选择背景内的偏移是 (212, 24)
+            addr_x = self.content_start_x + 212
+            addr_y = 33
             self.images["addr_bar"] = addr_bar
-            self.canvas.create_image(510, 33, image=addr_bar, anchor="nw")
+            self.canvas.create_image(addr_x, addr_y, image=addr_bar, anchor="nw")
 
-        # 真实Entry（放在地址栏上）
-        self.path_entry = tk.Entry(
-            self,
-            textvariable=self.file_path_var,
+        # 直接在 Canvas 上创建文字（完全透明，不会覆盖任何东西）
+        self.file_path_text_id = self.canvas.create_text(
+            self.content_start_x + 222,  # x坐标 (212 + 10)
+            33 + 55 // 2,  # y坐标（垂直居中）
+            text="",
             font=("微软雅黑", 11),
-            bd=0,
-            relief=tk.FLAT,
-            state="readonly",
-            readonlybackground="white"
-        )
-        self.canvas.create_window(
-            510 + 889 // 2, 33 + 55 // 2,
-            window=self.path_entry,
-            width=849,
-            height=45
+            fill="#333333",
+            anchor="w",  # 左对齐
+            width=840  # 限制宽度，防止溢出
         )
 
         # ============ 3. 顶部四个操作按钮 ============
@@ -156,30 +182,25 @@ class NeuroPioneerPanel(ttk.Frame):
             ("reset_button.png", 1070, 120, self.reset_data),
         ]
 
-        for filename, x, y, command in top_buttons:
+        for filename, design_x, design_y, command in top_buttons:
+            # 设计稿中的x坐标是相对于文件选择背景的
+            actual_x = self.content_start_x + (design_x - 298)  # 298是设计稿中文件选择背景的起始x
             btn_img = self._load_image(self.buttons_loading_dir, filename, (211, 55))
             if btn_img:
-                btn = tk.Button(
-                    self,
-                    image=btn_img,
-                    bd=0,
-                    cursor="hand2",
-                    command=command
-                )
-                btn.image = btn_img
-                self.canvas.create_window(
-                    x + 211 // 2,
-                    y + 55 // 2,
-                    window=btn,
-                    width=211,
-                    height=55
-                )
+                # 直接使用canvas.create_image，不创建Button控件
+                img_id = self.canvas.create_image(actual_x, design_y, image=btn_img, anchor="nw")
+                self.images[f"btn_{filename}"] = btn_img
+                # 绑定点击事件
+                self.canvas.tag_bind(img_id, "<Button-1>", lambda e, c=command: c())
+                # 添加鼠标悬停效果
+                self.canvas.tag_bind(img_id, "<Enter>", lambda e: self.canvas.config(cursor="hand2"))
+                self.canvas.tag_bind(img_id, "<Leave>", lambda e: self.canvas.config(cursor=""))
 
         # ============ 4. 功能区背景 ============
         func_bg = self._load_image(self.resource_dir, "Function_Selection.png", (516, 775))
         if func_bg:
             self.images["func_bg"] = func_bg
-            self.canvas.create_image(298, 240, image=func_bg, anchor="nw")
+            self.canvas.create_image(self.content_start_x, 240, image=func_bg, anchor="nw")
 
         # ============ 5. 六个功能卡片 ============
         function_cards = [
@@ -191,26 +212,35 @@ class NeuroPioneerPanel(ttk.Frame):
             ("feature_map_button.png", self.open_feature_view, 559, 783),
         ]
 
-        for filename, command, left, top in function_cards:
+        for filename, command, design_x, design_y in function_cards:
+            # 设计稿中的x坐标是相对于文件选择背景的
+            actual_x = self.content_start_x + (design_x - 298)
             card_img = self._load_image(self.buttons_function_dir, filename, (222, 205))
             if card_img:
                 key = f"card_{filename}"
                 self.images[key] = card_img
-                img_id = self.canvas.create_image(left, top, image=card_img, anchor="nw")
+                img_id = self.canvas.create_image(actual_x, design_y, image=card_img, anchor="nw")
+                # 绑定点击事件
                 self.canvas.tag_bind(img_id, "<Button-1>", lambda e, c=command: c())
+                # 添加鼠标悬停效果
+                self.canvas.tag_bind(img_id, "<Enter>", lambda e: self.canvas.config(cursor="hand2"))
+                self.canvas.tag_bind(img_id, "<Leave>", lambda e: self.canvas.config(cursor=""))
 
         # ============ 6. 右侧数据信息面板 ============
         info_img = self._load_image(self.resource_dir, "Data_Information.png", (583, 451))
         if info_img:
+            # 信息面板在文件选择背景内的偏移是 (539, 231)
+            info_x = self.content_start_x + 539
+            info_y = 240
             self.images["info_bg"] = info_img
-            self.canvas.create_image(837, 240, image=info_img, anchor="nw")
+            self.canvas.create_image(info_x, info_y, image=info_img, anchor="nw")
 
-        # 数据信息内容（动态更新）
+        # 数据信息内容（动态更新）- 放在面板中央
         self.info_text_id = self.canvas.create_text(
-            837 + 583 // 2,
-            240 + 451 // 2,
+            info_x + 583 // 2,  # 水平居中
+            info_y + 451 // 2,  # 垂直居中
             text="请加载数据文件或使用演示数据",
-            width=583 - 80,
+            width=583 - 80,  # 留些边距
             font=("微软雅黑", 12),
             fill="#333333"
         )
@@ -219,26 +249,36 @@ class NeuroPioneerPanel(ttk.Frame):
         # 智融脑机 - left:896, top:754, width:502, height:133
         znrj = self._load_image(self.resource_dir, "znrj.png", (502, 133))
         if znrj:
+            # 品牌区在文件选择背景内的偏移是 (598, 745)
+            znrj_x = self.content_start_x + 598
+            znrj_y = 754
             self.images["znrj"] = znrj
-            self.canvas.create_image(896, 754, image=znrj, anchor="nw")
+            self.canvas.create_image(znrj_x, znrj_y, image=znrj, anchor="nw")
 
         # dmxfnd - left:996, top:870, width:235, height:56
         dmxfnd = self._load_image(self.resource_dir, "dmxfnd.png", (235, 56))
         if dmxfnd:
+            dmxfnd_x = self.content_start_x + 698
+            dmxfnd_y = 870
             self.images["dmxfnd"] = dmxfnd
-            self.canvas.create_image(996, 870, image=dmxfnd, anchor="nw")
+            self.canvas.create_image(dmxfnd_x, dmxfnd_y, image=dmxfnd, anchor="nw")
 
         # mtbci - left:1203, top:884, width:209, height:46
         mtbci = self._load_image(self.resource_dir, "mtbci.png", (209, 46))
         if mtbci:
+            mtbci_x = self.content_start_x + 905
+            mtbci_y = 884
             self.images["mtbci"] = mtbci
-            self.canvas.create_image(1203, 884, image=mtbci, anchor="nw")
+            self.canvas.create_image(mtbci_x, mtbci_y, image=mtbci, anchor="nw")
 
         # 初次刷新信息
         self.update_file_info()
 
     def on_nav_button_click(self, img_id):
-        """导航按钮点击事件"""
+        """导航按钮点击事件 - 仅在独立运行时有效"""
+        if not self.show_navigation:
+            return
+
         if img_id in self.nav_button_ids:
             button_info = self.nav_button_ids[img_id]
             button_id = button_info["id"]
@@ -250,7 +290,10 @@ class NeuroPioneerPanel(ttk.Frame):
             button_info["command"]()
 
     def highlight_nav_button(self, button_id):
-        """高亮指定的导航按钮"""
+        """高亮指定的导航按钮 - 仅在独立运行时有效"""
+        if not self.show_navigation:
+            return
+
         # 按钮ID和文件名的对应关系
         button_files = {
             "home": "Home_Button.png",
@@ -304,24 +347,34 @@ class NeuroPioneerPanel(ttk.Frame):
             print(f"❌ 加载图片失败 {filename}: {e}")
             return None
 
-    # ============ 导航按钮功能 ============
+    # ============ 导航按钮功能（仅在独立运行时有效） ============
     def home(self):
+        if not self.show_navigation:
+            return
         print("首页")
         messagebox.showinfo("提示", "首页功能待实现")
 
     def preprocessing(self):
+        if not self.show_navigation:
+            return
         print("预处理")
         messagebox.showinfo("提示", "预处理功能待实现")
 
     def feature_extraction(self):
+        if not self.show_navigation:
+            return
         print("特征提取")
         messagebox.showinfo("提示", "特征提取功能待实现")
 
     def statistical_analysis(self):
+        if not self.show_navigation:
+            return
         print("数据分析")
         messagebox.showinfo("提示", "数据分析功能待实现")
 
     def virtualization(self):
+        if not self.show_navigation:
+            return
         print("可视化")
         messagebox.showinfo("提示", "可视化功能待实现")
 
@@ -398,6 +451,13 @@ class NeuroPioneerPanel(ttk.Frame):
 
     def update_file_info(self):
         """更新文件信息显示"""
+        # 更新文件路径显示
+        if self.file_path_var.get():
+            self.canvas.itemconfig(self.file_path_text_id, text=self.file_path_var.get())
+        else:
+            self.canvas.itemconfig(self.file_path_text_id, text="")
+
+        # 更新右侧信息面板（原来的代码保持不变）
         if not self.data_dict:
             info = "请加载数据文件或使用演示数据"
         else:
@@ -508,12 +568,27 @@ class NeuroPioneerPanel(ttk.Frame):
 
 
 if __name__ == "__main__":
+    # 独立运行时显示导航栏
+    try:
+        from ctypes import windll
+
+        windll.shcore.SetProcessDpiAwareness(1)
+    except:
+        pass
+
     root = tk.Tk()
     root.title("NeuroPioneer 可视化面板")
+
+    # 固定尺寸，禁止调整窗口大小
     root.geometry("1440x1024")
     root.resizable(False, False)
 
-    app = NeuroPioneerPanel(root)
+    # 设置窗口背景色
+    root.configure(bg="#FFFFFF")
+
+    # 创建应用实例 - 独立运行时显示导航栏
+    app = NeuroPioneerPanel(root, show_navigation=True)
     app.pack(fill=tk.BOTH, expand=True)
 
+    # 进入主循环
     root.mainloop()
