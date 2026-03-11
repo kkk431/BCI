@@ -2,8 +2,7 @@
 # isort: skip_file
 # flake8: noqa
 """
-智融脑机 - 信号预处理模块 GUI (精美图片UI重构版)
-保留了所有原版预处理业务逻辑，引入了指定的图片作为UI界面和按钮。
+智融脑机 - 信号预处理模块 GUI
 """
 
 import os
@@ -226,9 +225,15 @@ class ManualModalityDialog(tk.Toplevel):
 
 
 class PreprocessingApp(tk.Frame):
-    def __init__(self, parent, *args, **kwargs):
+    def __init__(self, parent, *args, show_navigation: bool = True, **kwargs):
+        """
+        show_navigation:
+            - True  : 独立运行预处理面板，自带左侧导航栏（原始布局）
+            - False : 作为子面板嵌入主界面，仅显示右侧功能区，左侧导航复用主界面
+        """
         super().__init__(parent, bg=BG_COLOR, *args, **kwargs)
         self.parent = parent
+        self.show_navigation = show_navigation
 
         self.raw_data_dict = None
         self.processed_data_dict = None
@@ -309,42 +314,55 @@ class PreprocessingApp(tk.Frame):
         self.canvas.tag_bind(item_id, "<Leave>", lambda e: self.canvas.config(cursor=""))
 
     def setup_ui(self):
-        # 使用整屏 Canvas 进行底层布局
-        self.canvas = tk.Canvas(self, width=1440, height=1024, bg=BG_COLOR, highlightthickness=0)
+        # 使用 Canvas 进行底层布局
+        canvas_width = 1440 if self.show_navigation else 1151
+        self.canvas = tk.Canvas(self, width=canvas_width, height=1024, bg=BG_COLOR, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
 
         # ------------------- 绘制静态 UI 背景 -------------------
-        # 先绘制全局背景 (left:289, top:0, width:1151, height:1024)
-        self.canvas.create_image(289, 0, image=self.images["global_bg"], anchor="nw")
+        # 当嵌入主界面时，将原本位于 x=289 右侧的内容整体左移 289 像素，并隐藏自身导航栏
+        offset_x = 0 if self.show_navigation else -289
 
-        # 其他背景图片
-        self.canvas.create_image(9, 9, image=self.images["nav_bg"], anchor="nw")
-        self.canvas.create_image(297, 9, image=self.images["prep_bg"], anchor="nw")
-        self.canvas.create_image(511, 31, image=self.images["file_bar"], anchor="nw")
-        self.canvas.create_image(311, 174, image=self.images["global_set"], anchor="nw")
-        self.canvas.create_image(870, 167, image=self.images["detail_set"], anchor="nw")
-        self.canvas.create_image(298, 772, image=self.images["proc_info"], anchor="nw")
+        # 全局背景 (原始: left:289, top:0, width:1151, height:1024)
+        self.canvas.create_image(289 + offset_x, 0, image=self.images["global_bg"], anchor="nw")
+
+        # 左侧导航背景（仅在独立运行时显示）
+        if self.show_navigation:
+            self.canvas.create_image(9, 9, image=self.images["nav_bg"], anchor="nw")
+
+        # 其他背景图片（根据是否嵌入模式调整 x 坐标）
+        self.canvas.create_image(297 + offset_x, 9, image=self.images["prep_bg"], anchor="nw")
+        self.canvas.create_image(511 + offset_x, 31, image=self.images["file_bar"], anchor="nw")
+        self.canvas.create_image(311 + offset_x, 174, image=self.images["global_set"], anchor="nw")
+        self.canvas.create_image(870 + offset_x, 167, image=self.images["detail_set"], anchor="nw")
+        self.canvas.create_image(298 + offset_x, 772, image=self.images["proc_info"], anchor="nw")
 
         # ------------------- 初始化按钮和组件 -------------------
-        self._create_nav_buttons()
-        self._create_action_buttons()
-        self._create_modality_buttons()
+        # 左侧导航按钮仅在独立运行模式下创建
+        if self.show_navigation:
+            self._create_nav_buttons()
+
+        self._create_action_buttons(offset_x=offset_x)
+        self._create_modality_buttons(offset_x=offset_x)
 
         # 显示文件路径信息的文本 Label
         self.lbl_status = tk.Label(self, text="请上传文件...", font=FONT_NORMAL, bg="#ffffff", fg="#666666", anchor="w")
-        self.lbl_status.place(x=530, y=42, width=860, height=35)
+        # 原始 x=530，相对于整体右移/左移 offset_x
+        self.lbl_status.place(x=530 + offset_x, y=42, width=860, height=35)
 
         # ========== 1. 全局设置区域 ==========
         # 增大高度以容纳更大的行间距
         self.global_frame = tk.Frame(self, bg=BG_COLOR)
-        self.global_frame.place(x=331, y=220, width=504, height=260)  # 高度从220增至260
+        # 原始 x=331
+        self.global_frame.place(x=331 + offset_x, y=220, width=504, height=260)  # 高度从220增至260
         # 创建参数控件，行间距设为8，使文字更舒适
         self._create_param_widgets(self.global_frame, GLOBAL_PARAMS, self.global_widgets, pady=8)
 
         # ========== 2. 详细设置区域 ==========
         # 再下移一点，避免遮挡
         self.detail_frame = tk.Frame(self, bg=BG_COLOR)
-        self.detail_frame.place(x=890, y=230, width=508, height=500)  # y从210改为230
+        # 原始 x=890
+        self.detail_frame.place(x=890 + offset_x, y=230, width=508, height=500)  # y从210改为230
 
         # 创建四个模态面板，全部放入 detail_frame 同一位置，初始隐藏
         self.modality_panels = {}
@@ -364,7 +382,8 @@ class PreprocessingApp(tk.Frame):
         # ========== 3. 处理信息区域 ==========
         # 使用普通 Frame，无滚动条；位置 x=318, y=825（比原820下移5像素），宽度900，高度280
         self.proc_frame = tk.Frame(self, bg=BG_COLOR)
-        self.proc_frame.place(x=318, y=825, width=900, height=280)
+        # 原始 x=318
+        self.proc_frame.place(x=318 + offset_x, y=825, width=900, height=280)
 
         # 内部内容容器
         self.proc_content = tk.Frame(self.proc_frame, bg=BG_COLOR)
@@ -401,19 +420,22 @@ class PreprocessingApp(tk.Frame):
         self.current_nav = name
         # TODO: 后续预留接入其他功能场景（特征提取/分析等）
 
-    def _create_action_buttons(self):
-        self.btn_browse = self.canvas.create_image(311, 102, image=self.images["btn_browse"], anchor="nw")
+    def _create_action_buttons(self, offset_x: int = 0):
+        # 原始 x=311, 349, 590
+        self.btn_browse = self.canvas.create_image(311 + offset_x, 102, image=self.images["btn_browse"], anchor="nw")
         self.bind_btn(self.btn_browse, self.action_load_data)
 
-        self.btn_start = self.canvas.create_image(349, 525, image=self.images["btn_start"], anchor="nw")
+        self.btn_start = self.canvas.create_image(349 + offset_x, 525, image=self.images["btn_start"], anchor="nw")
         self.bind_btn(self.btn_start, self.action_run_preprocessing)
 
-        self.btn_save = self.canvas.create_image(590, 525, image=self.images["btn_save"], anchor="nw")
+        self.btn_save = self.canvas.create_image(590 + offset_x, 525, image=self.images["btn_save"], anchor="nw")
         self.bind_btn(self.btn_save, self.action_save_results)
 
-    def _create_modality_buttons(self):
+    def _create_modality_buttons(self, offset_x: int = 0):
         self.mod_items = {}
-        coords = {"EEG": 653, "EMG": 838, "ECG": 1023, "fNIRS": 1208}
+        # 原始 x 坐标
+        base_coords = {"EEG": 653, "EMG": 838, "ECG": 1023, "fNIRS": 1208}
+        coords = {mod: x + offset_x for mod, x in base_coords.items()}
 
         for mod, x in coords.items():
             img_key = f"{mod.lower()}_unsel"
