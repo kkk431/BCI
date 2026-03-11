@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 visualization_panel.py
-可视化集成面板 - 严格按照设计稿1440×1024绝对坐标布局
+可视化集成面板 - 固定尺寸1440×1024绝对坐标布局（与预处理模块一致）
 包含导航按钮选中/未选中状态切换
 """
 import sys
@@ -68,10 +68,20 @@ class NeuroPioneerPanel(ttk.Frame):
             self.load_file(file_path)
 
     def setup_ui(self):
-        """初始化UI - 直接使用设计稿绝对坐标 (1440×1024)"""
-        # Canvas 直接设为设计稿尺寸
-        self.canvas = tk.Canvas(self, width=1440, height=1024, highlightthickness=0, bg="#FFFFFF")
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        """初始化UI - 使用设计稿绝对坐标 (1440×1024) - 固定尺寸"""
+        # 设置固定尺寸
+        self.configure(width=1440, height=1024)
+        self.pack_propagate(False)  # 禁止子控件改变Frame大小
+
+        # 创建Canvas，固定尺寸
+        self.canvas = tk.Canvas(
+            self,
+            width=1440,
+            height=1024,
+            highlightthickness=0,
+            bg="#FFFFFF"
+        )
+        self.canvas.pack(fill=tk.BOTH, expand=False)  # 不扩展
 
         # ============ 1. 左侧导航区 ============
         # 导航背景 - left:9, top:9, width:270, height:1006
@@ -115,6 +125,10 @@ class NeuroPioneerPanel(ttk.Frame):
                 # 绑定点击事件
                 self.canvas.tag_bind(img_id, "<Button-1>", lambda e, iid=img_id: self.on_nav_button_click(iid))
 
+                # 添加鼠标悬停效果
+                self.canvas.tag_bind(img_id, "<Enter>", lambda e: self.canvas.config(cursor="hand2"))
+                self.canvas.tag_bind(img_id, "<Leave>", lambda e: self.canvas.config(cursor=""))
+
         # 设置默认选中"可视化"按钮
         self.highlight_nav_button("virtualization")
 
@@ -131,21 +145,15 @@ class NeuroPioneerPanel(ttk.Frame):
             self.images["addr_bar"] = addr_bar
             self.canvas.create_image(510, 33, image=addr_bar, anchor="nw")
 
-        # 真实Entry（放在地址栏上）
-        self.path_entry = tk.Entry(
-            self,
-            textvariable=self.file_path_var,
+        # 直接在 Canvas 上创建文字（完全透明，不会覆盖任何东西）
+        self.file_path_text_id = self.canvas.create_text(
+            520,  # x坐标
+            33 + 55 // 2,  # y坐标（垂直居中）
+            text="",
             font=("微软雅黑", 11),
-            bd=0,
-            relief=tk.FLAT,
-            state="readonly",
-            readonlybackground="white"
-        )
-        self.canvas.create_window(
-            510 + 889 // 2, 33 + 55 // 2,
-            window=self.path_entry,
-            width=849,
-            height=45
+            fill="#333333",
+            anchor="w",  # 左对齐
+            width=840  # 限制宽度，防止溢出
         )
 
         # ============ 3. 顶部四个操作按钮 ============
@@ -159,21 +167,14 @@ class NeuroPioneerPanel(ttk.Frame):
         for filename, x, y, command in top_buttons:
             btn_img = self._load_image(self.buttons_loading_dir, filename, (211, 55))
             if btn_img:
-                btn = tk.Button(
-                    self,
-                    image=btn_img,
-                    bd=0,
-                    cursor="hand2",
-                    command=command
-                )
-                btn.image = btn_img
-                self.canvas.create_window(
-                    x + 211 // 2,
-                    y + 55 // 2,
-                    window=btn,
-                    width=211,
-                    height=55
-                )
+                # 直接使用canvas.create_image，不创建Button控件
+                img_id = self.canvas.create_image(x, y, image=btn_img, anchor="nw")
+                self.images[f"btn_{filename}"] = btn_img
+                # 绑定点击事件
+                self.canvas.tag_bind(img_id, "<Button-1>", lambda e, c=command: c())
+                # 添加鼠标悬停效果
+                self.canvas.tag_bind(img_id, "<Enter>", lambda e: self.canvas.config(cursor="hand2"))
+                self.canvas.tag_bind(img_id, "<Leave>", lambda e: self.canvas.config(cursor=""))
 
         # ============ 4. 功能区背景 ============
         func_bg = self._load_image(self.resource_dir, "Function_Selection.png", (516, 775))
@@ -197,7 +198,11 @@ class NeuroPioneerPanel(ttk.Frame):
                 key = f"card_{filename}"
                 self.images[key] = card_img
                 img_id = self.canvas.create_image(left, top, image=card_img, anchor="nw")
+                # 绑定点击事件
                 self.canvas.tag_bind(img_id, "<Button-1>", lambda e, c=command: c())
+                # 添加鼠标悬停效果
+                self.canvas.tag_bind(img_id, "<Enter>", lambda e: self.canvas.config(cursor="hand2"))
+                self.canvas.tag_bind(img_id, "<Leave>", lambda e: self.canvas.config(cursor=""))
 
         # ============ 6. 右侧数据信息面板 ============
         info_img = self._load_image(self.resource_dir, "Data_Information.png", (583, 451))
@@ -205,12 +210,12 @@ class NeuroPioneerPanel(ttk.Frame):
             self.images["info_bg"] = info_img
             self.canvas.create_image(837, 240, image=info_img, anchor="nw")
 
-        # 数据信息内容（动态更新）
+        # 数据信息内容（动态更新）- 放在面板中央
         self.info_text_id = self.canvas.create_text(
-            837 + 583 // 2,
-            240 + 451 // 2,
+            837 + 583 // 2,  # 水平居中
+            240 + 451 // 2,  # 垂直居中
             text="请加载数据文件或使用演示数据",
-            width=583 - 80,
+            width=583 - 80,  # 留些边距
             font=("微软雅黑", 12),
             fill="#333333"
         )
@@ -398,6 +403,13 @@ class NeuroPioneerPanel(ttk.Frame):
 
     def update_file_info(self):
         """更新文件信息显示"""
+        # 更新文件路径显示
+        if self.file_path_var.get():
+            self.canvas.itemconfig(self.file_path_text_id, text=self.file_path_var.get())
+        else:
+            self.canvas.itemconfig(self.file_path_text_id, text="")
+
+        # 更新右侧信息面板（原来的代码保持不变）
         if not self.data_dict:
             info = "请加载数据文件或使用演示数据"
         else:
@@ -508,12 +520,27 @@ class NeuroPioneerPanel(ttk.Frame):
 
 
 if __name__ == "__main__":
+    # 尝试设置DPI感知（与预处理模块一致）
+    try:
+        from ctypes import windll
+
+        windll.shcore.SetProcessDpiAwareness(1)
+    except:
+        pass
+
     root = tk.Tk()
     root.title("NeuroPioneer 可视化面板")
+
+    # 固定尺寸，禁止调整窗口大小
     root.geometry("1440x1024")
     root.resizable(False, False)
 
+    # 设置窗口背景色
+    root.configure(bg="#FFFFFF")
+
+    # 创建应用实例
     app = NeuroPioneerPanel(root)
     app.pack(fill=tk.BOTH, expand=True)
 
+    # 进入主循环
     root.mainloop()
