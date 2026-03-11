@@ -165,13 +165,13 @@ class NeuroPioneerPanel(ttk.Frame):
 
         # 直接在 Canvas 上创建文字（完全透明，不会覆盖任何东西）
         self.file_path_text_id = self.canvas.create_text(
-            self.content_start_x + 222,
-            33 + 55 // 2,
+            self.content_start_x + 222,  # x坐标 (212 + 10)
+            33 + 55 // 2,  # y坐标（垂直居中）
             text="",
-            font=("微软雅黑", 11),  # 改回11号，不加粗
+            font=("微软雅黑", 11),
             fill="#333333",
-            anchor="w",
-            width=840
+            anchor="w",  # 左对齐
+            width=840  # 限制宽度，防止溢出
         )
 
         # ============ 3. 顶部四个操作按钮 ============
@@ -241,7 +241,7 @@ class NeuroPioneerPanel(ttk.Frame):
             info_y + 451 // 2,  # 垂直居中
             text="请加载数据文件或使用演示数据",
             width=583 - 80,  # 留些边距
-            font=("微软雅黑", 14, "bold"),  # 改成14号加粗
+            font=("微软雅黑", 12),
             fill="#333333"
         )
 
