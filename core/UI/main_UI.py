@@ -25,6 +25,8 @@ from tkinter import ttk, messagebox
 # 导入功能面板
 from core.UI.panel.visualization_panel import NeuroPioneerPanel
 from core.UI.panel.preprocessing_panel import PreprocessingApp
+from core.UI.panel.ai_chat_panel import AIChatWindow
+from core.ai_core.llm_client import SimpleAIChat
 
 try:
     from PIL import Image, ImageTk
@@ -62,6 +64,8 @@ class MainUI(tk.Tk):
 
         # 初始化UI
         self.setup_ui()
+        # 初始化 AI 科研助手小气泡
+        self.init_ai_assistant()
 
     def setup_ui(self):
         """初始化UI - 完全保持原主界面布局"""
@@ -116,6 +120,77 @@ class MainUI(tk.Tk):
 
         # ============ 5. 初始化各个功能面板 ============
         self.init_panels()
+
+    def init_ai_assistant(self):
+        """初始化右下角 AI 科研助手小气泡按钮和对话窗口"""
+        # 创建 AI 对话逻辑
+        self.ai_logic = SimpleAIChat()
+        # 创建对话窗口（初始隐藏）
+        self.ai_window = AIChatWindow(self, self.ai_logic)
+        self.ai_window.hide()
+
+        # 右下角小气泡按钮：优先使用 ai_chat.png 图片
+        self.ai_icon_img = None
+        if PIL_AVAILABLE:
+            try:
+                # 默认放在 core/UI/UI_resource/ai_chat.png
+                ai_icon_path = self.project_root / "core" / "UI" / "UI_resource" / "ai_chat.png"
+                if ai_icon_path.exists():
+                    img = Image.open(ai_icon_path)
+                    # 等比例缩放（最长边不超过 90），避免拉伸变形
+                    max_side = max(img.size)
+                    if max_side > 90:
+                        scale = 90 / max_side
+                        new_size = (int(img.size[0] * scale), int(img.size[1] * scale))
+                        img = img.resize(new_size, Image.Resampling.LANCZOS)
+                    self.ai_icon_img = ImageTk.PhotoImage(img)
+            except Exception as e:
+                print(f"⚠️ 加载 AI 小气泡图标失败: {e}")
+
+        if self.ai_icon_img is not None:
+            self.ai_button = tk.Button(
+                self,
+                image=self.ai_icon_img,
+                command=self.toggle_ai_chat,
+                bg="#FFFFFF",
+                activebackground="#FFFFFF",
+                relief="flat",
+                bd=0,
+                cursor="hand2"
+            )
+        else:
+            # 回退为文字按钮
+            self.ai_button = tk.Button(
+                self,
+                text="💬 AI助手",
+                command=self.toggle_ai_chat,
+                bg="#2D7DDB",
+                fg="white",
+                activebackground="#1E6BC6",
+                activeforeground="white",
+                relief="flat",
+                bd=0,
+                font=("微软雅黑", 9, "bold"),
+                cursor="hand2",
+                padx=10,
+                pady=6
+            )
+        # 悬浮在主窗口右下角，不随页面切换消失
+        self.ai_button.place(relx=1.0, rely=1.0, x=-24, y=-24, anchor="se")
+
+    def toggle_ai_chat(self):
+        """显示/隐藏 AI 科研助手窗口"""
+        # 如果窗口当前是最小化状态，则显示；否则切换隐藏
+        try:
+            # 简单判断：如果窗口不可见，则显示
+            if not self.ai_window.window.winfo_viewable():
+                self.ai_window.show()
+            else:
+                self.ai_window.hide()
+        except Exception:
+            # 如有异常，尝试重新创建窗口
+            self.ai_window = AIChatWindow(self, self.ai_logic)
+            self.ai_window.hide()
 
     def create_nav_buttons(self):
         """创建导航按钮 - 保持原位置和样式"""
