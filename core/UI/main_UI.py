@@ -85,12 +85,12 @@ class MainUI(tk.Tk):
         # ============ 2. 首页所有静态图片 ============
         # 严格按照原坐标放置
         homepage_images = [
-            ("Files.png", 899, 267),  # 610+289=899
-            ("Group.png", 899, 813),  # 610+289=899
+            ("Files.png", 899, 267),      # 610+289=899
+            ("Group.png", 899, 813),      # 610+289=899
             ("Project_Name.png", 296, 142),  # 7+289=296
-            ("Search.png", 899, 182),  # 610+289=899
-            ("User.png", 296, 665),  # 7+289=296
-            ("Welcome.png", 296, 7)  # 7+289=296
+            ("Search.png", 899, 182),     # 610+289=899
+            ("User.png", 296, 665),       # 7+289=296
+            ("Welcome.png", 296, 7)       # 7+289=296
         ]
 
         for filename, x, y in homepage_images:
@@ -104,13 +104,13 @@ class MainUI(tk.Tk):
         self.create_nav_buttons()
 
         # ============ 4. 右侧面板容器 ============
-        # 创建一个容器Frame放在右侧区域，但不覆盖首页图片
+        # 创建一个容器Frame放在右侧区域，但不覆盖首页图片（通过 place 控制覆盖）
         self.panel_container = tk.Frame(
             self,
             bg="#FFFFFF",
             highlightthickness=0
         )
-        # 放在右侧区域，但初始隐藏
+        # 初始隐藏
         self.panel_container.place(x=289, y=0, width=1151, height=1024)
         self.panel_container.place_forget()
 
@@ -156,21 +156,21 @@ class MainUI(tk.Tk):
         """初始化所有功能面板"""
         self.panels = {}
 
-        # 预处理面板
+        # 预处理面板（作为子面板嵌入右侧容器，仅显示右侧功能区，左侧导航复用主界面）
         try:
             self.panels["预处理"] = PreprocessingApp(
                 self.panel_container,
-                show_navigation=False  # 👈👈👈 加上这个参数
+                show_navigation=False
             )
         except Exception as e:
             print(f"加载预处理面板失败: {e}")
             self.panels["预处理"] = None
 
-        # 可视化面板 - 关键修改：加上 show_navigation=False
+        # 可视化面板 - 使用其自带的 show_navigation 参数隐藏内部导航
         try:
             self.panels["可视化"] = NeuroPioneerPanel(
                 self.panel_container,
-                show_navigation=False  # 👈👈👈 加上这个参数
+                show_navigation=False
             )
         except Exception as e:
             print(f"加载可视化面板失败: {e}")
@@ -242,23 +242,11 @@ class MainUI(tk.Tk):
         """显示首页"""
         # 隐藏面板容器
         self.panel_container.place_forget()
-
-        # 显示所有首页图片
-        for key in self.images:
-            if key.startswith("home_"):
-                # 图片已经在Canvas上，不需要额外操作
-                pass
+        # 首页图片本身就在主 canvas 上，无需额外显示/隐藏处理
 
     def show_panel(self, panel_name):
         """显示指定的功能面板"""
-        # 隐藏所有首页图片
-        for key in self.images:
-            if key.startswith("home_"):
-                # 这些图片需要隐藏，但Canvas没有直接的hide方法
-                # 我们可以用panel_container覆盖它们
-                pass
-
-        # 显示面板容器
+        # 显示面板容器（覆盖右侧首页图片区域）
         self.panel_container.place(x=289, y=0, width=1151, height=1024)
 
         # 隐藏容器内所有面板
