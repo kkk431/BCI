@@ -158,7 +158,10 @@ class MainUI(tk.Tk):
 
         # 预处理面板
         try:
-            self.panels["预处理"] = PreprocessingApp(self.panel_container)
+            self.panels["预处理"] = PreprocessingApp(
+                self.panel_container,
+                show_navigation=False  # 👈👈👈 加上这个参数
+            )
         except Exception as e:
             print(f"加载预处理面板失败: {e}")
             self.panels["预处理"] = None
