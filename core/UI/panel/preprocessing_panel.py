@@ -2,7 +2,8 @@
 # isort: skip_file
 # flake8: noqa
 """
-智融脑机 - 信号预处理模块 GUI
+智融脑机 - 信号预处理模块 GUI (精美图片UI重构版)
+保留了所有原版预处理业务逻辑，引入了指定的图片作为UI界面和按钮。
 """
 
 import os
@@ -225,14 +226,9 @@ class ManualModalityDialog(tk.Toplevel):
 
 
 class PreprocessingApp(tk.Frame):
-    def __init__(self, parent, *args, show_navigation=True, **kwargs):
-        """
-        show_navigation: 是否显示左侧导航栏，默认为True
-                        在主界面作为子面板时设为False
-        """
+    def __init__(self, parent, *args, **kwargs):
         super().__init__(parent, bg=BG_COLOR, *args, **kwargs)
         self.parent = parent
-        self.show_navigation = show_navigation  # 新增参数
 
         self.raw_data_dict = None
         self.processed_data_dict = None
@@ -317,61 +313,67 @@ class PreprocessingApp(tk.Frame):
         self.canvas = tk.Canvas(self, width=1440, height=1024, bg=BG_COLOR, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
 
-        # 计算内容区域的起始X坐标
-        if self.show_navigation:
-            # 显示导航栏时，内容从289开始
-            self.content_start_x = 289
-        else:
-            # 不显示导航栏时，内容从9开始（紧贴左边）
-            self.content_start_x = -280
-
         # ------------------- 绘制静态 UI 背景 -------------------
-        # 先绘制全局背景 (left:content_start_x, top:0, width:1151, height:1024)
-        self.canvas.create_image(self.content_start_x, 0, image=self.images["global_bg"], anchor="nw")
+        # 先绘制全局背景 (left:289, top:0, width:1151, height:1024)
+        self.canvas.create_image(289, 0, image=self.images["global_bg"], anchor="nw")
 
         # 其他背景图片
-        if self.show_navigation:
-            # 只有在显示导航栏时才绘制导航背景
-            self.canvas.create_image(9, 9, image=self.images["nav_bg"], anchor="nw")
-
-        # 注意：这些背景图片的x坐标都需要加上 content_start_x 的偏移
-        self.canvas.create_image(self.content_start_x + 297, 9, image=self.images["prep_bg"], anchor="nw")
-        self.canvas.create_image(self.content_start_x + 511, 31, image=self.images["file_bar"], anchor="nw")
-        self.canvas.create_image(self.content_start_x + 311, 174, image=self.images["global_set"], anchor="nw")
-        self.canvas.create_image(self.content_start_x + 870, 167, image=self.images["detail_set"], anchor="nw")
-        self.canvas.create_image(self.content_start_x + 298, 772, image=self.images["proc_info"], anchor="nw")
+        self.canvas.create_image(9, 9, image=self.images["nav_bg"], anchor="nw")
+        self.canvas.create_image(297, 9, image=self.images["prep_bg"], anchor="nw")
+        self.canvas.create_image(511, 31, image=self.images["file_bar"], anchor="nw")
+        self.canvas.create_image(311, 174, image=self.images["global_set"], anchor="nw")
+        self.canvas.create_image(870, 167, image=self.images["detail_set"], anchor="nw")
+        self.canvas.create_image(298, 772, image=self.images["proc_info"], anchor="nw")
 
         # ------------------- 初始化按钮和组件 -------------------
-        if self.show_navigation:
-            # 只有在显示导航栏时才创建导航按钮
-            self._create_nav_buttons()
-
+        self._create_nav_buttons()
         self._create_action_buttons()
         self._create_modality_buttons()
 
         # 显示文件路径信息的文本 Label
         self.lbl_status = tk.Label(self, text="请上传文件...", font=FONT_NORMAL, bg="#ffffff", fg="#666666", anchor="w")
-        # Label的x坐标也需要调整
-        self.lbl_status.place(x=self.content_start_x + 530, y=42, width=860, height=35)
+        self.lbl_status.place(x=530, y=42, width=860, height=35)
 
         # ========== 1. 全局设置区域 ==========
+        # 增大高度以容纳更大的行间距
         self.global_frame = tk.Frame(self, bg=BG_COLOR)
-        self.global_frame.place(x=self.content_start_x + 331, y=220, width=504, height=260)
+        self.global_frame.place(x=331, y=220, width=504, height=260)  # 高度从220增至260
+        # 创建参数控件，行间距设为8，使文字更舒适
         self._create_param_widgets(self.global_frame, GLOBAL_PARAMS, self.global_widgets, pady=8)
 
         # ========== 2. 详细设置区域 ==========
+        # 再下移一点，避免遮挡
         self.detail_frame = tk.Frame(self, bg=BG_COLOR)
-        self.detail_frame.place(x=self.content_start_x + 890, y=230, width=508, height=500)
+        self.detail_frame.place(x=890, y=230, width=508, height=500)  # y从210改为230
+
+        # 创建四个模态面板，全部放入 detail_frame 同一位置，初始隐藏
+        self.modality_panels = {}
+        for mod in ALL_MODALITIES:
+            if mod == "EEG":
+                panel = self._create_modality_tab(self.detail_frame, mod, EEG_PARAMS)
+            elif mod == "EMG":
+                panel = self._create_modality_tab(self.detail_frame, mod, EMG_PARAMS)
+            elif mod == "ECG":
+                panel = self._create_modality_tab(self.detail_frame, mod, ECG_PARAMS)
+            elif mod == "fNIRS":
+                panel = self._create_modality_tab(self.detail_frame, mod, FNIRS_PARAMS)
+            self.modality_panels[mod] = panel
+            panel.place(x=0, y=0, width=508, height=500)
+            panel.place_forget()
 
         # ========== 3. 处理信息区域 ==========
+        # 使用普通 Frame，无滚动条；位置 x=318, y=825（比原820下移5像素），宽度900，高度280
         self.proc_frame = tk.Frame(self, bg=BG_COLOR)
-        self.proc_frame.place(x=self.content_start_x + 318, y=825, width=900, height=280)
+        self.proc_frame.place(x=318, y=825, width=900, height=280)
+
+        # 内部内容容器
+        self.proc_content = tk.Frame(self.proc_frame, bg=BG_COLOR)
+        self.proc_content.pack(fill="both", expand=True)
+
+        # 在 content 中创建用于显示处理结果的标签行
+        self._create_result_display()
 
     def _create_nav_buttons(self):
-        """创建导航按钮"""
-        if not self.show_navigation:
-            return
-
         self.nav_items = {}
         nav_coords = {
             "home": (39, 231),
@@ -391,9 +393,6 @@ class PreprocessingApp(tk.Frame):
 
     def on_nav_click(self, name):
         """左侧导航栏场景切换（仅留接口及高亮变化）"""
-        if not self.show_navigation:
-            return
-
         if name == self.current_nav:
             return
         # 切换高亮图片
@@ -403,28 +402,13 @@ class PreprocessingApp(tk.Frame):
         # TODO: 后续预留接入其他功能场景（特征提取/分析等）
 
     def _create_action_buttons(self):
-        self.btn_browse = self.canvas.create_image(
-            self.content_start_x + 311,  # 加上偏移
-            102,
-            image=self.images["btn_browse"],
-            anchor="nw"
-        )
+        self.btn_browse = self.canvas.create_image(311, 102, image=self.images["btn_browse"], anchor="nw")
         self.bind_btn(self.btn_browse, self.action_load_data)
 
-        self.btn_start = self.canvas.create_image(
-            self.content_start_x + 349,  # 加上偏移
-            525,
-            image=self.images["btn_start"],
-            anchor="nw"
-        )
+        self.btn_start = self.canvas.create_image(349, 525, image=self.images["btn_start"], anchor="nw")
         self.bind_btn(self.btn_start, self.action_run_preprocessing)
 
-        self.btn_save = self.canvas.create_image(
-            self.content_start_x + 590,  # 加上偏移
-            525,
-            image=self.images["btn_save"],
-            anchor="nw"
-        )
+        self.btn_save = self.canvas.create_image(590, 525, image=self.images["btn_save"], anchor="nw")
         self.bind_btn(self.btn_save, self.action_save_results)
 
     def _create_modality_buttons(self):
@@ -432,14 +416,8 @@ class PreprocessingApp(tk.Frame):
         coords = {"EEG": 653, "EMG": 838, "ECG": 1023, "fNIRS": 1208}
 
         for mod, x in coords.items():
-            # 加上 content_start_x 偏移
             img_key = f"{mod.lower()}_unsel"
-            item_id = self.canvas.create_image(
-                self.content_start_x + x,  # 加上偏移
-                109,
-                image=self.images[img_key],
-                anchor="nw"
-            )
+            item_id = self.canvas.create_image(x, 109, image=self.images[img_key], anchor="nw")
             self.mod_items[mod] = item_id
             self.bind_btn(item_id, lambda m=mod: self.on_mod_btn_click(m))
 
@@ -973,7 +951,7 @@ if __name__ == "__main__":
               background=[("active", "#d0d0d0")],
               arrowcolor=[("active", "#2a5a5a")])
 
-    app = PreprocessingApp(root, show_navigation=True)
+    app = PreprocessingApp(root)
     app.pack(fill=tk.BOTH, expand=True)
 
     root.mainloop()
