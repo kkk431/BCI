@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-main_ui_tk.py
+main_ui.py
 智融脑机 - 主界面 (tkinter版本)
 完全保持原主界面的布局和功能
 """
