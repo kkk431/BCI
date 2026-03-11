@@ -468,7 +468,7 @@ class AnalysisPanel(QWidget):
 
         # ========== 4. 最顶层：Project_Name.png ==========
         self.project_name_label = QLabel(self)
-        self.project_name_label.setGeometry(720, 310, 520, 139)  # 按比例缩放
+        self.project_name_label.setGeometry(720, 324, 520, 139)  # 按比例缩放
         project_img_path = Path(
             __file__).parent.parent / "UI_resource" / "Feature_Extraction_Panel" / "Project_Name.png"
         if project_img_path.exists():
