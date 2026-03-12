@@ -25,6 +25,8 @@ from tkinter import ttk, messagebox
 # 导入功能面板
 from core.UI.panel.visualization_panel import NeuroPioneerPanel
 from core.UI.panel.preprocessing_panel import PreprocessingApp
+from core.UI.panel.ai_chat_panel import AIChatWindow
+from core.ai_core.llm_client import SimpleAIChat
 
 try:
     from PIL import Image, ImageTk
@@ -62,6 +64,8 @@ class MainUI(tk.Tk):
 
         # 初始化UI
         self.setup_ui()
+        # 初始化 AI 科研助手小气泡
+        self.init_ai_assistant()
 
     def setup_ui(self):
         """初始化UI - 完全保持原主界面布局"""
@@ -85,12 +89,12 @@ class MainUI(tk.Tk):
         # ============ 2. 首页所有静态图片 ============
         # 严格按照原坐标放置
         homepage_images = [
-            ("Files.png", 899, 267),  # 610+289=899
-            ("Group.png", 899, 813),  # 610+289=899
+            ("Files.png", 899, 267),      # 610+289=899
+            ("Group.png", 899, 813),      # 610+289=899
             ("Project_Name.png", 296, 142),  # 7+289=296
-            ("Search.png", 899, 182),  # 610+289=899
-            ("User.png", 296, 665),  # 7+289=296
-            ("Welcome.png", 296, 7)  # 7+289=296
+            ("Search.png", 899, 182),     # 610+289=899
+            ("User.png", 296, 665),       # 7+289=296
+            ("Welcome.png", 296, 7)       # 7+289=296
         ]
 
         for filename, x, y in homepage_images:
@@ -104,18 +108,89 @@ class MainUI(tk.Tk):
         self.create_nav_buttons()
 
         # ============ 4. 右侧面板容器 ============
-        # 创建一个容器Frame放在右侧区域，但不覆盖首页图片
+        # 创建一个容器Frame放在右侧区域，但不覆盖首页图片（通过 place 控制覆盖）
         self.panel_container = tk.Frame(
             self,
             bg="#FFFFFF",
             highlightthickness=0
         )
-        # 放在右侧区域，但初始隐藏
+        # 初始隐藏
         self.panel_container.place(x=289, y=0, width=1151, height=1024)
         self.panel_container.place_forget()
 
         # ============ 5. 初始化各个功能面板 ============
         self.init_panels()
+
+    def init_ai_assistant(self):
+        """初始化右下角 AI 科研助手小气泡按钮和对话窗口"""
+        # 创建 AI 对话逻辑
+        self.ai_logic = SimpleAIChat()
+        # 创建对话窗口（初始隐藏）
+        self.ai_window = AIChatWindow(self, self.ai_logic)
+        self.ai_window.hide()
+
+        # 右下角小气泡按钮：优先使用 ai_chat.png 图片
+        self.ai_icon_img = None
+        if PIL_AVAILABLE:
+            try:
+                # 默认放在 core/UI/UI_resource/ai_chat.png
+                ai_icon_path = self.project_root / "core" / "UI" / "UI_resource" / "ai_chat.png"
+                if ai_icon_path.exists():
+                    img = Image.open(ai_icon_path)
+                    # 等比例缩放（最长边不超过 90），避免拉伸变形
+                    max_side = max(img.size)
+                    if max_side > 90:
+                        scale = 90 / max_side
+                        new_size = (int(img.size[0] * scale), int(img.size[1] * scale))
+                        img = img.resize(new_size, Image.Resampling.LANCZOS)
+                    self.ai_icon_img = ImageTk.PhotoImage(img)
+            except Exception as e:
+                print(f"⚠️ 加载 AI 小气泡图标失败: {e}")
+
+        if self.ai_icon_img is not None:
+            self.ai_button = tk.Button(
+                self,
+                image=self.ai_icon_img,
+                command=self.toggle_ai_chat,
+                bg="#FFFFFF",
+                activebackground="#FFFFFF",
+                relief="flat",
+                bd=0,
+                cursor="hand2"
+            )
+        else:
+            # 回退为文字按钮
+            self.ai_button = tk.Button(
+                self,
+                text="💬 AI助手",
+                command=self.toggle_ai_chat,
+                bg="#2D7DDB",
+                fg="white",
+                activebackground="#1E6BC6",
+                activeforeground="white",
+                relief="flat",
+                bd=0,
+                font=("微软雅黑", 9, "bold"),
+                cursor="hand2",
+                padx=10,
+                pady=6
+            )
+        # 悬浮在主窗口右下角，不随页面切换消失
+        self.ai_button.place(relx=1.0, rely=1.0, x=-24, y=-24, anchor="se")
+
+    def toggle_ai_chat(self):
+        """显示/隐藏 AI 科研助手窗口"""
+        # 如果窗口当前是最小化状态，则显示；否则切换隐藏
+        try:
+            # 简单判断：如果窗口不可见，则显示
+            if not self.ai_window.window.winfo_viewable():
+                self.ai_window.show()
+            else:
+                self.ai_window.hide()
+        except Exception:
+            # 如有异常，尝试重新创建窗口
+            self.ai_window = AIChatWindow(self, self.ai_logic)
+            self.ai_window.hide()
 
     def create_nav_buttons(self):
         """创建导航按钮 - 保持原位置和样式"""
@@ -156,21 +231,21 @@ class MainUI(tk.Tk):
         """初始化所有功能面板"""
         self.panels = {}
 
-        # 预处理面板
+        # 预处理面板（作为子面板嵌入右侧容器，仅显示右侧功能区，左侧导航复用主界面）
         try:
             self.panels["预处理"] = PreprocessingApp(
                 self.panel_container,
-                show_navigation=False  # 👈👈👈 加上这个参数
+                show_navigation=False
             )
         except Exception as e:
             print(f"加载预处理面板失败: {e}")
             self.panels["预处理"] = None
 
-        # 可视化面板 - 关键修改：加上 show_navigation=False
+        # 可视化面板 - 使用其自带的 show_navigation 参数隐藏内部导航
         try:
             self.panels["可视化"] = NeuroPioneerPanel(
                 self.panel_container,
-                show_navigation=False  # 👈👈👈 加上这个参数
+                show_navigation=False
             )
         except Exception as e:
             print(f"加载可视化面板失败: {e}")
@@ -242,23 +317,11 @@ class MainUI(tk.Tk):
         """显示首页"""
         # 隐藏面板容器
         self.panel_container.place_forget()
-
-        # 显示所有首页图片
-        for key in self.images:
-            if key.startswith("home_"):
-                # 图片已经在Canvas上，不需要额外操作
-                pass
+        # 首页图片本身就在主 canvas 上，无需额外显示/隐藏处理
 
     def show_panel(self, panel_name):
         """显示指定的功能面板"""
-        # 隐藏所有首页图片
-        for key in self.images:
-            if key.startswith("home_"):
-                # 这些图片需要隐藏，但Canvas没有直接的hide方法
-                # 我们可以用panel_container覆盖它们
-                pass
-
-        # 显示面板容器
+        # 显示面板容器（覆盖右侧首页图片区域）
         self.panel_container.place(x=289, y=0, width=1151, height=1024)
 
         # 隐藏容器内所有面板

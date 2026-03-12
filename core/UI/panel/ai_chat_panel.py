@@ -11,8 +11,8 @@ class AIChatWindow:
         self.window.overrideredirect(True)
         self.window.title("智融脑机 - AI科研助手")
 
-        # 窗口基础尺寸
-        window_width, window_height = 420, 600
+        # 窗口基础尺寸（略微增宽，更舒适）
+        window_width, window_height = 440, 620
         if position:
             self.window.geometry(f"{window_width}x{window_height}+{position[0]}+{position[1]}")
         else:
@@ -31,7 +31,8 @@ class AIChatWindow:
         except:
             pass
 
-        self.window.configure(bg="#F8F9FA")
+        # 外层淡色边框，增加悬浮质感
+        self.window.configure(bg="#DDE3F0")
         self.window.attributes("-topmost", True)
         self.window.protocol("WM_DELETE_WINDOW", self.hide)
         self.window.resizable(False, False)
@@ -61,7 +62,7 @@ class AIChatWindow:
 
     def setup_ui(self):
         # ========== 顶部自定义标题栏（保留关闭+拖动功能） ==========
-        top_bar = tk.Frame(self.window, bg="#2D7DDB", height=45)
+        top_bar = tk.Frame(self.window, bg="#2D7DDB", height=46)
         top_bar.pack(side="top", fill="x")
         top_bar.pack_propagate(False)
 
@@ -71,34 +72,57 @@ class AIChatWindow:
 
         # 标题文字
         title_label = tk.Label(
-            top_bar, text="智融脑机 · AI科研助手",
-            bg="#2D7DDB", fg="white",
+            top_bar,
+            text="智融脑机 · AI科研助手",
+            bg="#2D7DDB",
+            fg="white",
             font=("微软雅黑", 12, "bold")
         )
-        title_label.pack(side="left", padx=15)
+        title_label.pack(side="left", padx=14)
 
         # 关闭按钮
         close_btn = tk.Button(
-            top_bar, text="✕", command=self.hide,
-            bg="#2D7DDB", fg="white", relief="flat",
-            activebackground="#E53935", activeforeground="white",
-            font=("Arial", 12, "bold"), bd=0, padx=12, pady=3, cursor="hand2"
+            top_bar,
+            text="✕",
+            command=self.hide,
+            bg="#2D7DDB",
+            fg="white",
+            relief="flat",
+            activebackground="#E53935",
+            activeforeground="white",
+            font=("Arial", 11, "bold"),
+            bd=0,
+            padx=10,
+            pady=3,
+            cursor="hand2"
         )
         close_btn.pack(side="right", padx=0)
 
         # 清空对话按钮
         clear_btn = tk.Button(
-            top_bar, text="🗑 清空对话", command=self.clear_history,
-            bg="#4A90E2", fg="white", relief="flat",
-            activebackground="#1E6BC6", activeforeground="white",
-            font=("微软雅黑", 9), bd=0, padx=8, pady=3, cursor="hand2"
+            top_bar,
+            text="🗑 清空",
+            command=self.clear_history,
+            bg="#4A90E2",
+            fg="white",
+            relief="flat",
+            activebackground="#1E6BC6",
+            activeforeground="white",
+            font=("微软雅黑", 9),
+            bd=0,
+            padx=8,
+            pady=3,
+            cursor="hand2"
         )
         clear_btn.pack(side="right", padx=12)
 
         # ========== 聊天画布区域 ==========
         self.chat_canvas = tk.Canvas(
-            self.window, bg="#F8F9FA",
-            highlightthickness=0, width=418, height=470
+            self.window,
+            bg="#F8F9FA",
+            highlightthickness=0,
+            width=430,
+            height=485
         )
         self.chat_canvas.pack(side="top", fill="both", expand=True, padx=1, pady=5)
 
@@ -257,11 +281,10 @@ class AIChatWindow:
         bubble_total_height = text_total_height + self.bubble_v_padding * 2  # 气泡总高度
         bubble_canvas.config(height=bubble_total_height)  # 强制固定画布高度
 
-        # ========== 修复：计算文字垂直居中的起始坐标，彻底解决错位 ==========
-        # 整段文字在气泡内垂直居中，起始y坐标精准计算
+        # ========== 文字布局：整块文本垂直居中，逐行按“行顶”定位 ==========
+        # 之前使用“基线”坐标 + anchor="nw/ne" 会导致文字上下错位（基线并不是文本框的顶边）。
+        # 这里改为：计算文本块顶边 text_block_top，然后每行用行顶 y 定位，保证在气泡内居中且不漂移。
         text_block_top = (bubble_total_height - text_total_height) / 2
-        # 每行文字的基准线坐标，保证文字垂直居中对齐
-        first_line_baseline = text_block_top + self.font_ascent
         # ==================================================
 
         # ========== 绘制气泡圆角+箭头 ==========
@@ -296,14 +319,13 @@ class AIChatWindow:
                 fill=bg_color, outline=bg_color
             )
 
-            # ========== 最终修复：用户文字100%垂直居中，行间距固定 ==========
+            # ========== 用户文字：按行顶定位，居中且不偏移 ==========
             text_x = bubble_right - self.bubble_h_padding  # 文字右边界
             for i, line in enumerate(lines):
-                # 每行基线坐标严格固定，行间距绝对均匀
-                line_baseline_y = first_line_baseline + i * self.bubble_line_height
-                # 右上对齐，文字精准定位，无任何错位
+                line_top_y = text_block_top + i * self.bubble_line_height
+                # 右上对齐（右边界对齐），y 使用行顶
                 bubble_canvas.create_text(
-                    text_x, line_baseline_y, text=line,
+                    text_x, line_top_y, text=line,
                     anchor="ne", fill=fg_color, font=self.bubble_font
                 )
         else:
@@ -336,14 +358,13 @@ class AIChatWindow:
                 fill=bg_color, outline=bg_color
             )
 
-            # ========== 最终修复：AI文字100%垂直居中，行间距固定 ==========
+            # ========== AI文字：按行顶定位，居中且不偏移 ==========
             text_x = bubble_left + self.bubble_h_padding  # 文字左边界
             for i, line in enumerate(lines):
-                # 每行基线坐标严格固定，行间距绝对均匀
-                line_baseline_y = first_line_baseline + i * self.bubble_line_height
-                # 左上对齐，文字精准定位，长文本再多也不会错位、拥挤
+                line_top_y = text_block_top + i * self.bubble_line_height
+                # 左上对齐，y 使用行顶
                 bubble_canvas.create_text(
-                    text_x, line_baseline_y, text=line,
+                    text_x, line_top_y, text=line,
                     anchor="nw", fill=fg_color, font=self.bubble_font
                 )
 
