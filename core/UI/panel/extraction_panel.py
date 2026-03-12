@@ -293,7 +293,7 @@ class FeatureExtractionPanel(tk.Frame):
 
         # ============ 提取按钮 Process.png ============
         # 坐标 (600,464)，尺寸 211x55
-        process_img = self._load_image(self.resource_dir, "Process.png", (211 + self.offset_x, 55))
+        process_img = self._load_image(self.resource_dir, "Process.png", (211, 55))
         if process_img:
             self.images["process_btn"] = process_img
             process_id = self.canvas.create_image(600 + self.offset_x, 464, image=process_img, anchor="nw")
