@@ -27,10 +27,11 @@ from core.UI.panel.visualization_panel import NeuroPioneerPanel
 from core.UI.panel.preprocessing_panel import PreprocessingApp
 from core.UI.panel.ai_chat_panel import AIChatWindow
 from core.ai_core.llm_client import SimpleAIChat
+# ===== 新增：导入特征提取面板 =====
+from core.UI.panel.extraction_panel import FeatureExtractionPanel
 
 try:
     from PIL import Image, ImageTk
-
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
@@ -251,8 +252,17 @@ class MainUI(tk.Tk):
             print(f"加载可视化面板失败: {e}")
             self.panels["可视化"] = None
 
+        # ===== 新增：特征提取面板 =====
+        try:
+            self.panels["特征提取"] = FeatureExtractionPanel(
+                self.panel_container,
+                show_navigation=False
+            )
+        except Exception as e:
+            print(f"加载特征提取面板失败: {e}")
+            self.panels["特征提取"] = None
+
         # 其他面板暂未实现
-        self.panels["特征提取"] = None
         self.panels["统计分析"] = None
 
         # 预加载面板但不显示

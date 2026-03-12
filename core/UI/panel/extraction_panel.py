@@ -84,11 +84,12 @@ class FeatureExtractionPanel(tk.Frame):
     """
     特征提取面板 - 固定尺寸1440×1024，Canvas绝对坐标布局
     """
-    def __init__(self, parent, **kwargs):
+    def __init__(self, parent, show_navigation=True, **kwargs):
         super().__init__(parent, **kwargs)
         self.parent = parent
         self.configure(width=1440, height=1024)
         self.pack_propagate(False)
+        self.show_navigation = show_navigation
 
         # 核心数据
         self.clean_data_dict = None
@@ -118,6 +119,12 @@ class FeatureExtractionPanel(tk.Frame):
     # UI 构建
     # ------------------------------------------------------------------
     def setup_ui(self):
+        # ... Canvas 创建 ...
+        if self.show_navigation:
+            self.offset_x = 0
+        else:
+            self.offset_x = -289  # 左移289像素，适应1151宽度
+
         self.canvas = tk.Canvas(
             self,
             width=1440,
@@ -131,17 +138,17 @@ class FeatureExtractionPanel(tk.Frame):
         file_bg = self._load_image(self.resource_dir, "File_Selection_Background.png")
         if file_bg:
             self.images["file_bg"] = file_bg
-            self.canvas.create_image(294, 9, image=file_bg, anchor="nw")
+            self.canvas.create_image(294 + self.offset_x, 9, image=file_bg, anchor="nw")
 
         # 2. 文件地址栏 (508,31)
         addr_bar = self._load_image(self.resource_dir, "File_Address_Bar.png", (889, 55))
         if addr_bar:
             self.images["addr_bar"] = addr_bar
-            self.canvas.create_image(508, 31, image=addr_bar, anchor="nw")
+            self.canvas.create_image(508 + self.offset_x, 31, image=addr_bar, anchor="nw")
 
         # 文件路径文本（覆盖在地址栏上）
         self.file_path_text_id = self.canvas.create_text(
-            518, 31 + 55//2,
+            518 + self.offset_x, 31 + 55//2,
             text="",
             font=("微软雅黑", 11),
             fill="#333333",
@@ -153,7 +160,7 @@ class FeatureExtractionPanel(tk.Frame):
         browse_img = self._load_image(self.resource_dir, "Browse.png", (211, 55))
         if browse_img:
             self.images["browse"] = browse_img
-            browse_id = self.canvas.create_image(308, 102, image=browse_img, anchor="nw")
+            browse_id = self.canvas.create_image(308 + self.offset_x, 102, image=browse_img, anchor="nw")
             self.canvas.tag_bind(browse_id, "<Button-1>", lambda e: self.browse_file())
             self.canvas.tag_bind(browse_id, "<Enter>", lambda e: self.canvas.config(cursor="hand2"))
             self.canvas.tag_bind(browse_id, "<Leave>", lambda e: self.canvas.config(cursor=""))
@@ -163,11 +170,11 @@ class FeatureExtractionPanel(tk.Frame):
         diary_img = self._load_image(self.resource_dir, "Diary.png", (553, 129))
         if diary_img:
             self.images["diary"] = diary_img
-            self.canvas.create_image(869, 400, image=diary_img, anchor="nw")
+            self.canvas.create_image(869 + self.offset_x, 400, image=diary_img, anchor="nw")
 
         # 日志文本（居中显示）
         self.status_text_id = self.canvas.create_text(
-            869 + 553//2, 400 + 129//2,
+            869 + 553//2 + self.offset_x, 400 + 129//2,
             text="请上传数据文件...",
             font=("微软雅黑", 12),
             fill="#333333",
@@ -180,24 +187,24 @@ class FeatureExtractionPanel(tk.Frame):
         feat_bg = self._load_image(self.resource_dir, "Feature_Selection.png", (540, 340))
         if feat_bg:
             self.images["feat_bg"] = feat_bg
-            self.canvas.create_image(295, 189, image=feat_bg, anchor="nw")
+            self.canvas.create_image(295 + self.offset_x, 189, image=feat_bg, anchor="nw")
 
         # 6. 项目名称 Project_Name.png (905,207) - 保持原样
         proj_img = self._load_image(self.resource_dir, "Project_Name.png")
         if proj_img:
             self.images["project"] = proj_img
-            self.canvas.create_image(905, 207, image=proj_img, anchor="nw")
+            self.canvas.create_image(905 + self.offset_x, 207, image=proj_img, anchor="nw")
 
         # 7. 结果背景 Result.png (294,553)
         res_bg = self._load_image(self.resource_dir, "Result.png")
         if res_bg:
             self.images["result_bg"] = res_bg
-            self.canvas.create_image(294, 553, image=res_bg, anchor="nw")
+            self.canvas.create_image(294 + self.offset_x, 553, image=res_bg, anchor="nw")
 
         # ==================== 修改点3：模态选择图标 ====================
         # 从 (650,109) 开始，间隔185，高度39（等比例缩放）
         modalities = ["EEG", "ECG", "EMG", "fNIRS"]
-        base_x, base_y = 650, 109
+        base_x, base_y = 650 + self.offset_x, 109
         spacing = 80
         target_height = 39
 
@@ -251,11 +258,11 @@ class FeatureExtractionPanel(tk.Frame):
         # 设置内部 Frame 宽度为440，禁止自动调整大小
         self.check_frame.config(width=440)
         self.check_frame.pack_propagate(False)
-        self.check_canvas.create_window((0, 0), window=self.check_frame, anchor="nw", tags="inner_frame")
+        self.check_canvas.create_window((0 + self.offset_x, 0), window=self.check_frame, anchor="nw", tags="inner_frame")
 
         # 将 Canvas 和滚动条嵌入主 Canvas
-        self.canvas.create_window(320, 256, window=self.check_canvas, anchor="nw", width=440, height=200)
-        self.canvas.create_window(320 + 440, 256, window=self.check_scrollbar, anchor="nw", width=20, height=200)
+        self.canvas.create_window(320 + self.offset_x, 256, window=self.check_canvas, anchor="nw", width=440, height=200)
+        self.canvas.create_window(320 + self.offset_x + 440, 256, window=self.check_scrollbar, anchor="nw", width=20, height=200)
 
         # 绑定内部 Frame 大小变化以更新滚动区域
         def configure_inner_frame(event):
@@ -282,14 +289,14 @@ class FeatureExtractionPanel(tk.Frame):
         self.tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         # 嵌入Canvas：从 (320,580) 到 (1070,800) 宽750高220
-        self.canvas.create_window(380, 620, window=tree_frame, anchor="nw", width=850, height=350)
+        self.canvas.create_window(380 + self.offset_x, 620, window=tree_frame, anchor="nw", width=850, height=350)
 
         # ============ 提取按钮 Process.png ============
         # 坐标 (600,464)，尺寸 211x55
-        process_img = self._load_image(self.resource_dir, "Process.png", (211, 55))
+        process_img = self._load_image(self.resource_dir, "Process.png", (211 + self.offset_x, 55))
         if process_img:
             self.images["process_btn"] = process_img
-            process_id = self.canvas.create_image(600, 464, image=process_img, anchor="nw")
+            process_id = self.canvas.create_image(600 + self.offset_x, 464, image=process_img, anchor="nw")
             self.canvas.tag_bind(process_id, "<Button-1>", lambda e: self.action_extract())
             self.canvas.tag_bind(process_id, "<Enter>", lambda e: self.canvas.config(cursor="hand2"))
             self.canvas.tag_bind(process_id, "<Leave>", lambda e: self.canvas.config(cursor=""))
