@@ -29,6 +29,8 @@ from core.UI.panel.ai_chat_panel import AIChatWindow
 from core.ai_core.llm_client import SimpleAIChat
 # ===== 新增：导入特征提取面板 =====
 from core.UI.panel.extraction_panel import FeatureExtractionPanel
+# ===== 新增：导入统计分析面板 =====
+from core.UI.panel.analysis_panel_tk import StatisticalAnalysisPanel
 
 try:
     from PIL import Image, ImageTk
@@ -262,8 +264,15 @@ class MainUI(tk.Tk):
             print(f"加载特征提取面板失败: {e}")
             self.panels["特征提取"] = None
 
-        # 其他面板暂未实现
-        self.panels["统计分析"] = None
+        # 统计分析面板
+        try:
+            self.panels["统计分析"] = StatisticalAnalysisPanel(
+                self.panel_container,
+                show_navigation=False
+            )
+        except Exception as e:
+            print(f"加载统计分析面板失败: {e}")
+            self.panels["统计分析"] = None
 
         # 预加载面板但不显示
         for panel in self.panels.values():
