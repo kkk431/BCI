@@ -150,7 +150,7 @@ class FeatureExtractionPanel(tk.Frame):
         self.file_path_text_id = self.canvas.create_text(
             518 + self.offset_x, 31 + 55//2,
             text="",
-            font=("微软雅黑", 11),
+            font=("Segoe UI", 11, "bold"),
             fill="#333333",
             anchor="w",
             width=840
@@ -176,7 +176,7 @@ class FeatureExtractionPanel(tk.Frame):
         self.status_text_id = self.canvas.create_text(
             869 + 553//2 + self.offset_x, 400 + 129//2,
             text="请上传数据文件...",
-            font=("微软雅黑", 12),
+            font=("Segoe UI", 12, "bold"),
             fill="#333333",
             width=500,
             anchor="center"
@@ -261,8 +261,8 @@ class FeatureExtractionPanel(tk.Frame):
         self.check_canvas.create_window((0 + self.offset_x, 0), window=self.check_frame, anchor="nw", tags="inner_frame")
 
         # 将 Canvas 和滚动条嵌入主 Canvas
-        self.canvas.create_window(320 + self.offset_x, 256, window=self.check_canvas, anchor="nw", width=440, height=200)
-        self.canvas.create_window(320 + self.offset_x + 440, 256, window=self.check_scrollbar, anchor="nw", width=20, height=200)
+        self.canvas.create_window(331 + self.offset_x, 268, window=self.check_canvas, anchor="nw", width=462, height=166)
+        self.canvas.create_window(331 + self.offset_x + 440, 268, window=self.check_scrollbar, anchor="nw", width=20, height=166)
 
         # 绑定内部 Frame 大小变化以更新滚动区域
         def configure_inner_frame(event):
@@ -274,22 +274,45 @@ class FeatureExtractionPanel(tk.Frame):
         self.check_frame.grid_columnconfigure(0, weight=1)
         self.check_frame.grid_columnconfigure(1, weight=1)
 
-
-
+        # 设置 ttk 样式，使 Treeview 使用 Segoe UI 字体
+        style = ttk.Style()
+        style.theme_use('vista')  # 使用 clam 主题以支持自定义字体
         # ============ 结果表格 ============
-        tree_frame = tk.Frame(self.canvas)
+        # ============ 结果表格（带样式） ============
+        style.configure("Treeview",
+                        background="#ffffff",
+                        foreground="#333333",
+                        fieldbackground="#ffffff",
+                        borderwidth=0,
+                        relief="flat",
+                        font=("Segoe UI", 10, "bold"),  # 内容字体
+                        rowheight=28)  # 行高
+        style.map('Treeview', background=[('selected', '#e0f0ff')])  # 选中行淡蓝色
+        style.configure("Treeview.Heading",
+                        background="#f5f5f5",
+                        foreground="#333333",
+                        font=("Segoe UI", 11, "bold"),
+                        relief="flat")
+        style.map("Treeview.Heading", background=[('active', '#e8e8e8')])
+
+        # 创建表格
+        tree_frame = tk.Frame(self.canvas, borderwidth=0, highlightthickness= 0)
         columns = ("Name", "Value")
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=12)
         self.tree.heading("Name", text="特征名称")
         self.tree.heading("Value", text="特征数值")
-        self.tree.column("Name", width=400)
-        self.tree.column("Value", width=300)
+        self.tree.column("Name", width=450, anchor="center")  # 名称左对齐
+        self.tree.column("Value", width=450, anchor="center")  # 数字居中
+
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         self.tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        # 嵌入Canvas：从 (320,580) 到 (1070,800) 宽750高220
-        self.canvas.create_window(380 + self.offset_x, 620, window=tree_frame, anchor="nw", width=850, height=350)
+
+        # 嵌入Canvas
+        self.canvas.create_window(380 + self.offset_x, 620, window=tree_frame, anchor="nw",
+                                  width=850, height=350)
+        self.canvas.create_window(380 + self.offset_x, 620, window=tree_frame, anchor="nw", width=950, height=350)
 
         # ============ 提取按钮 Process.png ============
         # 坐标 (600,464)，尺寸 211x55
@@ -399,7 +422,7 @@ class FeatureExtractionPanel(tk.Frame):
 
         if not modality or modality not in FEATURE_MAP:
             label = tk.Label(self.check_frame, text="请先选择有效模态", bg="#ffffff",
-                             font=("微软雅黑", 12), fg="#666666")
+                             font=("Segoe UI", 12, "bold"), fg="#666666")
             label.grid(row=0, column=0, columnspan=2, sticky="ew")
             return
 
@@ -413,7 +436,7 @@ class FeatureExtractionPanel(tk.Frame):
             var = tk.BooleanVar(value=True)
             self.checkbox_vars[feat_key] = var
             chk = tk.Checkbutton(self.check_frame, text=feat_desc, variable=var,
-                                 bg="#ffffff", font=("微软雅黑", 10),
+                                 bg="#ffffff", font=("Segoe UI", 10, "bold"),
                                  activebackground="#ffffff", selectcolor="white",
                                  wraplength=200)  # 自动换行适应列宽
             chk.grid(row=row, column=col, sticky="w", padx=5, pady=2)
