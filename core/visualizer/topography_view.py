@@ -1,657 +1,984 @@
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
 """
-地形图可视化模块（支持多模态）
-核心类：TopographyView
-功能：
-- 多频带拓扑图（Delta/Theta/Alpha/Beta/Gamma）
-- 模态选择 + 通道选择
-- 相对/绝对功率切换
-- 传感器显示开关
-- 坏通道排除交互
-- 底部数值表格
+topography_view.py
+地形图视图 - 支持多模态生物信号和纯元数据文件
+修复版 - 修复 time_slider 属性不存在的问题
 """
 
-import json
-import matplotlib
-import matplotlib.pyplot as plt  # <-- 添加这一行
-import mne
+import sys
 import numpy as np
-import pandas as pd
-from PyQt5.QtCore import Qt, QAbstractTableModel
-from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox,
-    QLineEdit, QLabel, QFileDialog, QMessageBox, QScrollArea,
-    QDialogButtonBox, QTableView, QWidget, QSizePolicy, QComboBox
-)
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any
+from enum import Enum
+
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QComboBox,
+                             QPushButton, QLabel, QGroupBox, QGridLayout,
+                             QSpinBox, QDoubleSpinBox, QCheckBox, QFileDialog,
+                             QMessageBox, QApplication, QMainWindow, QTabWidget,
+                             QSplitter, QSlider, QTextEdit)
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont, QColor
+
+import matplotlib
+
+matplotlib.use('Qt5Agg')
+import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
+from matplotlib.patches import Circle, Rectangle, Polygon
+from matplotlib.collections import PatchCollection
+import matplotlib.gridspec as gridspec
+from mpl_toolkits.mplot3d import Axes3D
 
-# 动态设置后端
-current_backend = matplotlib.get_backend()
-print(f"[topography_view] 当前matplotlib后端: {current_backend}")
-
-if current_backend in ['', 'agg'] and 'tk' not in current_backend.lower():
-    try:
-        matplotlib.use('QtAgg')
-        print("[topography_view] 已设置后端为 QtAgg")
-    except:
-        pass
-
-# -------------------- 辅助函数 --------------------
-def min_max_scaling_to_range(data, target_range=(-1, 1)):
-    """将数据缩放到指定范围（逐行独立缩放）"""
-    data = np.asarray(data)
-    min_vals = data.min(axis=1, keepdims=True)
-    max_vals = data.max(axis=1, keepdims=True)
-    range_vals = max_vals - min_vals
-    range_vals[range_vals == 0] = 1
-    scaled = (data - min_vals) / range_vals
-    scaled = scaled * (target_range[1] - target_range[0]) + target_range[0]
-    return scaled
+# 设置中文字体
+try:
+    plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'SimHei', 'Microsoft YaHei']
+    plt.rcParams['axes.unicode_minus'] = False
+except:
+    pass
 
 
-def min_max_scaling_by_arrays(data, target_range=(-1, 1)):
-    """将数据缩放到指定范围（全局缩放）"""
-    data = np.asarray(data)
-    min_val = data.min()
-    max_val = data.max()
-    if max_val - min_val == 0:
-        return np.zeros_like(data)
-    scaled = (data - min_val) / (max_val - min_val)
-    scaled = scaled * (target_range[1] - target_range[0]) + target_range[0]
-    return scaled
+class ModalityType(Enum):
+    """模态类型枚举（与 data_io.py 保持一致）"""
+    EEG = "EEG"
+    EMG = "EMG"
+    ECG = "ECG"
+    GSR = "GSR"
+    FNIRS = "FNIRS"
+    ET = "ET"
+    RESP = "RESP"
+    OTHER = "OTHER"
+    METADATA = "METADATA"  # 新增：纯元数据模态
 
 
-def drop_channels(raw_data, channels, bad_channels):
-    """从数据和通道列表中剔除坏通道"""
-    raw_data = np.asarray(raw_data)
-    keep_idx = [i for i, ch in enumerate(channels) if ch not in bad_channels]
-    if not keep_idx:
-        return np.array([]), []
-    new_data = raw_data[keep_idx, :] if raw_data.ndim == 2 else raw_data[keep_idx]
-    new_channels = [channels[i] for i in keep_idx]
-    return new_data, new_channels
+class TopographyView(QMainWindow):
+    """
+    多模态地形图视图类
+    支持 EEG、fNIRS、EMG、ECG、GSR、ET、RESP 等多种模态
+    也支持纯元数据文件（如光极位置文件）
+    """
 
-
-# -------------------- 对话框和表格模型 --------------------
-class ExcludeChannelsDialog(QDialog):
-    """用于选择要排除的通道的对话框"""
-
-    def __init__(self, channel_list, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle('排除通道')
-        self.setGeometry(400, 400, 300, 600)
-        self.checkbox_dict = {}
-        self.init_ui(channel_list)
-
-    def init_ui(self, channel_list):
-        layout = QVBoxLayout(self)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        container = QWidget()
-        scroll.setWidget(container)
-        layout.addWidget(scroll)
-
-        container_layout = QVBoxLayout(container)
-        for ch in channel_list:
-            cb = QCheckBox(ch)
-            self.checkbox_dict[ch] = cb
-            container_layout.addWidget(cb)
-
-        btn_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btn_box.accepted.connect(self.accept)
-        btn_box.rejected.connect(self.reject)
-        container_layout.addWidget(btn_box)
-
-    def get_selected_channels(self):
-        return [ch for ch, cb in self.checkbox_dict.items() if cb.isChecked()]
-
-
-class PandasModel(QAbstractTableModel):
-    """用于在 QTableView 中显示 pandas DataFrame 的模型"""
-
-    def __init__(self, df=pd.DataFrame(), parent=None):
-        super().__init__(parent)
-        self._df = df
-
-    def rowCount(self, parent=None):
-        return self._df.shape[0]
-
-    def columnCount(self, parent=None):
-        return self._df.shape[1]
-
-    def data(self, index, role=Qt.DisplayRole):
-        if index.isValid() and role == Qt.DisplayRole:
-            return str(self._df.iloc[index.row(), index.column()])
-        elif index.isValid() and role == Qt.TextAlignmentRole:
-            return Qt.AlignCenter
-        return None
-
-    def headerData(self, section, orientation, role=Qt.DisplayRole):
-        if role == Qt.DisplayRole:
-            if orientation == Qt.Horizontal:
-                return self._df.columns[section]
-            elif orientation == Qt.Vertical:
-                return self._df.index[section]
-        return None
-
-
-class DataTableView(QWidget):
-    """底部数据表格部件"""
-
-    def __init__(self, data, ch_names, columns):
+    def __init__(self, data_dict: Dict[str, Any], modality: Optional[str] = None):
         super().__init__()
-        self.init_ui(data, ch_names, columns)
-
-    def init_ui(self, data, ch_names, columns):
-        df = pd.DataFrame(data, index=ch_names, columns=columns)
-        self.model = PandasModel(df)
-        self.table = QTableView()
-        self.table.setModel(self.model)
-        self.table.horizontalHeader().setDefaultSectionSize(100)
-
-        self.checkbox = QCheckBox("显示表格")
-        self.checkbox.setChecked(True)
-        self.checkbox.stateChanged.connect(self.toggle_table)
-
-        self.width_edit = QLineEdit()
-        self.width_edit.setText('100')
-        self.width_edit.returnPressed.connect(self.adjust_width)
-        self.label = QLabel("列宽:")
-
-        h_layout = QHBoxLayout()
-        h_layout.addWidget(self.label)
-        h_layout.addWidget(self.width_edit)
-
-        v_layout = QVBoxLayout(self)
-        v_layout.addWidget(self.checkbox)
-        v_layout.addLayout(h_layout)
-        v_layout.addWidget(self.table)
-
-    def toggle_table(self, state):
-        self.table.setVisible(state == Qt.Checked)
-
-    def adjust_width(self):
-        try:
-            w = int(self.width_edit.text())
-            if w > 0:
-                self.table.horizontalHeader().setDefaultSectionSize(w)
-        except ValueError:
-            pass
-
-
-# -------------------- 主窗口 --------------------
-class TopographyView(QDialog):
-    """地形图可视化主窗口（支持多模态）"""
-
-    def __init__(self, data_dict, modality=None, feature_key='feature', parent=None):
-        """
-        Args:
-            data_dict: 完整的四层数据字典
-            modality: 初始模态
-            feature_key: 特征数据的键（通常是 'feature'）
-        """
-        super().__init__(parent)
         self.data_dict = data_dict
-        self.current_modality = modality
-        self.feature_key = feature_key
-        self.is_relative = True
-        self.is_show_sensor = False
-        self.bad_channels = []
+        self.modality = modality
+        self.current_data = None
+        self.channels_positions = {}
+        self.channel_values = {}
+        self.current_time_point = 0
+        self.is_3d = False
+        self.is_metadata_only = False  # 标记是否为纯元数据文件
 
-        # ===== 初始化所有属性 =====
-        self.available_modalities = []
-        self.all_channel_names = []
-        self.channel_names = []
-        self.feature_data = None
-        self.show_data = np.array([])
-        self.show_channel_names = []
-        self.feature_names = []
-        self.band_titles = []
-        self.axes = []
-        self.fig = None
-        self.canvas = None
-        self.table_widget = None
-        self.combo_modality = None
-        self.cb_relative = None
-        self.cb_sensor = None
-        self.edit_excluded = None
-        # ==========================
+        print("=" * 60)
+        print("TopographyView 初始化")
+        print("=" * 60)
 
-        # 获取所有可用模态
-        self.available_modalities = list(data_dict.get("signal", {}).keys())
-        if not self.available_modalities:
-            raise ValueError("数据字典中没有信号模态")
+        # 从数据字典中提取信息
+        self._extract_data_info()
 
-        # 如果没有指定模态，使用第一个
-        if self.current_modality is None:
-            self.current_modality = self.available_modalities[0]
-
-        # 加载当前模态的特征数据
-        self.load_modality_data(self.current_modality)
-
-        self.setWindowTitle(f"地形图 - {self.current_modality}")
-        self.setGeometry(100, 100, 1100, 850)
         self.init_ui()
-        self.plot()
 
-    def load_modality_data(self, modality):
-        """加载指定模态的特征数据"""
-        print(f"加载模态数据: {modality}")
+        # 强制更新显示
+        print("强制更新显示...")
+        self.update_display()
 
-        # 获取当前模态的通道名称
-        signal_info = self.data_dict["signal"][modality]
-        self.all_channel_names = signal_info.get("channel_names", [])
+    def _extract_data_info(self):
+        """从数据字典中提取信息"""
+        self.meta = self.data_dict.get('meta', {})
+        self.signal = self.data_dict.get('signal', {})
+        self.metadata = self.data_dict.get('metadata', {})
 
-        # ===== 重要：根据模态生成不同的特征数据 =====
-        # 使用模态名称作为随机种子，确保不同模态数据不同
-        seed = sum(ord(c) for c in modality)
-        np.random.seed(seed)
+        print(f"meta: {list(self.meta.keys())}")
+        print(f"signal: {list(self.signal.keys())}")
+        print(f"metadata: {list(self.metadata.keys())}")
 
-        n_channels = min(10, len(self.all_channel_names))
+        # 检查是否为纯元数据文件
+        has_signal = bool(self.signal)
+        has_metadata = bool(self.metadata)
 
-        # 为不同模态生成不同范围的数据，让图形有明显差异
-        if modality == "EEG":
-            scale = 1.0
-            offset = 0
-        elif modality == "fNIRS":
-            scale = 0.3
-            offset = 0.5
-        elif modality == "EMG":
-            scale = 2.0
-            offset = 0.2
+        if not has_signal and has_metadata:
+            self.is_metadata_only = True
+            print("📋 检测到纯元数据文件")
+            # 直接获取元数据位置
+            self._get_metadata_positions()
+            self.current_modality = "METADATA"
         else:
-            scale = 1.0
-            offset = 0
+            # 获取所有可用的模态
+            self.available_modalities = list(self.signal.keys())
 
-        # 每次都重新生成新的特征数据
-        self.feature_data = {
-            'type': 'eeg_psd',
-            'ch_names': self.all_channel_names[:n_channels],
-            'feature': {
-                'Delta': np.random.rand(n_channels) * scale + offset,
-                'Theta': np.random.rand(n_channels) * scale + offset,
-                'Alpha': np.random.rand(n_channels) * scale + offset,
-                'Beta': np.random.rand(n_channels) * scale + offset,
-                'Gamma': np.random.rand(n_channels) * scale + offset
-            }
-        }
-
-        print(f"  生成 {modality} 数据: {n_channels}通道, scale={scale}, offset={offset}")
-        print(
-            f"  Alpha范围: [{min(self.feature_data['feature']['Alpha']):.2f}, {max(self.feature_data['feature']['Alpha']):.2f}]")
-
-        self.channel_names = self.all_channel_names.copy()
-        self.prepare_display_data()
-
-    def _create_demo_feature_data(self, ch_names, modality="EEG"):
-        """创建演示特征数据"""
-        # 使用模态名称作为随机种子，确保不同模态数据不同
-        seed = sum(ord(c) for c in modality)
-        np.random.seed(seed)
-
-        n_channels = min(10, len(ch_names))
-
-        # 为不同模态生成不同范围的数据
-        if modality == "EEG":
-            scale = 1.0
-        elif modality == "fNIRS":
-            scale = 0.5
-        elif modality == "EMG":
-            scale = 2.0
-        else:
-            scale = 1.0
-
-        return {
-            'type': 'eeg_psd',
-            'ch_names': ch_names[:n_channels],
-            'feature': {
-                'Delta': np.random.rand(n_channels) * scale,
-                'Theta': np.random.rand(n_channels) * scale,
-                'Alpha': np.random.rand(n_channels) * scale,
-                'Beta': np.random.rand(n_channels) * scale,
-                'Gamma': np.random.rand(n_channels) * scale
-            }
-        }
-
-    def prepare_display_data(self):
-        """准备显示数据"""
-        if self.feature_data is None:
-            print("警告: feature_data 为空")
-            self.show_data = np.array([])
-            self.show_channel_names = []
-            self.feature_names = []
-            return
-
-        # 从特征数据中提取要显示的数据
-        self.show_data = np.array([self.feature_data['feature'][k]
-                                   for k in self.feature_data['feature'].keys()]).T
-        self.show_channel_names = self.feature_data['ch_names'].copy()
-        self.feature_names = list(self.feature_data['feature'].keys())
-
-        print(f"准备显示数据: {self.show_data.shape}")
-        print(f"通道: {self.show_channel_names[:3]}... (共{len(self.show_channel_names)}个)")
-        print(f"特征: {self.feature_names}")
+            # 如果指定了模态，检查是否可用
+            if self.modality and self.modality.upper() in self.available_modalities:
+                self.current_modality = self.modality.upper()
+            elif self.available_modalities:
+                self.current_modality = self.available_modalities[0]
+                self._extract_modality_data()
+            else:
+                self.current_modality = None
+                QMessageBox.warning(self, "警告", "数据中没有找到可用的信息")
 
     def init_ui(self):
         """初始化用户界面"""
-        # ========== 模态选择 ==========
-        modality_layout = QHBoxLayout()
-        modality_layout.addWidget(QLabel("模态:"))
-        self.combo_modality = QComboBox()
-        self.combo_modality.addItems(self.available_modalities)
-        self.combo_modality.setCurrentText(self.current_modality)
-        self.combo_modality.currentIndexChanged.connect(self.on_modality_changed)
-        modality_layout.addWidget(self.combo_modality)
-        modality_layout.addStretch()
+        self.setWindowTitle("多模态地形图")
+        self.setGeometry(100, 100, 1400, 900)
 
-        # ===== 检查数据是否为空 =====
-        if self.show_data.size == 0 or self.show_data.shape[1] == 0:
-            # 如果没有数据，创建一个默认的图形
-            num_bands = 1
-            self.band_titles = ['无数据']
-        else:
-            # 根据数据类型确定频带标题
-            num_bands = self.show_data.shape[1]
-            if self.feature_data and self.feature_data.get('type') == 'eeg_psd':
-                self.band_titles = self.feature_names
-            elif self.feature_data and self.feature_data.get('type') == 'eeg_microstate':
-                self.band_titles = [chr(i) for i in range(ord('A'), ord('Z') + 1)][:len(self.feature_names)]
-            else:
-                self.band_titles = [f'频带 {i+1}' for i in range(len(self.feature_names))]
-
-        # 创建画布
-        self.fig = Figure(figsize=(10, 7))
-        self.axes = self.fig.subplots(1, num_bands, sharex=True, sharey=True)
-        if num_bands == 1:
-            self.axes = [self.axes]
-        self.fig.subplots_adjust(hspace=0, wspace=0.05, bottom=0.08, left=0.05, top=0.88, right=0.98)
-        self.canvas = FigureCanvas(self.fig)
-        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-        # 数据表格
-        self.table_widget = DataTableView(self.show_data, self.show_channel_names, self.band_titles)
-
-        # 顶部按钮
-        btn_save = QPushButton('保存')
-        btn_save.setFixedWidth(100)
-        btn_save.clicked.connect(self.save_plot)
-        btn_refresh = QPushButton('刷新')
-        btn_refresh.setFixedWidth(100)
-        btn_refresh.clicked.connect(self.plot)
-
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        btn_layout.addWidget(btn_save)
-        btn_layout.addWidget(btn_refresh)
-
-        # 底部控制栏
-        self.cb_relative = QCheckBox('相对缩放')
-        self.cb_relative.setChecked(True)
-        self.cb_relative.stateChanged.connect(self.set_relative)
-
-        self.cb_sensor = QCheckBox('显示传感器')
-        self.cb_sensor.setChecked(False)
-        self.cb_sensor.stateChanged.connect(self.set_sensor)
-
-        btn_exclude = QPushButton('排除通道')
-        btn_exclude.clicked.connect(self.show_exclude_dialog)
-
-        self.edit_excluded = QLineEdit()
-        self.edit_excluded.setReadOnly(True)
-        self.edit_excluded.setPlaceholderText('已选择的坏通道')
-
-        bottom_layout = QHBoxLayout()
-        bottom_layout.addWidget(self.cb_relative)
-        bottom_layout.addSpacing(20)
-        bottom_layout.addWidget(self.cb_sensor)
-        bottom_layout.addSpacing(20)
-        bottom_layout.addWidget(btn_exclude)
-        bottom_layout.addSpacing(10)
-        bottom_layout.addWidget(self.edit_excluded)
-        bottom_layout.addStretch()
+        # 创建中央部件
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
 
         # 主布局
-        main_layout = QVBoxLayout(self)
-        main_layout.addLayout(modality_layout)
-        main_layout.addLayout(btn_layout)
-        main_layout.addWidget(self.canvas)
-        main_layout.addWidget(self.table_widget)
-        main_layout.addLayout(bottom_layout)
+        main_layout = QHBoxLayout(central_widget)
 
-    def on_modality_changed(self, index):
-        """模态切换 - 切换数据并更新图形"""
-        new_modality = self.combo_modality.currentText()
-        if new_modality != self.current_modality:
-            print(f"切换模态: {self.current_modality} -> {new_modality}")
-            self.current_modality = new_modality
+        # 左侧控制面板
+        control_panel = self._create_control_panel()
+        main_layout.addWidget(control_panel, 1)
 
-            # 1. 重新加载当前模态的数据
-            self.load_modality_data(new_modality)
+        # 右侧图形显示区域
+        self.figure = Figure(figsize=(10, 8), dpi=100)
+        self.canvas = FigureCanvas(self.figure)
+        self.toolbar = NavigationToolbar(self.canvas, self)
 
-            # 2. 重新准备显示数据
-            self.prepare_display_data()
+        plot_layout = QVBoxLayout()
+        plot_layout.addWidget(self.toolbar)
+        plot_layout.addWidget(self.canvas)
 
-            # 3. 更新频带标题
-            if self.show_data.size > 0 and self.show_data.shape[1] > 0:
-                self.band_titles = self.feature_names
-            else:
-                self.band_titles = ['无数据']
+        plot_widget = QWidget()
+        plot_widget.setLayout(plot_layout)
+        main_layout.addWidget(plot_widget, 3)
 
-            # 4. 更新窗口标题
-            self.setWindowTitle(f"{self.current_modality} 可视化")
+        # 设置分割器比例
+        main_layout.setStretch(0, 1)
+        main_layout.setStretch(1, 3)
 
-            # 5. 重新绘制图形
-            self.plot()
+    def _create_control_panel(self) -> QWidget:
+        """创建控制面板"""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
 
-    def _update_table(self):
-        """更新表格数据"""
-        try:
-            # 查找并删除旧表格
-            for i in range(self.layout().count()):
-                item = self.layout().itemAt(i)
-                if item is not None:
-                    widget = item.widget()
-                    if widget is not None and isinstance(widget, DataTableView):
-                        widget.setParent(None)
-                        widget.deleteLater()
-                        break
+        # 标题
+        title = QLabel("地形图控制")
+        title.setFont(QFont("微软雅黑", 12, QFont.Bold))
+        layout.addWidget(title)
 
-            # 创建新表格
-            self.table_widget = DataTableView(self.show_data, self.show_channel_names, self.band_titles)
+        # 如果是纯元数据文件，显示提示
+        if self.is_metadata_only:
+            info_label = QLabel("📋 纯元数据文件模式\n显示光极/传感器位置")
+            info_label.setStyleSheet("color: blue; background-color: #e6f3ff; padding: 5px;")
+            info_label.setWordWrap(True)
+            layout.addWidget(info_label)
 
-            # 添加到布局末尾
-            self.layout().addWidget(self.table_widget)
+        # 模态选择（如果不是纯元数据）
+        if not self.is_metadata_only and hasattr(self, 'available_modalities') and self.available_modalities:
+            modality_group = QGroupBox("模态选择")
+            modality_layout = QVBoxLayout()
 
-        except Exception as e:
-            print(f"更新表格时出错: {e}")
+            self.modality_combo = QComboBox()
+            self.modality_combo.addItems(self.available_modalities)
+            self.modality_combo.currentTextChanged.connect(self.on_modality_changed)
+            modality_layout.addWidget(self.modality_combo)
 
-    def set_relative(self):
-        self.is_relative = self.cb_relative.isChecked()
-        self.plot()
+            modality_group.setLayout(modality_layout)
+            layout.addWidget(modality_group)
 
-    def set_sensor(self):
-        self.is_show_sensor = self.cb_sensor.isChecked()
-        self.plot()
+        # 时间点控制（仅在有信号数据时创建）
+        if not self.is_metadata_only:
+            self.time_group = QGroupBox("时间点")
+            time_layout = QVBoxLayout()
 
-    def show_exclude_dialog(self):
-        if self.feature_data is None:
-            QMessageBox.warning(self, '警告', '没有数据')
+            self.time_slider = QSlider(Qt.Horizontal)
+            self.time_slider.setMinimum(0)
+            self.time_slider.setMaximum(100)
+            self.time_slider.valueChanged.connect(self.on_time_changed)
+            time_layout.addWidget(self.time_slider)
+
+            self.time_label = QLabel("时间点: 0")
+            time_layout.addWidget(self.time_label)
+
+            self.time_group.setLayout(time_layout)
+            layout.addWidget(self.time_group)
+
+        # 显示选项
+        display_group = QGroupBox("显示选项")
+        display_layout = QGridLayout()
+
+        self.show_labels = QCheckBox("显示标签")
+        self.show_labels.setChecked(True)
+        self.show_labels.stateChanged.connect(self.update_display)
+        display_layout.addWidget(self.show_labels, 0, 0)
+
+        self.show_grid = QCheckBox("显示网格")
+        self.show_grid.setChecked(True)
+        self.show_grid.stateChanged.connect(self.update_display)
+        display_layout.addWidget(self.show_grid, 0, 1)
+
+        # 插值选项（仅在有信号数据时启用）
+        self.interpolate = QCheckBox("插值显示")
+        self.interpolate.setChecked(True)
+        self.interpolate.stateChanged.connect(self.update_display)
+        if self.is_metadata_only:
+            self.interpolate.setEnabled(False)
+        display_layout.addWidget(self.interpolate, 1, 0)
+
+        self.colorbar = QCheckBox("显示颜色条")
+        self.colorbar.setChecked(True)
+        self.colorbar.stateChanged.connect(self.update_display)
+        if self.is_metadata_only:
+            self.colorbar.setEnabled(False)
+        display_layout.addWidget(self.colorbar, 1, 1)
+
+        # 显示连接线（对光极位置特别有用）
+        self.show_connections = QCheckBox("显示连接线")
+        self.show_connections.setChecked(False)
+        self.show_connections.stateChanged.connect(self.update_display)
+        display_layout.addWidget(self.show_connections, 2, 0)
+
+        # 区分光源和探测器颜色
+        self.color_by_type = QCheckBox("按类型着色")
+        self.color_by_type.setChecked(True)
+        self.color_by_type.stateChanged.connect(self.update_display)
+        display_layout.addWidget(self.color_by_type, 2, 1)
+
+        display_group.setLayout(display_layout)
+        layout.addWidget(display_group)
+
+        # 3D/2D切换
+        view_group = QGroupBox("视图模式")
+        view_layout = QVBoxLayout()
+
+        self.view_2d = QCheckBox("2D视图")
+        self.view_2d.setChecked(True)
+        self.view_2d.toggled.connect(self.on_view_changed)
+        view_layout.addWidget(self.view_2d)
+
+        self.view_3d = QCheckBox("3D视图")
+        self.view_3d.toggled.connect(self.on_view_changed)
+        view_layout.addWidget(self.view_3d)
+
+        view_group.setLayout(view_layout)
+        layout.addWidget(view_group)
+
+        # 颜色映射（仅在有信号数据时显示）
+        if not self.is_metadata_only:
+            cmap_group = QGroupBox("颜色映射")
+            cmap_layout = QVBoxLayout()
+
+            self.cmap_combo = QComboBox()
+            self.cmap_combo.addItems(['viridis', 'plasma', 'inferno', 'magma',
+                                      'coolwarm', 'RdBu', 'jet', 'hot'])
+            self.cmap_combo.currentTextChanged.connect(self.update_display)
+            cmap_layout.addWidget(self.cmap_combo)
+
+            cmap_group.setLayout(cmap_layout)
+            layout.addWidget(cmap_group)
+
+        # 信息显示区域（对元数据特别有用）
+        if self.is_metadata_only:
+            info_group = QGroupBox("元数据信息")
+            info_layout = QVBoxLayout()
+
+            self.info_text = QTextEdit()
+            self.info_text.setReadOnly(True)
+            self.info_text.setMaximumHeight(150)
+            info_layout.addWidget(self.info_text)
+
+            info_group.setLayout(info_layout)
+            layout.addWidget(info_group)
+
+            # 填充元数据信息
+            self._update_metadata_info()
+
+        # 测试按钮 - 强制刷新
+        test_btn = QPushButton("强制刷新")
+        test_btn.clicked.connect(self.force_redraw)
+        layout.addWidget(test_btn)
+
+        # 导出按钮
+        export_btn = QPushButton("导出图像")
+        export_btn.clicked.connect(self.export_figure)
+        layout.addWidget(export_btn)
+
+        # 添加弹簧
+        layout.addStretch()
+
+        return panel
+
+    def force_redraw(self):
+        """强制重绘"""
+        print("强制重绘...")
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+
+        # 绘制一些测试点
+        x = [0, 1, 2, 3, 4]
+        y = [0, 1, 4, 9, 16]
+        ax.plot(x, y, 'ro-', linewidth=2, markersize=8)
+        ax.set_title("测试图 - 如果看到这个，说明绘图正常")
+        ax.grid(True)
+
+        self.canvas.draw()
+
+    def _update_metadata_info(self):
+        """更新元数据信息显示"""
+        if not hasattr(self, 'info_text'):
             return
 
-        dialog = ExcludeChannelsDialog(self.show_channel_names, self)
-        if dialog.exec_() == QDialog.Accepted:
-            bad = dialog.get_selected_channels()
-            self.edit_excluded.setText(', '.join(bad))
-            # 剔除坏通道
-            self.show_data, self.show_channel_names = drop_channels(
-                raw_data=self.show_data,
-                channels=self.show_channel_names,
-                bad_channels=bad
-            )
-            # 更新表格
-            self._update_table()
-            self.plot()
+        info_lines = []
 
-    def plot(self):
-        """绘制拓扑图（EEG用地形图，fNIRS用热图）"""
-        print("开始绘制...")
+        # 基本信息
+        content_type = self.meta.get('content_type', 'unknown')
+        info_lines.append(f"内容类型: {content_type}")
 
-        # 检查数据是否有效
-        if self.feature_data is None or self.show_data.size == 0:
-            print("  没有数据可绘制")
-            for ax in self.axes:
-                ax.clear()
-                ax.text(0.5, 0.5, "无数据", ha='center', va='center', fontsize=14, transform=ax.transAxes)
-            self.canvas.draw()
-            return
+        # 统计光极信息
+        if 'info' in self.metadata:
+            items = self.metadata['info']
+            sources = sum(1 for item in items if item.get('type') == 'source')
+            detectors = sum(1 for item in items if item.get('type') == 'detector')
+            others = len(items) - sources - detectors
 
-        # 清空坐标轴
-        for ax in self.axes:
-            ax.clear()
+            info_lines.append(f"光源数量: {sources}")
+            info_lines.append(f"探测器数量: {detectors}")
+            if others > 0:
+                info_lines.append(f"其他: {others}")
+            info_lines.append(f"总计: {len(items)} 个光极")
 
-        # ===== 根据模态选择不同的可视化方式 =====
-        if self.current_modality == "EEG":
-            self._plot_eeg_topomap()
-        elif self.current_modality == "fNIRS":
-            self._plot_fnirs_heatmap()
+            # 坐标范围
+            if items:
+                x_vals = [float(item.get('x', 0)) for item in items if 'x' in item]
+                y_vals = [float(item.get('y', 0)) for item in items if 'y' in item]
+                z_vals = [float(item.get('z', 0)) for item in items if 'z' in item]
+
+                if x_vals:
+                    info_lines.append(f"X范围: [{min(x_vals):.4f}, {max(x_vals):.4f}]")
+                if y_vals:
+                    info_lines.append(f"Y范围: [{min(y_vals):.4f}, {max(y_vals):.4f}]")
+                if z_vals and any(z != 0 for z in z_vals):
+                    info_lines.append(f"Z范围: [{min(z_vals):.4f}, {max(z_vals):.4f}]")
+
+        self.info_text.setText("\n".join(info_lines))
+
+    def on_modality_changed(self, modality: str):
+        """模态改变时的处理"""
+        self.current_modality = modality
+
+        if modality.startswith("METADATA_"):
+            # 元数据模态
+            self.is_metadata_only = True
+            self._get_metadata_positions()
         else:
-            # 其他模态显示提示
-            for ax in self.axes:
-                ax.text(0.5, 0.5, f"{self.current_modality} 不支持可视化",
-                        ha='center', va='center', fontsize=12, transform=ax.transAxes)
-            self.canvas.draw()
+            # 信号模态
+            self.is_metadata_only = False
+            self._extract_modality_data()
 
-    def _plot_eeg_topomap(self):
-        """绘制EEG地形图"""
-        print("  绘制EEG地形图...")
+        self.update_display()
 
-        n_use = min(30, len(self.show_channel_names))
-        if n_use == 0:
-            QMessageBox.warning(self, "警告", "没有可绘制的通道")
+    def _extract_modality_data(self):
+        """提取当前模态的数据"""
+        if not self.current_modality:
             return
 
-        use_channels = self.show_channel_names[:n_use]
-        use_data = self.show_data[:n_use, :]
+        modality_data = self.signal.get(self.current_modality, {})
+        self.current_data = modality_data.get('data', np.array([]))
+        self.sampling_rate = modality_data.get('sampling_rate', 1000)
+        self.channel_names = modality_data.get('channel_names', [])
+        self.unit = modality_data.get('unit', 'unknown')
 
-        try:
-            # 创建info和evoked对象
-            info = mne.create_info(ch_names=use_channels, sfreq=1000, ch_types='eeg')
-            evoked = mne.EvokedArray(data=use_data, info=info)
-
-            # 设置蒙太奇
-            montage = mne.channels.make_standard_montage('standard_1005')
-            evoked.set_montage(montage)
-
-            # 数据归一化
-            if self.is_relative:
-                norm_data = min_max_scaling_to_range(use_data.T)
-                vlim = (-1, 1)
+        # 更新滑块范围（确保 time_slider 存在）
+        if hasattr(self, 'time_slider'):
+            if self.current_data.ndim == 2 and self.current_data.size > 0:
+                n_timepoints = self.current_data.shape[1]
+                self.time_slider.setMaximum(n_timepoints - 1)
+                self.time_group.setEnabled(True)
             else:
-                norm_data = min_max_scaling_by_arrays(use_data.T)
-                vlim = (-1, 1)
+                self.time_group.setEnabled(False)
 
-            # 绘制每个频带
-            for i, (ax, title) in enumerate(zip(self.axes, self.band_titles)):
-                ax.set_title(title)
-                mne.viz.plot_topomap(
-                    norm_data[i],
-                    evoked.info,
-                    axes=ax,
-                    show=False,
-                    sensors=self.is_show_sensor,
-                    vlim=vlim,
-                    names=self.show_channel_names if self.is_show_sensor else None
-                )
-                print(f"    绘制频带 {i + 1}: {title}")
+        # 获取通道位置
+        self._get_channel_positions()
 
-        except Exception as e:
-            print(f"    EEG绘制失败: {e}")
-            for ax in self.axes:
-                ax.text(0.5, 0.5, "绘制失败", ha='center', va='center', transform=ax.transAxes)
+    def _get_metadata_positions(self):
+        """从元数据获取位置信息"""
+        print("获取元数据位置信息...")
+        self.channels_positions = {}
+        self.channel_names = []
+        self.unit = 'position'
+        self.item_types = {}
 
-        self.canvas.draw()
+        if 'info' in self.metadata:
+            items = self.metadata['info']
+            print(f"找到 {len(items)} 个元数据项")
 
-    def _plot_fnirs_heatmap(self):
-        """绘制fNIRS热图（替代地形图）"""
-        print("  绘制fNIRS热图...")
+            for item in items:
+                name = item.get('name', 'unknown')
+                try:
+                    x = float(item.get('x', 0))
+                    y = float(item.get('y', 0))
+                    z = float(item.get('z', 0))
+                except (ValueError, TypeError) as e:
+                    print(f"坐标转换错误: {e}")
+                    continue
 
-        # 准备数据
-        n_channels = len(self.show_channel_names)
-        n_features = len(self.feature_names)
+                self.channels_positions[name] = (x, y, z)
+                self.channel_names.append(name)
+                self.item_types[name] = item.get('type', 'unknown')
 
-        if n_channels == 0 or n_features == 0:
+                print(f"  添加 {name}: ({x}, {y}, {z}) 类型: {self.item_types[name]}")
+
+            print(f"总共有 {len(self.channels_positions)} 个位置点")
+        else:
+            print("警告: metadata 中没有 'info' 字段")
+
+    def _get_channel_positions(self):
+        """根据模态获取通道位置"""
+        if self.current_modality == ModalityType.EEG.value:
+            self._get_eeg_positions()
+        elif self.current_modality == ModalityType.FNIRS.value:
+            self._get_fnirs_positions()
+        elif self.current_modality == ModalityType.EMG.value:
+            self._get_emg_positions()
+        elif self.current_modality == ModalityType.ECG.value:
+            self._get_ecg_positions()
+        elif self.current_modality == ModalityType.GSR.value:
+            self._get_gsr_positions()
+        elif self.current_modality == ModalityType.ET.value:
+            self._get_et_positions()
+        elif self.current_modality == ModalityType.RESP.value:
+            self._get_resp_positions()
+        else:
+            self._get_default_positions()
+
+    def _get_fnirs_positions(self):
+        """获取 fNIRS 通道位置（从光极坐标计算）"""
+        # 检查是否有光极位置信息
+        if 'metadata' in self.data_dict and 'info' in self.data_dict['metadata']:
+            optodes = self.data_dict['metadata']['info']
+
+            # 分离光源和探测器
+            sources = {}
+            detectors = {}
+            for opt in optodes:
+                name = opt.get('name', '')
+                opt_type = opt.get('type', '')
+                x = float(opt.get('x', 0))
+                y = float(opt.get('y', 0))
+                z = float(opt.get('z', 0))
+
+                if opt_type == 'source':
+                    sources[name] = (x, y, z)
+                elif opt_type == 'detector':
+                    detectors[name] = (x, y, z)
+
+            # 计算通道位置（光源和探测器的中点）
+            # 这里需要根据实际的源-探测器配对规则
+            # 暂时使用简单的配对规则：每个光源与最近的探测器配对
+            for i, ch_name in enumerate(self.channel_names):
+                if i < len(sources) and i < len(detectors):
+                    s_name = list(sources.keys())[i % len(sources)]
+                    d_name = list(detectors.keys())[i % len(detectors)]
+                    s_pos = sources[s_name]
+                    d_pos = detectors[d_name]
+
+                    # 计算中点
+                    mid_x = (s_pos[0] + d_pos[0]) / 2
+                    mid_y = (s_pos[1] + d_pos[1]) / 2
+                    self.channels_positions[ch_name] = (mid_x, mid_y)
+                else:
+                    # 如果没有足够的光极，使用圆形布局
+                    angle = 2 * np.pi * i / len(self.channel_names)
+                    radius = 0.8
+                    self.channels_positions[ch_name] = (radius * np.cos(angle),
+                                                        radius * np.sin(angle))
+        else:
+            # 没有光极位置信息，使用默认布局
+            self._get_default_positions()
+
+    def _get_eeg_positions(self):
+        """获取 EEG 电极位置（标准 10-20 系统）"""
+        # 标准 10-20 系统的 2D 投影坐标
+        standard_positions = {
+            'Fp1': (-0.5, 0.9), 'Fp2': (0.5, 0.9),
+            'F7': (-0.9, 0.5), 'F3': (-0.4, 0.5), 'Fz': (0, 0.5), 'F4': (0.4, 0.5), 'F8': (0.9, 0.5),
+            'T3': (-0.9, 0), 'C3': (-0.4, 0), 'Cz': (0, 0), 'C4': (0.4, 0), 'T4': (0.9, 0),
+            'T5': (-0.9, -0.5), 'P3': (-0.4, -0.5), 'Pz': (0, -0.5), 'P4': (0.4, -0.5), 'T6': (0.9, -0.5),
+            'O1': (-0.5, -0.9), 'O2': (0.5, -0.9)
+        }
+
+        self.channels_positions = {}
+        for i, ch_name in enumerate(self.channel_names):
+            # 尝试匹配标准名称
+            matched = False
+            for std_name, pos in standard_positions.items():
+                if std_name in ch_name or ch_name in std_name:
+                    self.channels_positions[ch_name] = pos
+                    matched = True
+                    break
+            if not matched:
+                # 如果没有匹配，使用圆形布局
+                angle = 2 * np.pi * i / len(self.channel_names)
+                radius = 0.8
+                self.channels_positions[ch_name] = (radius * np.cos(angle),
+                                                    radius * np.sin(angle))
+
+    def _get_emg_positions(self):
+        """获取 EMG 电极位置（肌肉分布）"""
+        # EMG 电极通常放置在特定肌肉上
+        muscle_positions = {
+            'masseter': (-0.3, 0.8), 'temporalis': (0, 0.9),
+            'sternocleidomastoid': (-0.2, 0.5), 'trapezius': (0, 0.3),
+            'deltoid': (-0.5, 0.2), 'biceps': (-0.4, 0), 'triceps': (0.4, 0),
+            'forearm': (-0.3, -0.2), 'thenar': (-0.2, -0.4),
+            'quadriceps': (-0.1, -0.5), 'hamstring': (0.1, -0.6),
+            'gastrocnemius': (-0.2, -0.8), 'soleus': (0.2, -0.9)
+        }
+
+        self.channels_positions = {}
+        for i, ch_name in enumerate(self.channel_names):
+            ch_lower = ch_name.lower()
+            matched = False
+            for muscle, pos in muscle_positions.items():
+                if muscle in ch_lower:
+                    self.channels_positions[ch_name] = pos
+                    matched = True
+                    break
+            if not matched:
+                angle = 2 * np.pi * i / len(self.channel_names)
+                radius = 0.8
+                self.channels_positions[ch_name] = (radius * np.cos(angle),
+                                                    radius * np.sin(angle))
+
+    def _get_ecg_positions(self):
+        """获取 ECG 电极位置（心电导联）"""
+        # 标准 ECG 导联位置
+        ecg_positions = {
+            'RA': (-0.3, 0.5), 'LA': (0.3, 0.5),
+            'RL': (-0.2, -0.5), 'LL': (0.2, -0.5),
+            'V1': (-0.1, 0.2), 'V2': (0, 0.2), 'V3': (0.1, 0.1),
+            'V4': (0.2, 0), 'V5': (0.2, -0.1), 'V6': (0.2, -0.2)
+        }
+
+        self.channels_positions = {}
+        for i, ch_name in enumerate(self.channel_names):
+            ch_upper = ch_name.upper()
+            matched = False
+            for std_name, pos in ecg_positions.items():
+                if std_name in ch_upper:
+                    self.channels_positions[ch_name] = pos
+                    matched = True
+                    break
+            if not matched:
+                angle = 2 * np.pi * i / len(self.channel_names)
+                radius = 0.6
+                self.channels_positions[ch_name] = (radius * np.cos(angle),
+                                                    radius * np.sin(angle))
+
+    def _get_gsr_positions(self):
+        """获取 GSR 电极位置（通常在手部）"""
+        # GSR 电极通常放置在手指或手掌
+        hand_positions = {
+            'index': (-0.2, 0.1), 'middle': (0, 0.15), 'ring': (0.2, 0.1),
+            'palm': (0, 0), 'wrist': (0, -0.2)
+        }
+
+        self.channels_positions = {}
+        for i, ch_name in enumerate(self.channel_names):
+            ch_lower = ch_name.lower()
+            matched = False
+            for part, pos in hand_positions.items():
+                if part in ch_lower:
+                    self.channels_positions[ch_name] = pos
+                    matched = True
+                    break
+            if not matched:
+                x = (i - len(self.channel_names) / 2) * 0.3
+                self.channels_positions[ch_name] = (x, 0)
+
+    def _get_et_positions(self):
+        """获取眼动追踪位置（视野分布）"""
+        n_channels = len(self.channel_names)
+        grid_size = int(np.ceil(np.sqrt(n_channels)))
+
+        self.channels_positions = {}
+        for i, ch_name in enumerate(self.channel_names):
+            row = i // grid_size
+            col = i % grid_size
+            x = (col - grid_size / 2) * (2.0 / grid_size)
+            y = (grid_size / 2 - row) * (2.0 / grid_size)
+            self.channels_positions[ch_name] = (x, y)
+
+    def _get_resp_positions(self):
+        """获取呼吸传感器位置"""
+        resp_positions = {
+            'chest': (0, 0.3), 'abdomen': (0, -0.1),
+            'nasal': (0, 0.6), 'oral': (0, 0.5)
+        }
+
+        self.channels_positions = {}
+        for i, ch_name in enumerate(self.channel_names):
+            ch_lower = ch_name.lower()
+            matched = False
+            for pos_name, pos in resp_positions.items():
+                if pos_name in ch_lower:
+                    self.channels_positions[ch_name] = pos
+                    matched = True
+                    break
+            if not matched:
+                y = 0.5 - i * (1.0 / len(self.channel_names))
+                self.channels_positions[ch_name] = (0, y)
+
+    def _get_default_positions(self):
+        """获取默认的通道位置（圆形布局）"""
+        self.channels_positions = {}
+        n_channels = len(self.channel_names)
+        for i, ch_name in enumerate(self.channel_names):
+            angle = 2 * np.pi * i / n_channels
+            radius = 0.8
+            self.channels_positions[ch_name] = (radius * np.cos(angle),
+                                                radius * np.sin(angle))
+
+    def _get_current_values(self) -> Dict[str, float]:
+        """获取当前要显示的通道值"""
+        values = {}
+
+        if self.is_metadata_only:
+            # 元数据模式：没有数值，只显示位置
+            return values
+
+        if self.current_data is None or self.current_data.size == 0:
+            return values
+
+        # 显示所有通道的值
+        if self.current_data.ndim == 2:
+            # 时间序列数据
+            for i, ch_name in enumerate(self.channel_names):
+                if i < self.current_data.shape[0]:
+                    values[ch_name] = self.current_data[i, self.current_time_point]
+        elif self.current_data.ndim == 1:
+            # 单值数据
+            for i, ch_name in enumerate(self.channel_names):
+                if i < len(self.current_data):
+                    values[ch_name] = self.current_data[i]
+
+        return values
+
+    def on_time_changed(self, value: int):
+        """时间点改变时的处理"""
+        self.current_time_point = value
+        if hasattr(self, 'time_label'):
+            self.time_label.setText(f"时间点: {value}")
+        self.update_display()
+
+    def on_view_changed(self):
+        """视图模式改变时的处理"""
+        if self.view_2d.isChecked():
+            self.is_3d = False
+        elif self.view_3d.isChecked():
+            self.is_3d = True
+        self.update_display()
+
+    def update_display(self):
+        """更新显示"""
+        print("\n" + "=" * 40)
+        print("update_display 被调用")
+        print("=" * 40)
+
+        # 调试信息
+        print(f"current_modality: {self.current_modality}")
+        print(f"is_metadata_only: {self.is_metadata_only}")
+        print(f"channels_positions 数量: {len(self.channels_positions)}")
+
+        if not self.current_modality and not self.is_metadata_only:
+            print("警告: current_modality 为空且不是元数据模式")
+            self._show_no_data_message()
             return
 
-        # 为每个频带创建一个热图
-        for i, (ax, title) in enumerate(zip(self.axes, self.band_titles)):
-            # 获取当前频带的数据
-            data = self.show_data[:, i]
-
-            # 创建x轴位置（通道索引）
-            x_pos = np.arange(n_channels)
-
-            # 绘制条形图（更直观显示血氧浓度）
-            colors = plt.cm.RdYlBu_r(data / max(data) if max(data) > 0 else data)
-            bars = ax.bar(x_pos, data, color=colors, alpha=0.8)
-
-            # 设置标签
-            ax.set_xticks(x_pos)
-            ax.set_xticklabels(self.show_channel_names, rotation=45, ha='right', fontsize=8)
-            ax.set_ylabel('浓度 (μM)')
-            ax.set_title(f"{title} - 血氧浓度分布")
-
-            # 添加数值标签
-            for j, (bar, val) in enumerate(zip(bars, data)):
-                height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width() / 2., height + 0.01,
-                        f'{val:.2f}', ha='center', va='bottom', fontsize=7)
-
-            ax.grid(True, alpha=0.3, axis='y')
-
-        self.canvas.draw()
-        print("  fNIRS热图绘制完成")
-
-    def save_plot(self):
-        file_path, _ = QFileDialog.getSaveFileName(self, "保存地形图",
-                                                   "", "PNG文件 (*.png);;JPEG文件 (*.jpg)")
-        if not file_path:
+        if not self.channels_positions:
+            print("警告: channels_positions 为空")
+            self._show_no_data_message()
             return
-        self.fig.savefig(file_path, dpi=300)
-        QMessageBox.information(self, "成功", f"图像已保存到 {file_path}")
+
+        # 获取当前值（如果是元数据模式，值为空）
+        values = self._get_current_values()
+        print(f"values 数量: {len(values)}")
+
+        # 清除图形
+        self.figure.clear()
+
+        if self.is_3d:
+            ax = self.figure.add_subplot(111, projection='3d')
+            self._draw_3d_topography(ax, values)
+        else:
+            ax = self.figure.add_subplot(111)
+            self._draw_2d_topography(ax, values)
+
+        # 设置标题
+        if self.is_metadata_only:
+            content_type = self.meta.get('content_type', 'metadata')
+            title = f"{content_type} 位置分布图"
+        else:
+            title = f"{self.current_modality} 地形图"
+            if hasattr(self, 'current_data') and self.current_data is not None and self.current_data.ndim == 2:
+                if hasattr(self, 'sampling_rate') and self.sampling_rate:
+                    time_sec = self.current_time_point / self.sampling_rate
+                else:
+                    time_sec = self.current_time_point
+                title += f" (t={time_sec:.2f}s)"
+
+        ax.set_title(title, fontsize=14, fontweight='bold')
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+        print("绘图完成")
+
+    def _show_no_data_message(self):
+        """显示无数据消息"""
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.text(0.5, 0.5, "无位置数据\n请检查数据文件",
+                ha='center', va='center', transform=ax.transAxes, fontsize=14)
+        ax.set_title("地形图", fontsize=14, fontweight='bold')
+        self.canvas.draw()
+
+    def _draw_2d_topography(self, ax, values: Dict[str, float]):
+        """绘制真正的2D地形图（连续色块）"""
+        print("绘制真正的地形图...")
+
+        if not self.channels_positions:
+            ax.text(0.5, 0.5, "无位置数据", ha='center', va='center', transform=ax.transAxes)
+            return
+
+        # 提取有数值的电极点
+        points = []
+        point_values = []
+        labels = []
+
+        for ch_name, pos in self.channels_positions.items():
+            if ch_name in values:
+                if len(pos) == 3:
+                    points.append([pos[0], pos[1]])  # 只取x,y
+                else:
+                    points.append([pos[0], pos[1]])
+                point_values.append(values[ch_name])
+                labels.append(ch_name)
+
+        print(f"有效电极点数量: {len(points)}")
+
+        if len(points) < 3:
+            # 点太少，无法插值，只能画散点
+            ax.scatter([p[0] for p in points], [p[1] for p in points],
+                       c=point_values, s=100, cmap='jet', edgecolors='black')
+            ax.set_title("电极点太少，无法生成地形图")
+            return
+
+        points = np.array(points)
+        point_values = np.array(point_values)
+
+        # 创建网格（覆盖所有电极点范围）
+        margin = 0.1
+        x_min, x_max = points[:, 0].min(), points[:, 0].max()
+        y_min, y_max = points[:, 1].min(), points[:, 1].max()
+
+        # 增加边距
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+        x_min -= margin * x_range
+        x_max += margin * x_range
+        y_min -= margin * y_range
+        y_max += margin * y_range
+
+        # 创建高分辨率网格
+        grid_x, grid_y = np.mgrid[x_min:x_max:200j, y_min:y_max:200j]
+
+        # 插值
+        from scipy.interpolate import griddata
+        grid_z = griddata(points, point_values, (grid_x, grid_y), method='cubic')
+
+        # 如果cubic失败，尝试linear
+        if np.isnan(grid_z).all():
+            grid_z = griddata(points, point_values, (grid_x, grid_y), method='linear')
+
+        # 绘制地形图（连续色块）
+        cmap = plt.get_cmap(self.cmap_combo.currentText() if hasattr(self, 'cmap_combo') else 'jet')
+        im = ax.imshow(grid_z.T, extent=[x_min, x_max, y_min, y_max],
+                       origin='lower', cmap=cmap, alpha=0.8, aspect='auto')
+
+        # 叠加电极点位置（用小圆点标记）
+        ax.scatter(points[:, 0], points[:, 1], c='black', s=20, zorder=5)
+
+        # 显示电极标签
+        if hasattr(self, 'show_labels') and self.show_labels.isChecked():
+            for i, label in enumerate(labels):
+                ax.annotate(label, (points[i, 0], points[i, 1]),
+                            xytext=(3, 3), textcoords='offset points',
+                            fontsize=8, zorder=6)
+
+        # 显示颜色条
+        if hasattr(self, 'colorbar') and self.colorbar.isChecked():
+            unit = getattr(self, 'unit', 'value')
+            plt.colorbar(im, ax=ax, label=f'值 ({unit})')
+
+        # 显示网格
+        if hasattr(self, 'show_grid') and self.show_grid.isChecked():
+            ax.grid(True, alpha=0.3, linestyle='--', zorder=1)
+
+        ax.set_aspect('equal')
+        ax.set_xlabel('X 位置')
+        ax.set_ylabel('Y 位置')
+
+    def _draw_3d_topography(self, ax, values: Dict[str, float]):
+        """绘制真正的3D地形图（连续曲面）"""
+        print("绘制真正的3D地形图...")
+
+        if not self.channels_positions:
+            ax.text(0.5, 0.5, 0.5, "无位置数据", ha='center', va='center')
+            return
+
+        # 提取有数值的电极点
+        points = []
+        point_values = []
+        labels = []
+
+        for ch_name, pos in self.channels_positions.items():
+            if ch_name in values:
+                if len(pos) == 3:
+                    points.append([pos[0], pos[1], pos[2]])  # 取x,y,z
+                else:
+                    points.append([pos[0], pos[1], 0])  # 2D坐标的z设为0
+                point_values.append(values[ch_name])
+                labels.append(ch_name)
+
+        print(f"有效电极点数量: {len(points)}")
+
+        if len(points) < 4:
+            # 点太少，无法插值，只能画散点
+            for i in range(len(points)):
+                ax.scatter([points[i][0]], [points[i][1]], [points[i][2]],
+                           c=[point_values[i]], cmap='jet', s=100, edgecolors='black', vmin=min(point_values),
+                           vmax=max(point_values))
+            ax.set_title("电极点太少，无法生成3D地形图")
+            return
+
+        points = np.array(points)
+        point_values = np.array(point_values)
+
+        # 创建网格（覆盖所有电极点范围）
+        margin = 0.1
+        x_min, x_max = points[:, 0].min(), points[:, 0].max()
+        y_min, y_max = points[:, 1].min(), points[:, 1].max()
+
+        # 增加边距
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+        if x_range == 0:
+            x_range = 1
+        if y_range == 0:
+            y_range = 1
+
+        x_min -= margin * x_range
+        x_max += margin * x_range
+        y_min -= margin * y_range
+        y_max += margin * y_range
+
+        # 创建高分辨率网格
+        grid_x, grid_y = np.mgrid[x_min:x_max:50j, y_min:y_max:50j]
+
+        # 插值（只使用x,y坐标，z值由插值决定）
+        from scipy.interpolate import griddata
+
+        # 插值得到每个网格点的值（高度）
+        grid_z = griddata(points[:, :2], point_values, (grid_x, grid_y), method='cubic')
+
+        # 如果cubic失败，尝试linear
+        if grid_z is None or np.isnan(grid_z).all():
+            grid_z = griddata(points[:, :2], point_values, (grid_x, grid_y), method='linear')
+
+        # 方法1：简单方法 - 只用一个颜色映射，不单独设置facecolors
+        cmap = plt.get_cmap(self.cmap_combo.currentText() if hasattr(self, 'cmap_combo') else 'jet')
+
+        # 创建曲面图 - 简化版本，避免facecolors问题
+        surf = ax.plot_surface(grid_x, grid_y, grid_z,
+                               cmap=cmap,
+                               alpha=0.9,
+                               linewidth=0,
+                               antialiased=True,
+                               vmin=point_values.min() if len(point_values) > 0 else None,
+                               vmax=point_values.max() if len(point_values) > 0 else None)
+
+        # 叠加电极点位置（用小球标记）
+        scatter = ax.scatter(points[:, 0], points[:, 1], points[:, 2] + 0.001,
+                             c=point_values,
+                             cmap=cmap,
+                             s=50,
+                             edgecolors='black',
+                             linewidth=1,
+                             zorder=10,
+                             vmin=point_values.min() if len(point_values) > 0 else None,
+                             vmax=point_values.max() if len(point_values) > 0 else None)
+
+        # 显示电极标签
+        if hasattr(self, 'show_labels') and self.show_labels.isChecked():
+            for i, label in enumerate(labels):
+                ax.text(points[i, 0], points[i, 1], points[i, 2] + 0.002,
+                        f' {label}', fontsize=8, zorder=11)
+
+        # 设置坐标轴
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel(f'值 ({getattr(self, "unit", "value")})')
+
+        # 添加颜色条
+        if hasattr(self, 'colorbar') and self.colorbar.isChecked():
+            plt.colorbar(surf, ax=ax, label=f'值 ({getattr(self, "unit", "value")})', shrink=0.5)
+
+    def export_figure(self):
+        """导出图形"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "保存图像", "",
+            "PNG (*.png);;PDF (*.pdf);;SVG (*.svg)"
+        )
+
+        if file_path:
+            self.figure.savefig(file_path, dpi=300, bbox_inches='tight')
+            QMessageBox.information(self, "成功", f"图像已保存到:\n{file_path}")
+
+
+def show_topography(data_dict: Dict[str, Any], modality: Optional[str] = None):
+    """显示地形图视图"""
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+
+    window = TopographyView(data_dict, modality)
+    window.show()
+    return window
 
 
 if __name__ == "__main__":
-    import sys
-    from PyQt5.QtWidgets import QApplication
+    # 测试代码
+    app = QApplication(sys.argv)
 
-    # 测试数据
-    montage = mne.channels.make_standard_montage('standard_1005')
-    ch_names = montage.ch_names[:32]
-
+    # 创建测试数据（包含光极位置）
     test_data = {
-        "signal": {
-            "EEG": {
-                "channel_names": ch_names
-            },
-            "fNIRS": {
-                "channel_names": [f"NIRS_{i}" for i in range(16)]
-            }
+        "meta": {
+            "subject_id": "test",
+            "content_type": "optode_positions",
+            "modality": []
         },
-        "feature": {
-            'type': 'eeg_psd',
-            'ch_names': ch_names[:10],
-            'feature': {
-                'Delta': np.random.rand(10),
-                'Theta': np.random.rand(10),
-                'Alpha': np.random.rand(10),
-                'Beta': np.random.rand(10),
-                'Gamma': np.random.rand(10)
-            }
+        "signal": {},
+        "metadata": {
+            "info": [
+                {"name": "S1", "type": "source", "x": -0.00247, "y": 0.00247, "z": 0},
+                {"name": "S2", "type": "source", "x": -0.00247, "y": -0.00247, "z": 0},
+                {"name": "S3", "type": "source", "x": 0.00247, "y": 0.00247, "z": 0},
+                {"name": "S4", "type": "source", "x": 0.00247, "y": -0.00247, "z": 0},
+                {"name": "S5", "type": "source", "x": -0.00247, "y": -0.00597, "z": 0},
+                {"name": "S6", "type": "source", "x": -0.00247, "y": -0.01092, "z": 0},
+                {"name": "S7", "type": "source", "x": 0.00247, "y": -0.00597, "z": 0},
+                {"name": "S8", "type": "source", "x": 0.00247, "y": -0.01092, "z": 0},
+                {"name": "D1", "type": "detector", "x": 0, "y": 0, "z": 0},
+                {"name": "D2", "type": "detector", "x": 0, "y": -0.00845, "z": 0}
+            ]
         }
     }
 
-    app = QApplication(sys.argv)
-    win = TopographyView(test_data, modality="EEG")
-    win.show()
+    window = TopographyView(test_data)
+    window.show()
+
     sys.exit(app.exec_())
