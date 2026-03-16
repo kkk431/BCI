@@ -474,6 +474,31 @@ class FeatureExtractionPanel(tk.Frame):
                 loader = DataLoader()
                 raw_dict = loader.load(filepath)
 
+                # 添加：标准化模态名称
+                if 'signal' in raw_dict:
+                    standardized_signals = {}
+                    for mod_name, signal_data in raw_dict['signal'].items():
+                        # 将常见变体标准化为标准名称
+                        if mod_name.lower() in ['fnirs', 'nirs', 'snirf']:
+                            std_name = 'fNIRS'
+                        elif mod_name.lower() in ['eeg']:
+                            std_name = 'EEG'
+                        elif mod_name.lower() in ['ecg']:
+                            std_name = 'ECG'
+                        elif mod_name.lower() in ['emg']:
+                            std_name = 'EMG'
+                        else:
+                            std_name = mod_name  # 保持原样
+
+                        # 如果信号数据中包含signal_type，也进行标准化
+                        if isinstance(signal_data, dict) and 'signal_type' in signal_data:
+                            if signal_data['signal_type'].lower() in ['fnirs', 'nirs']:
+                                signal_data['signal_type'] = 'fnirs'
+
+                        standardized_signals[std_name] = signal_data
+
+                    raw_dict['signal'] = standardized_signals
+
                 # 处理手动指定模态
                 if manual_mod:
                     # 替换 UNKNOWN 模态
@@ -495,7 +520,7 @@ class FeatureExtractionPanel(tk.Frame):
                             signal_entry = {
                                 'data': data,
                                 'sampling_rate': fs,
-                                'channel_names': [f'Ch{i+1}' for i in range(n_channels)],
+                                'channel_names': [f'Ch{i + 1}' for i in range(n_channels)],
                                 'signal_type': manual_mod.lower(),
                                 'unit': 'unknown',
                                 'n_channels': n_channels,
@@ -565,7 +590,6 @@ class FeatureExtractionPanel(tk.Frame):
 
     # ------------------------------------------------------------------
     # 特征提取
-    # ------------------------------------------------------------------
     def action_extract(self):
         if not self.clean_data_dict:
             messagebox.showwarning("警告", "请先加载数据文件")
@@ -585,19 +609,76 @@ class FeatureExtractionPanel(tk.Frame):
         def background_extraction():
             try:
                 request = {modality: selected_cats}
+
+                # 修复：检查模态名称是否存在，并尝试匹配
+                signal_dict = self.clean_data_dict.get('signal', {})
+
+                # 尝试找到匹配的模态键（不区分大小写）
+                matched_modality = None
+                for key in signal_dict.keys():
+                    if key.lower() == modality.lower():
+                        matched_modality = key
+                        break
+
+                if not matched_modality:
+                    # 如果找不到匹配，尝试常见的变体
+                    modality_variants = {
+                        'fNIRS': ['fnirs', 'nirs', 'fNIRS', 'FNIRS', 'snirf'],
+                        'EEG': ['eeg', 'EEG'],
+                        'ECG': ['ecg', 'ECG'],
+                        'EMG': ['emg', 'EMG']
+                    }
+
+                    variants = modality_variants.get(modality, [modality])
+                    for variant in variants:
+                        if variant in signal_dict:
+                            matched_modality = variant
+                            break
+
+                if not matched_modality:
+                    available_mods = list(signal_dict.keys())
+                    error_msg = f"找不到模态 {modality}，可用模态: {available_mods}"
+                    self.after(0, lambda msg=error_msg: self.update_status(msg, "red"))
+                    return
+
+                # 使用匹配到的模态名称
+                signal_data = signal_dict[matched_modality]['data']
+
+                # 检查数据大小
+                n_samples = signal_data.shape[1]
+                fs = signal_dict[matched_modality].get('sampling_rate', 250)
+                duration = n_samples / fs
+
+                self.after(0, lambda: self.update_status(
+                    f"数据长度: {duration:.1f}秒 ({n_samples}样本), 正在提取特征...",
+                    "#0056b3"
+                ))
+
+                # 如果是长数据，给出提示
+                if duration > 300:  # 超过5分钟
+                    self.after(0, lambda: messagebox.showinfo(
+                        "提示",
+                        f"数据较长 ({duration:.1f}秒)，特征提取可能需要几分钟时间，请耐心等待..."
+                    ))
+
                 pipeline = MultimodalFeaturePipeline(self.clean_data_dict, selected_features=request)
                 final_dict = pipeline.run_pipeline()
                 all_feats = final_dict.get('processed', {}).get('feature', {})
                 self.extracted_features = {modality: all_feats.get(modality, {})}
                 self.after(0, self._display_features, modality)
+
             except Exception as e:
                 traceback.print_exc()
-                self.after(0, lambda: self.update_status(f"提取异常: {str(e)}", "red"))
+                # 修复：使用局部变量保存错误信息
+                error_msg = str(e)
+                self.after(0, lambda msg=error_msg: self.update_status(f"提取异常: {msg}", "red"))
 
         threading.Thread(target=background_extraction, daemon=True).start()
 
     def _display_features(self, modality):
         self.update_status(f"{modality} 特征提取完成", "green")
+
+        # 清空表格
         for item in self.tree.get_children():
             self.tree.delete(item)
 
@@ -610,6 +691,7 @@ class FeatureExtractionPanel(tk.Frame):
             else:
                 flat[k] = v
 
+        # 显示在表格中
         for name, val in flat.items():
             if isinstance(val, float):
                 val_str = f"{val:.6f}"
@@ -619,6 +701,249 @@ class FeatureExtractionPanel(tk.Frame):
                 val_str = str(val)
             self.tree.insert('', "end", values=(name, val_str))
 
+        # ========== 新增：自动保存特征到文件 ==========
+        self._auto_save_features(modality, flat)
+
+    def _auto_save_features(self, modality, features_dict):
+        """自动保存特征数据 - 符合 data_io.py 的标准"""
+        try:
+            import pickle
+            import json
+            from datetime import datetime
+            import os
+            import numpy as np
+            import pandas as pd
+            import re
+            from collections import defaultdict
+
+            # 创建保存目录
+            save_dir = Path(project_root) / "output" / "processed_data"
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            # 生成文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            # ========== 第一步：获取原始数据字典 ==========
+            original_data = self.clean_data_dict.copy() if self.clean_data_dict else {}
+
+            # ========== 第二步：构建标准格式的特征数据 ==========
+
+            # 从原始信号中获取通道信息
+            channel_info = self._get_channel_info(modality, original_data)
+            n_channels = channel_info['n_channels']
+            channel_names = channel_info['channel_names']
+
+            print(f"通道信息: {n_channels}通道, 名称: {channel_names}")
+            print(f"features_dict 包含 {len(features_dict)} 个特征")
+
+            # 构建 features 字典
+            # 格式: {category: {feature_name: [ch1_val, ch2_val, ...]}}
+            features = defaultdict(dict)
+
+            # 解析 features_dict
+            # 您的数据格式是: 'Ch1_mean', 'Ch1_std', ... 每个特征名包含通道前缀
+            for feat_key, value in features_dict.items():
+                # 提取通道号和特征名
+                # 例如: 'Ch1_mean' -> 通道1, 特征名 'mean'
+                match = re.match(r'[Cc]h(\d+)_(.+)', feat_key)
+                if match:
+                    ch_num = int(match.group(1)) - 1  # 转为0索引
+                    feat_name = match.group(2)
+
+                    # 确定类别（从特征名推断）
+                    if 'wavelet' in feat_name:
+                        category = 'wavelet'
+                    elif any(x in feat_name for x in ['mean', 'std', 'var', 'skewness', 'kurtosis',
+                                                      'max', 'min', 'rms', 'peak_to_peak', 'shape_factor',
+                                                      'impulse_factor', 'hjorth', 'zero_crossing']):
+                        category = 'time_domain'
+                    elif any(x in feat_name for x in ['power', 'freq', 'spectral', 'peak_freq', 'total_power']):
+                        category = 'freq_domain'
+                    elif any(x in feat_name for x in ['entropy', 'sample_entropy', 'permutation_entropy',
+                                                      'higuchi_fd', 'svd_entropy']):
+                        category = 'nonlinear'
+                    elif any(x in feat_name for x in ['hbo_', 'hbr_', 'hbt_', 'diff_']):
+                        category = 'hbo_hbr'
+                    elif 'correlation' in feat_name:
+                        category = 'channel_correlation'
+                    else:
+                        category = 'other'
+
+                    # 初始化特征数组
+                    if feat_name not in features[category]:
+                        features[category][feat_name] = [np.nan] * n_channels
+
+                    # 填充对应通道的值
+                    if 0 <= ch_num < n_channels:
+                        if isinstance(value, (int, float, np.number)):
+                            features[category][feat_name][ch_num] = float(value)
+                        else:
+                            features[category][feat_name][ch_num] = value
+                else:
+                    # 没有通道前缀的特征（如全局特征）
+                    if 'hbo_' in feat_key or 'hbr_' in feat_key or 'hbt_' in feat_key or 'diff_' in feat_key:
+                        category = 'hbo_hbr'
+                        feat_name = feat_key
+                    elif 'correlation' in feat_key:
+                        category = 'channel_correlation'
+                        feat_name = feat_key
+                    else:
+                        category = 'global'
+                        feat_name = feat_key
+
+                    # 全局特征扩展到所有通道
+                    if feat_name not in features[category]:
+                        if isinstance(value, (int, float, np.number)):
+                            features[category][feat_name] = [float(value)] * n_channels
+                        else:
+                            features[category][feat_name] = [value] * n_channels
+
+            # 打印构建结果
+            print(f"\n构建的 features 包含 {len(features)} 个类别")
+            for category, cat_features in features.items():
+                print(f"  类别 {category}: {len(cat_features)} 个特征")
+                # 打印前2个特征的示例值
+                for i, (feat_name, values) in enumerate(cat_features.items()):
+                    if i < 2:
+                        print(f"    {feat_name}: 前3个值 {values[:3]}")
+
+            # ========== 第三步：构建完整的数据字典 ==========
+
+            # 创建符合 data_io.py 标准的数据字典
+            complete_data_dict = {
+                "meta": {
+                    "subject_id": original_data.get("meta", {}).get("subject_id", "unknown"),
+                    "session_id": original_data.get("meta", {}).get("session_id", "session1"),
+                    "task": original_data.get("meta", {}).get("task", "unknown"),
+                    "recording_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "file_path": self.current_filepath,
+                    "format_version": "1.0",
+                    "modality": [modality],
+                    "device": original_data.get("meta", {}).get("device", ""),
+                    "sampling_rate": channel_info.get('sampling_rate', 250),
+                    "n_channels": n_channels,
+                    "channel_names": channel_names,
+                    "processing_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                },
+                "signal": original_data.get("signal", {}),
+                "event": original_data.get("event", {}),
+                "processed": {
+                    "features": dict(features),  # 转换为普通字典
+                    "artifacts": original_data.get("processed", {}).get("artifacts", {}),
+                    "filtered_data": original_data.get("processed", {}).get("filtered_data", {}),
+                    "processing_history": self._get_processing_history()
+                }
+            }
+
+            # ========== 第四步：保存文件 ==========
+
+            # 1. 保存为PKL（最完整）
+            pkl_path = save_dir / f"{modality}_processed_{timestamp}.pkl"
+            with open(pkl_path, 'wb') as f:
+                pickle.dump(complete_data_dict, f)
+            print(f"✅ 已保存: {pkl_path}")
+
+            # 2. 同时保存特征摘要为Excel（方便查看）
+            excel_path = save_dir / f"{modality}_features_summary_{timestamp}.xlsx"
+
+            summary_data = []
+            for category, cat_features in features.items():
+                for feat_name, feat_value in cat_features.items():
+                    if isinstance(feat_value, (list, np.ndarray)) and len(feat_value) > 1:
+                        # 多通道数据：每个通道一行
+                        for ch_idx, val in enumerate(feat_value):
+                            if ch_idx < len(channel_names):
+                                ch_name = channel_names[ch_idx]
+                            else:
+                                ch_name = f"Ch{ch_idx + 1}"
+                            summary_data.append({
+                                'Modality': modality,
+                                'Category': category,
+                                'Channel': ch_name,
+                                'Feature': feat_name,
+                                'Value': val,
+                                'Data_Type': type(val).__name__
+                            })
+                    else:
+                        # 单通道数据
+                        val = feat_value[0] if isinstance(feat_value, (list, np.ndarray)) else feat_value
+                        summary_data.append({
+                            'Modality': modality,
+                            'Category': category,
+                            'Channel': 'Global',
+                            'Feature': feat_name,
+                            'Value': val,
+                            'Data_Type': type(val).__name__
+                        })
+
+            if summary_data:
+                df = pd.DataFrame(summary_data)
+                df.to_excel(excel_path, index=False)
+                print(f"✅ 特征摘要已保存: {excel_path}")
+                print(f"摘要包含 {len(summary_data)} 行数据")
+            else:
+                print("⚠️ 警告: summary_data 为空，没有保存Excel文件")
+
+            # 更新状态
+            self.update_status(f"数据已保存: {pkl_path.name}", "green")
+
+        except Exception as e:
+            print(f"❌ 保存失败: {e}")
+            traceback.print_exc()
+            self.update_status(f"保存失败: {str(e)}", "orange")
+
+        except Exception as e:
+            print(f"❌ 保存失败: {e}")
+            traceback.print_exc()
+            self.update_status(f"保存失败: {str(e)}", "orange")
+
+    def _get_channel_info(self, modality, data_dict):
+        """从原始数据中获取通道信息"""
+        result = {
+            'n_channels': 1,
+            'channel_names': ['Global'],
+            'sampling_rate': 250
+        }
+
+        if 'signal' in data_dict:
+            for key, signal_info in data_dict['signal'].items():
+                if key.lower() == modality.lower() or modality.lower() in key.lower():
+                    if 'data' in signal_info:
+                        data = signal_info['data']
+                        if hasattr(data, 'shape'):
+                            if len(data.shape) > 1:
+                                result['n_channels'] = data.shape[0]
+                            else:
+                                result['n_channels'] = 1
+
+                    if 'channel_names' in signal_info and signal_info['channel_names']:
+                        result['channel_names'] = signal_info['channel_names']
+                    else:
+                        result['channel_names'] = [f"Ch{i + 1}" for i in range(result['n_channels'])]
+
+                    if 'sampling_rate' in signal_info:
+                        result['sampling_rate'] = signal_info['sampling_rate']
+                    break
+
+        return result
+
+    def _get_processing_history(self):
+        """获取处理历史"""
+        history = []
+        if hasattr(self, 'clean_data_dict') and self.clean_data_dict:
+            if 'processed' in self.clean_data_dict:
+                history = self.clean_data_dict['processed'].get('processing_history', [])
+
+        # 添加当前处理记录
+        from datetime import datetime
+        history.append({
+            'step': 'feature_extraction',
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'modality': self.selected_modality,
+            'features': list(self.checkbox_vars.keys()) if self.checkbox_vars else []
+        })
+
+        return history
 
 if __name__ == "__main__":
     try:
