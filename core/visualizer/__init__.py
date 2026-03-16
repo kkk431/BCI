@@ -5,7 +5,7 @@ visualizer package
 """
 
 from .signal_view import SignalView
-from .stats_view import StatsView
+from .stats_view import StatisticalAnalysisView
 from .bar_view import BarView
 from .plot_dialog import PlotDialog, quick_plot
 
