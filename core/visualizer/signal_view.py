@@ -1195,6 +1195,24 @@ class fNIRSView(SignalView):
     """
 
     def __init__(self, parent, data_dict: Dict[str, Any], modality: str = "fNIRS"):
+        # 标准化模态名称
+        if 'signal' in data_dict:
+            # 检查是否有全大写的 FNIRS
+            if 'FNIRS' in data_dict['signal'] and modality == "fNIRS":
+                print("检测到 FNIRS (全大写)，自动适配")
+                modality = "FNIRS"
+            # 检查是否有小写的 fnirs
+            elif 'fnirs' in data_dict['signal'] and modality == "fNIRS":
+                print("检测到 fnirs (全小写)，自动适配")
+                modality = "fnirs"
+
+        # 先设置fNIRS特有的属性
+        self.n_hbo = 0
+        self.n_hbr = 0
+        self.hbo_var = tk.BooleanVar(value=True)
+        self.hbr_var = tk.BooleanVar(value=True)
+
+        # 调用父类初始化
         super().__init__(parent, data_dict, modality)
 
         # 添加fNIRS特有的控制
