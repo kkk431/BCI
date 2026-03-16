@@ -116,7 +116,7 @@ class FeatureView(tk.Toplevel):
         self._create_menu()
         self._create_layout()
 
-        # 强制更新
+        # ===== 添加这行 =====
         self.update()
 
     def _create_menu(self):
@@ -604,28 +604,13 @@ class FeatureView(tk.Toplevel):
 
     def _create_right_panel(self, parent):
         """创建右侧图形面板 - 完全填充，无空白"""
-
         # 使用grid布局填满整个父容器
         parent.grid_rowconfigure(0, weight=1)
         parent.grid_columnconfigure(0, weight=1)
 
-        # 创建画布容器
+        # 创建画布容器 - 这个容器将使用 pack 管理其子控件
         self.canvas_container = ttk.Frame(parent)
         self.canvas_container.grid(row=0, column=0, sticky="nsew")
-        self.canvas_container.grid_rowconfigure(0, weight=1)
-        self.canvas_container.grid_columnconfigure(0, weight=1)
-
-        # 初始提示
-        self.fig = Figure(figsize=(10, 7), dpi=100)
-        self.canvas = FigureCanvasTkAgg(self.fig, self.canvas_container)
-        self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
-
-        self.ax = self.fig.add_subplot(111)
-        self.ax.text(0.5, 0.5, f"请选择{self.modality}特征和图表类型后点击「生成图形」",
-                     ha='center', va='center', fontsize=12, color='#999999')
-        self.ax.set_xticks([])
-        self.ax.set_yticks([])
-        self.canvas.draw()
 
     def _filter_channels(self):
         """过滤通道列表"""
@@ -718,7 +703,7 @@ class FeatureView(tk.Toplevel):
         print(f"图表类型: {chart_type}")
 
         try:
-            # 创建对应图表
+            # 创建对应图表 - 使用原来的画布类
             if chart_type == "curve":
                 canvas = UnifiedCurveCanvas(self.canvas_container, self)
                 canvas.plot(selected_channels, selected_features)
@@ -763,12 +748,12 @@ class FeatureView(tk.Toplevel):
                 canvas.plot(selected_channels, selected_features)
                 canvas.get_widget().pack(fill=tk.BOTH, expand=True)
 
-            # 添加工具栏（表格不需要）
-            if chart_type != "table":
-                toolbar_frame = ttk.Frame(self.canvas_container)
-                toolbar_frame.pack(fill=tk.X)
-                toolbar = NavigationToolbar2Tk(canvas.canvas, toolbar_frame)
-                toolbar.update()
+            # ===== 注释掉工具栏 =====
+            # if chart_type != "table":
+            #     toolbar_frame = ttk.Frame(self.canvas_container)
+            #     toolbar_frame.pack(fill=tk.X)
+            #     toolbar = NavigationToolbar2Tk(canvas.canvas, toolbar_frame)
+            #     toolbar.update()
 
             self.current_canvas = canvas
             print("✅ 绘图完成")
@@ -777,6 +762,78 @@ class FeatureView(tk.Toplevel):
             messagebox.showerror("错误", f"绘图失败:\n{str(e)}")
             import traceback
             traceback.print_exc()
+
+    def _use_existing_canvas(self, canvas):
+        """使用现有的画布替换画布类中的figure"""
+        # 将画布类中的figure内容复制到当前的figure中
+        for artist in canvas.fig.get_children():
+            if hasattr(artist, 'get_axes'):
+                for ax in artist.get_axes():
+                    for line in ax.get_lines():
+                        self.ax.add_line(line)
+                    for collection in ax.collections:
+                        self.ax.add_collection(collection)
+
+    def _plot_curve(self, selected_channels, selected_features):
+        """曲线图"""
+        x = np.arange(len(selected_features))
+        colors = plt.cm.tab10(np.linspace(0, 1, len(selected_channels)))
+
+        for i, ch in enumerate(selected_channels):
+            ch_idx = self.channel_names.index(ch)
+            values = []
+            for feat in selected_features:
+                vals = self.feature_values[feat]
+                if ch_idx < len(vals):
+                    val = vals[ch_idx]
+                    # 处理可能的列表值
+                    if isinstance(val, (list, tuple, np.ndarray)):
+                        val = val[0] if len(val) > 0 else np.nan
+                    values.append(float(val) if not np.isnan(val) else np.nan)
+                else:
+                    values.append(np.nan)
+
+            self.ax.plot(x, values, marker='o', linewidth=2, label=ch,
+                         color=colors[i], markersize=8)
+
+        self.ax.set_xlabel(self.settings.get('xlabel', '特征'))
+        self.ax.set_ylabel(self.settings.get('ylabel', '幅值'))
+        self.ax.set_title(self.settings.get('title', f'{self.modality}特征曲线'))
+        self.ax.set_xticks(x)
+        self.ax.set_xticklabels([f.split('.')[-1] for f in selected_features], rotation=45, ha='right')
+        self.ax.legend()
+        self.ax.grid(True, alpha=0.3)
+
+    def _plot_bar(self, selected_channels, selected_features):
+        """柱状图"""
+        x = np.arange(len(selected_features))
+        width = 0.8 / len(selected_channels)
+        colors = plt.cm.tab10(np.linspace(0, 1, len(selected_channels)))
+
+        for i, ch in enumerate(selected_channels):
+            ch_idx = self.channel_names.index(ch)
+            values = []
+            for feat in selected_features:
+                vals = self.feature_values[feat]
+                if ch_idx < len(vals):
+                    val = vals[ch_idx]
+                    if isinstance(val, (list, tuple, np.ndarray)):
+                        val = val[0] if len(val) > 0 else np.nan
+                    values.append(val if not np.isnan(val) else np.nan)
+                else:
+                    values.append(np.nan)
+
+            offset = (i - len(selected_channels) / 2 + 0.5) * width
+            self.ax.bar(x + offset, values, width, label=ch,
+                        color=colors[i], alpha=0.7)
+
+        self.ax.set_xlabel(self.settings.get('xlabel', '特征'))
+        self.ax.set_ylabel(self.settings.get('ylabel', '幅值'))
+        self.ax.set_title(self.settings.get('title', f'{self.modality}特征柱状图'))
+        self.ax.set_xticks(x)
+        self.ax.set_xticklabels([f.split('.')[-1] for f in selected_features], rotation=45, ha='right')
+        self.ax.legend()
+        self.ax.grid(True, alpha=0.3, axis='y')
 
     def save_plot(self):
         """保存当前图形"""
@@ -1246,6 +1303,10 @@ class UnifiedEMGSpectrumCanvas(UnifiedBaseCanvas):
     def plot(self, selected_channels, selected_features):
         self.ax.clear()
 
+        print(f"\n=== UnifiedEMGSpectrumCanvas.plot ===")
+        print(f"selected_channels: {selected_channels}")
+        print(f"selected_features: {selected_features}")
+
         colors = plt.cm.tab10(np.linspace(0, 1, len(selected_channels)))
 
         for i, ch in enumerate(selected_channels):
@@ -1254,26 +1315,58 @@ class UnifiedEMGSpectrumCanvas(UnifiedBaseCanvas):
             # 提取频率和功率特征
             freqs = []
             powers = []
+            power_dict = {}  # 按频率分组功率值
+
             for feat in selected_features:
                 vals = self.view.feature_values[feat]
                 if ch_idx < len(vals):
                     val = vals[ch_idx]
-                    if 'freq' in feat.lower() and 'power' not in feat.lower():
+                    # 判断是频率还是功率
+                    if 'freq' in feat.lower() and 'power' not in feat.lower() and 'total_power' not in feat.lower():
                         freqs.append(val)
-                    elif 'power' in feat.lower():
+                    elif 'power' in feat.lower() or 'total_power' in feat.lower():
                         powers.append(val)
+                        # 如果有对应的频率，建立关联
+                        if len(freqs) > len(powers):
+                            power_dict[freqs[len(powers) - 1]] = val
 
+            print(f"通道 {ch}: 频率点数 {len(freqs)}, 功率点数 {len(powers)}")
+
+            # 方法1：如果频率和功率点数相等，直接画点
             if len(freqs) == len(powers) and len(freqs) > 0:
                 self.ax.plot(freqs, powers, 'o-', linewidth=2, label=ch,
                              color=colors[i], markersize=6)
 
+            # 方法2：如果有一个频率对应多个功率，画水平线
+            elif len(freqs) == 1 and len(powers) > 1:
+                freq = freqs[0]
+                for j, power in enumerate(powers):
+                    self.ax.plot(freq, power, 'o', color=colors[i], markersize=6)
+                    if j == 0:
+                        self.ax.text(freq, power, f' {ch}', fontsize=8, color=colors[i])
+
+            # 方法3：如果有多个频率对应一个功率，画垂直线
+            elif len(powers) == 1 and len(freqs) > 1:
+                power = powers[0]
+                for freq in freqs:
+                    self.ax.plot(freq, power, 'o', color=colors[i], markersize=6)
+                # 在第一个频率点标注通道名
+                self.ax.text(freqs[0], power, f' {ch}', fontsize=8, color=colors[i])
+
+            else:
+                print(f"⚠️ 通道 {ch} 无法匹配频率和功率数据")
+
         self.ax.set_xlabel('频率 (Hz)')
         self.ax.set_ylabel('功率')
         self.ax.set_title('EMG功率谱特征')
-        self.ax.legend()
+
+        if len(self.ax.lines) > 0 or len(self.ax.collections) > 0:
+            self.ax.legend()
+
         self.ax.grid(True, alpha=0.3)
         self.draw()
 
+        print("✅ UnifiedEMGSpectrumCanvas.plot 完成")
 
 class UnifiedECGHRVCanvas(UnifiedBaseCanvas):
     """ECG HRV频谱特征"""
