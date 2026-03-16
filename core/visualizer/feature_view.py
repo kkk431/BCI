@@ -1,35 +1,1328 @@
 # -*- coding: utf-8 -*-
 """
-特征可视化模块 - 最佳布局版本（添加模态选择器）
+统一特征可视化模块 - 自动适配所有模态
+数据格式要求：
+{
+    "processed": {
+        "features": {
+            "fNIRS": {              # 或 "EMG", "EEG", "ECG"
+                "time_domain": {
+                    "mean": [ch1_val, ch2_val, ...],  # 多通道数组
+                    "std": [ch1_val, ch2_val, ...],
+                    ...
+                },
+                "freq_domain": {
+                    "power": [ch1_val, ch2_val, ...],
+                    ...
+                },
+                "wavelet": {
+                    "cA4_energy": [ch1_val, ch2_val, ...],
+                    ...
+                },
+                "hbo_hbr": {         # fNIRS特有
+                    "hbo_mean": 4998.8,    # 全局标量
+                    "hbr_mean": 4998.34,
+                    ...
+                }
+            }
+        }
+    }
+}
 """
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 import json
 import os
+from collections import defaultdict
 
-# ==================== 全局字体设置（绝对避免□）====================
+# ==================== 全局字体设置 ====================
 plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
-plt.rcParams['font.size'] = 10
-plt.rcParams['axes.labelsize'] = 11
-plt.rcParams['axes.titlesize'] = 12
-plt.rcParams['legend.fontsize'] = 9
-plt.rcParams['xtick.labelsize'] = 9
-plt.rcParams['ytick.labelsize'] = 9
 
 
-def read_info(file_path):
-    """从 JSON 文件读取传感器信息"""
-    with open(file_path, 'r', encoding='utf-8') as f:
-        info = json.load(f)
-    return info
+class FeatureView(tk.Toplevel):
+    """统一特征可视化主窗口 - 自动适配所有模态"""
 
+    # 各模态推荐的图表类型（可根据需要扩展）
+    RECOMMENDED_CHARTS = {
+        "fNIRS": [
+            ("📈 曲线图 - 特征对比", "curve"),
+            ("📊 柱状图 - 特征对比", "bar"),
+            ("🔥 热力图 - 通道×特征", "heatmap"),
+            ("🔄 HbO/HbR通道对比", "fnirs_dual"),
+            ("📊 全局平均特征", "fnirs_global"),
+            ("📋 数据表格", "table")
+        ],
+        "EMG": [
+            ("📈 曲线图 - 特征对比", "curve"),
+            ("📊 柱状图 - 特征对比", "bar"),
+            ("🔥 热力图 - 通道×特征", "heatmap"),
+            ("📊 功率谱特征", "emg_spectrum"),
+            ("📋 数据表格", "table")
+        ],
+        "EEG": [
+            ("📈 曲线图 - 特征对比", "curve"),
+            ("📊 柱状图 - 特征对比", "bar"),
+            ("🔥 热力图 - 通道×特征", "heatmap"),
+            ("🗺️ 地形图 (需MNE)", "topomap"),
+            ("📋 数据表格", "table")
+        ],
+        "ECG": [
+            ("📈 曲线图 - 特征对比", "curve"),
+            ("📊 柱状图 - 特征对比", "bar"),
+            ("🔥 热力图 - 通道×特征", "heatmap"),
+            ("📊 HRV频谱", "ecg_hrv_spectrum"),
+            ("📋 数据表格", "table")
+        ]
+    }
+
+    # 默认通用图表
+    DEFAULT_CHARTS = [
+        ("📈 曲线图", "curve"),
+        ("📊 柱状图", "bar"),
+        ("🔥 热力图", "heatmap"),
+        ("📋 表格", "table")
+    ]
+
+    def __init__(self, parent, data_dict):
+        super().__init__(parent)
+        self.parent = parent
+        self.data_dict = data_dict
+
+        # ===== 解析统一格式的数据 =====
+        self._parse_data()
+
+        self.title(f"特征可视化 - {self.modality}")
+        self.geometry("1400x850")
+        self.minsize(800, 600)
+
+        # 绘图设置
+        self.settings = {
+            "width": 10,
+            "height": 7,
+            "title": "",
+            "xlabel": "特征",
+            "ylabel": "幅值"
+        }
+        self.current_canvas = None
+        self.chart_type = "curve"
+
+        # 先创建菜单，再创建布局
+        self._create_menu()
+        self._create_layout()
+
+        # 强制更新
+        self.update()
+
+    def _create_menu(self):
+        """创建菜单栏"""
+        print("=== 创建菜单栏 ===")
+
+        menubar = tk.Menu(self)
+        self.config(menu=menubar)
+
+        # 测试菜单
+        test_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="测试", menu=test_menu)
+        test_menu.add_command(label="测试菜单项", command=lambda: print("测试菜单点击"))
+
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="文件", menu=file_menu)
+        file_menu.add_command(label="保存图像", command=self.save_plot, accelerator="Ctrl+S")
+        file_menu.add_separator()
+        file_menu.add_command(label="退出", command=self.destroy)
+
+        settings_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="设置", menu=settings_menu)
+        settings_menu.add_command(label="绘图设置", command=self.show_settings, accelerator="Ctrl+P")
+
+        view_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="视图", menu=view_menu)
+        view_menu.add_command(label="全选通道", command=self.select_all_channels)
+        view_menu.add_command(label="全选特征", command=self.select_all_features)
+        view_menu.add_separator()
+        view_menu.add_command(label="重置视图", command=self.reset_view)
+
+        self.bind_all("<Control-s>", lambda e: self.save_plot())
+        self.bind_all("<Control-p>", lambda e: self.show_settings())
+
+        print("=== 菜单栏创建完成 ===")
+
+    def show_settings(self):
+        """显示绘图设置对话框"""
+        dialog = PlotSettingsDialog(self, self.settings)
+        self.wait_window(dialog)
+        if dialog.result:
+            self.settings.update(dialog.result)
+            # 如果已经有图形，重新绘制
+            if hasattr(self, 'current_canvas') and self.current_canvas:
+                self.plot()
+
+    def save_plot(self):
+        """保存当前图形"""
+        if not hasattr(self, 'current_canvas') or not self.current_canvas:
+            messagebox.showwarning("警告", "没有可保存的图形，请先生成图形")
+            return
+
+        # 获取当前画布
+        canvas = self.current_canvas
+
+        # 如果是表格视图，不能保存为图片
+        if isinstance(canvas, UnifiedTableCanvas):
+            messagebox.showinfo("提示", "表格视图不支持保存为图片，请使用截图功能")
+            return
+
+        # 询问保存路径
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[
+                ("PNG 图片", "*.png"),
+                ("JPEG 图片", "*.jpg"),
+                ("PDF 文档", "*.pdf"),
+                ("SVG 矢量图", "*.svg"),
+                ("所有文件", "*.*")
+            ],
+            title="保存图形"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            # 保存图形
+            dpi = simpledialog.askinteger("DPI", "请输入图片分辨率 (DPI):",
+                                          initialvalue=300, minvalue=72, maxvalue=1200)
+            if dpi:
+                canvas.fig.savefig(file_path, dpi=dpi, bbox_inches='tight')
+                messagebox.showinfo("成功", f"图形已保存到:\n{file_path}")
+        except Exception as e:
+            messagebox.showerror("错误", f"保存失败:\n{str(e)}")
+
+    def reset_view(self):
+        """重置视图（全选所有通道和特征）"""
+        self.select_all_channels()
+        self.select_all_features()
+        self.plot()
+
+    def _parse_data(self):
+        """解析统一格式的数据"""
+        print("\n=== 开始解析数据 ===")
+
+        # 获取特征数据
+        processed = self.data_dict.get("processed", {})
+        print(f"processed 类型: {type(processed)}")
+        print(f"processed 键: {list(processed.keys())}")
+
+        # 先尝试获取 features 字典
+        features_dict = None
+
+        if "features" in processed:
+            features_dict = processed["features"]
+            print("✅ 从 processed['features'] 获取数据")
+            print(f"   features_dict 类型: {type(features_dict)}")
+            if isinstance(features_dict, dict):
+                print(f"   features_dict 键: {list(features_dict.keys())}")
+                if features_dict:
+                    print(f"   features_dict 非空，包含 {len(features_dict)} 个键")
+                else:
+                    print("   ⚠️ features_dict 是空字典！")
+            else:
+                print(f"   features_dict 不是字典，而是: {type(features_dict)}")
+
+        if not features_dict and "feature" in processed:
+            features_dict = processed["feature"]
+            print("✅ 从 processed['feature'] 获取数据")
+            if isinstance(features_dict, dict):
+                print(f"   features_dict 键: {list(features_dict.keys())}")
+
+        # 如果 processed 中没有，尝试根目录
+        if not features_dict:
+            print("尝试从根目录获取...")
+            if "features" in self.data_dict:
+                features_dict = self.data_dict["features"]
+                print("✅ 从根目录['features'] 获取数据")
+                if isinstance(features_dict, dict):
+                    print(f"   features_dict 键: {list(features_dict.keys())}")
+            elif "feature" in self.data_dict:
+                features_dict = self.data_dict["feature"]
+                print("✅ 从根目录['feature'] 获取数据")
+                if isinstance(features_dict, dict):
+                    print(f"   features_dict 键: {list(features_dict.keys())}")
+
+        # 如果还是找不到，打印整个数据字典的结构
+        if not features_dict:
+            print("\n❌ 错误：找不到特征数据")
+            print("=" * 50)
+            print("数据字典完整结构:")
+            self._print_dict_structure(self.data_dict)
+            print("=" * 50)
+            print(f"processed中的键: {list(processed.keys())}")
+            print(f"根目录中的键: {list(self.data_dict.keys())}")
+            raise ValueError("没有找到特征数据")
+
+        print(f"\n✅ 成功获取 features_dict")
+        print(f"   features_dict 类型: {type(features_dict)}")
+        print(f"   features_dict 键: {list(features_dict.keys())}")
+
+        # ===== 直接使用 features_dict，没有模态层 =====
+        # 从 meta 中获取模态，如果不存在则使用 "UNKNOWN"
+        meta_modality = self.data_dict.get("meta", {}).get("modality", ["UNKNOWN"])
+        if isinstance(meta_modality, list) and meta_modality:
+            self.modalities = meta_modality
+        else:
+            self.modalities = ["UNKNOWN"]
+        self.modality = self.modalities[0]
+        self.modality_features = features_dict  # 直接使用 features_dict 作为模态特征
+
+        print(f"\n📊 解析结果:")
+        print(f"   模态: {self.modality}")
+        print(f"   特征类别: {list(self.modality_features.keys())}")
+
+        # 获取通道信息
+        self._get_channel_info()
+
+        # 构建特征列表
+        self._build_feature_list()
+
+        print(f"\n=== 数据加载成功 ===")
+        print(f"模态: {self.modality}")
+        print(f"通道数: {self.n_channels}")
+        print(f"通道名称: {self.channel_names}")
+        print(f"特征类别: {list(self.modality_features.keys())}")
+        print(f"特征总数: {len(self.feature_names)}")
+
+        # 打印前10个特征名
+        if self.feature_names:
+            print(f"特征示例 (前10个): {self.feature_names[:10]}")
+
+    def _print_dict_structure(self, d, indent=0, max_depth=3):
+        """打印字典结构，帮助调试"""
+        if indent > max_depth:
+            return
+        prefix = "  " * indent
+        for key, value in d.items():
+            if isinstance(value, dict):
+                print(f"{prefix}{key}: dict ({len(value)} 个键)")
+                if indent < max_depth:
+                    self._print_dict_structure(value, indent + 1, max_depth)
+            elif isinstance(value, (list, tuple)):
+                print(f"{prefix}{key}: {type(value).__name__} (长度: {len(value)})")
+            elif isinstance(value, np.ndarray):
+                print(f"{prefix}{key}: ndarray (形状: {value.shape})")
+            else:
+                print(f"{prefix}{key}: {type(value).__name__}")
+
+    def _get_channel_info(self):
+        """从数据中获取通道信息"""
+        # 默认值
+        self.n_channels = 1
+        self.channel_names = ["Global"]
+
+        # 从meta中获取
+        meta = self.data_dict.get("meta", {})
+        if "n_channels" in meta:
+            self.n_channels = meta["n_channels"]
+        if "channel_names" in meta:
+            self.channel_names = meta["channel_names"]
+        else:
+            self.channel_names = [f"Ch{i + 1}" for i in range(self.n_channels)]
+
+        # 从信号中获取（更准确）
+        signal = self.data_dict.get("signal", {})
+        for mod, sig_info in signal.items():
+            if mod.upper() == self.modality.upper():
+                if "data" in sig_info:
+                    data = sig_info["data"]
+                    if hasattr(data, "shape") and len(data.shape) > 1:
+                        self.n_channels = data.shape[0]
+                if "channel_names" in sig_info and sig_info["channel_names"]:
+                    self.channel_names = sig_info["channel_names"]
+                break
+
+    def _build_feature_list(self):
+        """构建特征列表 - 统一格式"""
+        self.feature_categories = list(self.modality_features.keys())
+        self.feature_map = {}  # {特征名: (类别, 是否全局, 示例值)}
+        self.feature_values = defaultdict(list)  # {特征名: [通道值列表]}
+
+        for category, features in self.modality_features.items():
+            if not isinstance(features, dict):
+                continue
+
+            for feat_name, feat_value in features.items():
+                # 判断是否为多通道特征
+                is_multichannel = isinstance(feat_value, (list, tuple, np.ndarray)) and len(feat_value) > 1
+                is_global = not is_multichannel
+
+                # 生成显示用的特征名
+                display_name = f"{category}.{feat_name}"
+
+                self.feature_map[display_name] = {
+                    "category": category,
+                    "raw_name": feat_name,
+                    "is_global": is_global,
+                    "is_multichannel": is_multichannel
+                }
+
+                # 存储特征值
+                if is_multichannel:
+                    self.feature_values[display_name] = list(feat_value)
+                else:
+                    # 全局特征扩展到所有通道
+                    self.feature_values[display_name] = [feat_value] * self.n_channels
+
+        self.feature_names = sorted(list(self.feature_map.keys()))
+
+    def _create_layout(self):
+        """创建主布局 - 完全自适应，无空白"""
+
+        # 使用PanedWindow让用户可以调整比例
+        self.main_paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        self.main_paned.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+
+        # 左侧控制面板 - 固定初始宽度
+        self.left_frame = ttk.Frame(self.main_paned, relief=tk.FLAT, width=280)
+        self.main_paned.add(self.left_frame, weight=1)
+
+        # 右侧图形面板
+        self.right_frame = ttk.Frame(self.main_paned, relief=tk.FLAT)
+        self.main_paned.add(self.right_frame, weight=3)
+
+        # 创建左右面板内容
+        self._create_left_panel(self.left_frame)
+        self._create_right_panel(self.right_frame)
+
+        # 设置最小宽度并防止收缩
+        self.left_frame.update_idletasks()
+        self.left_frame.pack_propagate(False)
+        self.left_frame.grid_propagate(False)
+
+        # 绑定窗口大小调整事件
+        self.bind('<Configure>', self._on_window_configure)
+
+    def _on_window_configure(self, event):
+        """窗口大小改变时的处理"""
+        # 确保左侧面板的grid权重正确应用
+        self.left_frame.update_idletasks()
+
+    def _create_left_panel(self, parent):
+        """创建左侧控制面板 - 完全填充，无空白，无需滚动"""
+
+        # 直接使用grid布局，不用Canvas滚动
+        parent.grid_rowconfigure(0, weight=0)  # 标题 - 固定
+        parent.grid_rowconfigure(1, weight=0)  # 模态 - 固定
+        parent.grid_rowconfigure(2, weight=1)  # 通道 - 可扩展
+        parent.grid_rowconfigure(3, weight=1)  # 特征 - 可扩展
+        parent.grid_rowconfigure(4, weight=0)  # 图表 - 固定
+        parent.grid_rowconfigure(5, weight=0)  # 按钮 - 固定
+        parent.grid_columnconfigure(0, weight=1)
+
+        row_idx = 0
+
+        # ===== 标题 =====
+        title_label = tk.Label(parent, text=f"{self.modality} 控制面板",
+                               font=('微软雅黑', 12, 'bold'), bg='#f0f0f0')
+        title_label.grid(row=row_idx, column=0, sticky="ew", pady=2)
+        row_idx += 1
+
+        # ===== 模态选择 =====
+        if len(self.modalities) > 1:
+            modality_frame = ttk.LabelFrame(parent, text="模态", padding=2)
+            modality_frame.grid(row=row_idx, column=0, sticky="ew", pady=2)
+
+            self.modality_var = tk.StringVar(value=self.modality)
+            modality_combo = ttk.Combobox(modality_frame, textvariable=self.modality_var,
+                                          values=self.modalities, state="readonly")
+            modality_combo.pack(fill=tk.X)
+            modality_combo.bind('<<ComboboxSelected>>', self._on_modality_change)
+            row_idx += 1
+
+        # ===== 通道选择 =====
+        ch_frame = ttk.LabelFrame(parent, text=f"通道 ({self.n_channels})", padding=2)
+        ch_frame.grid(row=row_idx, column=0, sticky="nsew", pady=2)
+
+        # 配置通道框架的grid权重
+        ch_frame.grid_rowconfigure(0, weight=0)  # 搜索框 - 固定
+        ch_frame.grid_rowconfigure(1, weight=1)  # 列表 - 可扩展
+        ch_frame.grid_rowconfigure(2, weight=0)  # 按钮 - 固定
+        ch_frame.grid_columnconfigure(0, weight=1)
+
+        # 搜索框
+        search_frame = ttk.Frame(ch_frame)
+        search_frame.grid(row=0, column=0, sticky="ew", pady=1)
+        ttk.Label(search_frame, text="🔍", width=2).pack(side=tk.LEFT)
+        self.ch_search_var = tk.StringVar()
+        self.ch_search_var.trace('w', lambda *args: self._filter_channels())
+        ch_search = ttk.Entry(search_frame, textvariable=self.ch_search_var)
+        ch_search.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # 通道列表 - 使用grid让它填满
+        list_container = ttk.Frame(ch_frame)
+        list_container.grid(row=1, column=0, sticky="nsew", pady=1)
+        list_container.grid_rowconfigure(0, weight=1)
+        list_container.grid_columnconfigure(0, weight=1)
+
+        self.ch_listbox = tk.Listbox(list_container, selectmode=tk.MULTIPLE,
+                                     exportselection=False, font=('微软雅黑', 9))
+        ch_scroll = ttk.Scrollbar(list_container, orient=tk.VERTICAL,
+                                  command=self.ch_listbox.yview)
+        self.ch_listbox.configure(yscrollcommand=ch_scroll.set)
+
+        self.ch_listbox.grid(row=0, column=0, sticky="nsew")
+        ch_scroll.grid(row=0, column=1, sticky="ns")
+
+        # 填充通道
+        self.all_channels_display = self.channel_names.copy()
+        for ch in self.channel_names:
+            self.ch_listbox.insert(tk.END, ch)
+        self.ch_listbox.selection_set(0, tk.END)
+
+        # 按钮行
+        ch_btn_frame = ttk.Frame(ch_frame)
+        ch_btn_frame.grid(row=2, column=0, sticky="ew", pady=1)
+        ch_btn_frame.grid_columnconfigure(0, weight=1)
+        ch_btn_frame.grid_columnconfigure(1, weight=1)
+
+        ttk.Button(ch_btn_frame, text="全选", command=self.select_all_channels).grid(row=0, column=0, sticky="ew",
+                                                                                     padx=1)
+        ttk.Button(ch_btn_frame, text="清空", command=self.clear_all_channels).grid(row=0, column=1, sticky="ew",
+                                                                                    padx=1)
+
+        row_idx += 1
+
+        # ===== 特征选择 =====
+        feat_frame = ttk.LabelFrame(parent, text=f"特征 ({len(self.feature_names)})", padding=2)
+        feat_frame.grid(row=row_idx, column=0, sticky="nsew", pady=2)
+
+        # 配置特征框架的grid权重
+        feat_frame.grid_rowconfigure(0, weight=0)  # 搜索框 - 固定
+        feat_frame.grid_rowconfigure(1, weight=1)  # 列表 - 可扩展
+        feat_frame.grid_rowconfigure(2, weight=0)  # 按钮 - 固定
+        feat_frame.grid_columnconfigure(0, weight=1)
+
+        # 搜索框
+        search_frame2 = ttk.Frame(feat_frame)
+        search_frame2.grid(row=0, column=0, sticky="ew", pady=1)
+        ttk.Label(search_frame2, text="🔍", width=2).pack(side=tk.LEFT)
+        self.feat_search_var = tk.StringVar()
+        self.feat_search_var.trace('w', lambda *args: self._filter_features())
+        feat_search = ttk.Entry(search_frame2, textvariable=self.feat_search_var)
+        feat_search.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # 特征列表
+        list_container2 = ttk.Frame(feat_frame)
+        list_container2.grid(row=1, column=0, sticky="nsew", pady=1)
+        list_container2.grid_rowconfigure(0, weight=1)
+        list_container2.grid_columnconfigure(0, weight=1)
+
+        self.feat_listbox = tk.Listbox(list_container2, selectmode=tk.MULTIPLE,
+                                       exportselection=False, font=('微软雅黑', 8))
+        feat_scroll = ttk.Scrollbar(list_container2, orient=tk.VERTICAL,
+                                    command=self.feat_listbox.yview)
+        self.feat_listbox.configure(yscrollcommand=feat_scroll.set)
+
+        self.feat_listbox.grid(row=0, column=0, sticky="nsew")
+        feat_scroll.grid(row=0, column=1, sticky="ns")
+
+        # 填充特征
+        self.all_features_display = self.feature_names.copy()
+        self.feat_listbox_display = []
+        for feat in self.feature_names:
+            if self.feature_map[feat]["is_global"]:
+                display = f"🌐 {feat}"
+            else:
+                display = f"📊 {feat}"
+            self.feat_listbox_display.append(display)
+            self.feat_listbox.insert(tk.END, display)
+        self.feat_listbox.selection_set(0, tk.END)
+
+        # 按钮行
+        feat_btn_frame = ttk.Frame(feat_frame)
+        feat_btn_frame.grid(row=2, column=0, sticky="ew", pady=1)
+        feat_btn_frame.grid_columnconfigure(0, weight=1)
+        feat_btn_frame.grid_columnconfigure(1, weight=1)
+
+        ttk.Button(feat_btn_frame, text="全选", command=self.select_all_features).grid(row=0, column=0, sticky="ew",
+                                                                                       padx=1)
+        ttk.Button(feat_btn_frame, text="清空", command=self.clear_all_features).grid(row=0, column=1, sticky="ew",
+                                                                                      padx=1)
+
+        row_idx += 1
+
+        # ===== 图表类型 =====
+        chart_frame = ttk.LabelFrame(parent, text="图表", padding=2)
+        chart_frame.grid(row=row_idx, column=0, sticky="ew", pady=2)
+
+        self.chart_type_var = tk.StringVar(value="curve")
+        charts = self.RECOMMENDED_CHARTS.get(self.modality, self.DEFAULT_CHARTS)
+
+        # 使用grid布局让图表选项填满
+        for i, (label, value) in enumerate(charts):
+            row = i // 2
+            col = i % 2
+            chart_frame.grid_columnconfigure(col, weight=1)
+
+            # 简化标签显示
+            short_label = label.split(' ')[1] if ' ' in label else label
+            rb = ttk.Radiobutton(chart_frame, text=short_label,
+                                 variable=self.chart_type_var,
+                                 value=value, command=self.on_chart_type_changed)
+            rb.grid(row=row, column=col, sticky=tk.W, padx=2, pady=1)
+
+        row_idx += 1
+
+        # ===== 操作按钮 =====
+        btn_frame = ttk.Frame(parent)
+        btn_frame.grid(row=row_idx, column=0, sticky="ew", pady=2)
+
+        # 生成图形按钮 - 占满整行
+        generate_btn = tk.Button(btn_frame, text="生成图形", bg="#27ae60", fg="white",
+                                 font=('微软雅黑', 10, 'bold'), command=self.plot,
+                                 relief=tk.FLAT)
+        generate_btn.pack(fill=tk.X, pady=1)
+
+        # 保存和设置按钮 - 并排
+        sub_btn_frame = ttk.Frame(btn_frame)
+        sub_btn_frame.pack(fill=tk.X, pady=1)
+        sub_btn_frame.grid_columnconfigure(0, weight=1)
+        sub_btn_frame.grid_columnconfigure(1, weight=1)
+
+        save_btn = tk.Button(sub_btn_frame, text="保存", bg="#3498db", fg="white",
+                             font=('微软雅黑', 9), command=self.save_plot,
+                             relief=tk.FLAT)
+        save_btn.grid(row=0, column=0, sticky="ew", padx=1)
+
+        setting_btn = tk.Button(sub_btn_frame, text="设置", bg="#f39c12", fg="white",
+                                font=('微软雅黑', 9), command=self.show_settings,
+                                relief=tk.FLAT)
+        setting_btn.grid(row=0, column=1, sticky="ew", padx=1)
+
+    def _create_right_panel(self, parent):
+        """创建右侧图形面板 - 完全填充，无空白"""
+
+        # 使用grid布局填满整个父容器
+        parent.grid_rowconfigure(0, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+
+        # 创建画布容器
+        self.canvas_container = ttk.Frame(parent)
+        self.canvas_container.grid(row=0, column=0, sticky="nsew")
+        self.canvas_container.grid_rowconfigure(0, weight=1)
+        self.canvas_container.grid_columnconfigure(0, weight=1)
+
+        # 初始提示
+        self.fig = Figure(figsize=(10, 7), dpi=100)
+        self.canvas = FigureCanvasTkAgg(self.fig, self.canvas_container)
+        self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+        self.ax = self.fig.add_subplot(111)
+        self.ax.text(0.5, 0.5, f"请选择{self.modality}特征和图表类型后点击「生成图形」",
+                     ha='center', va='center', fontsize=12, color='#999999')
+        self.ax.set_xticks([])
+        self.ax.set_yticks([])
+        self.canvas.draw()
+
+    def _filter_channels(self):
+        """过滤通道列表"""
+        search = self.ch_search_var.get().lower()
+        self.ch_listbox.delete(0, tk.END)
+
+        for i, ch in enumerate(self.all_channels_display):
+            # 创建显示的文本
+            display_text = f"Ch{i + 1}" if ch.startswith('Channel') else ch
+            if search in ch.lower() or search in display_text.lower():
+                self.ch_listbox.insert(tk.END, display_text)
+
+    def _filter_features(self):
+        """过滤特征列表"""
+        search = self.feat_search_var.get().lower()
+        self.feat_listbox.delete(0, tk.END)
+
+        for i, feat in enumerate(self.all_features_display):
+            display = self.feat_listbox_display[i]
+            if search in feat.lower() or search in display.lower():
+                self.feat_listbox.insert(tk.END, display)
+
+    def select_all_channels(self):
+        self.ch_listbox.selection_set(0, tk.END)
+
+    def clear_all_channels(self):
+        self.ch_listbox.selection_clear(0, tk.END)
+
+    def select_all_features(self):
+        self.feat_listbox.selection_set(0, tk.END)
+
+    def clear_all_features(self):
+        self.feat_listbox.selection_clear(0, tk.END)
+
+    def _on_modality_change(self, event=None):
+        """切换模态"""
+        new_modality = self.modality_var.get()
+        if new_modality != self.modality:
+            self.modality = new_modality
+            self.modality_features = self.data_dict["processed"]["features"][new_modality]
+            self._build_feature_list()
+            self.title(f"特征可视化 - {self.modality}")
+            # 刷新界面...
+
+    def on_chart_type_changed(self):
+        self.chart_type = self.chart_type_var.get()
+
+
+    def get_selected_channels(self):
+        """获取选中的通道名"""
+        indices = self.ch_listbox.curselection()
+        # 映射回原始通道名
+        filtered = [self.all_channels_display[i] for i in indices]
+        return [ch for ch in self.channel_names if ch in filtered]
+
+    def get_selected_features(self):
+        """获取选中的特征名"""
+        indices = self.feat_listbox.curselection()
+        return [self.all_features_display[i] for i in indices]
+
+    def plot(self):
+        """生成图形 - 统一绘图接口"""
+        selected_channels = self.get_selected_channels()
+        selected_features = self.get_selected_features()
+
+        if not selected_channels or not selected_features:
+            messagebox.showwarning("警告", "请至少选择一个通道和一个特征")
+            return
+
+        # 检查是否有全局特征
+        global_features = [f for f in selected_features if self.feature_map[f]["is_global"]]
+        if global_features and len(selected_channels) > 1:
+            result = messagebox.askyesno("提示",
+                                         f"您选择了 {len(global_features)} 个全局特征（如 {global_features[0]}），\n"
+                                         "这些特征在所有通道上的值相同，可能导致图形重叠。\n"
+                                         "是否继续？")
+            if not result:
+                return
+
+        print(f"\n=== 开始绘图 ===")
+        print(f"选中的通道: {selected_channels}")
+        print(f"选中的特征: {selected_features}")
+        print(f"全局特征: {global_features}")
+
+        # 清除旧画布
+        for widget in self.canvas_container.winfo_children():
+            widget.destroy()
+
+        chart_type = self.chart_type_var.get()
+        print(f"图表类型: {chart_type}")
+
+        try:
+            # 创建对应图表
+            if chart_type == "curve":
+                canvas = UnifiedCurveCanvas(self.canvas_container, self)
+                canvas.plot(selected_channels, selected_features)
+                canvas.get_widget().pack(fill=tk.BOTH, expand=True)
+
+            elif chart_type == "bar":
+                canvas = UnifiedBarCanvas(self.canvas_container, self)
+                canvas.plot(selected_channels, selected_features)
+                canvas.get_widget().pack(fill=tk.BOTH, expand=True)
+
+            elif chart_type == "heatmap":
+                canvas = UnifiedHeatmapCanvas(self.canvas_container, self)
+                canvas.plot(selected_channels, selected_features)
+                canvas.get_widget().pack(fill=tk.BOTH, expand=True)
+
+            elif chart_type == "table":
+                canvas = UnifiedTableCanvas(self.canvas_container, self)
+                canvas.plot(selected_channels, selected_features)
+
+            elif chart_type == "fnirs_dual" and self.modality == "fNIRS":
+                canvas = UnifiedFNIRSDualCanvas(self.canvas_container, self)
+                canvas.plot(selected_channels, selected_features)
+                canvas.get_widget().pack(fill=tk.BOTH, expand=True)
+
+            elif chart_type == "fnirs_global" and self.modality == "fNIRS":
+                canvas = UnifiedFNIRSGlobalCanvas(self.canvas_container, self)
+                canvas.plot(selected_channels, selected_features)
+                canvas.get_widget().pack(fill=tk.BOTH, expand=True)
+
+            elif chart_type == "emg_spectrum" and self.modality == "EMG":
+                canvas = UnifiedEMGSpectrumCanvas(self.canvas_container, self)
+                canvas.plot(selected_channels, selected_features)
+                canvas.get_widget().pack(fill=tk.BOTH, expand=True)
+
+            elif chart_type == "ecg_hrv_spectrum" and self.modality == "ECG":
+                canvas = UnifiedECGHRVCanvas(self.canvas_container, self)
+                canvas.plot(selected_channels, selected_features)
+                canvas.get_widget().pack(fill=tk.BOTH, expand=True)
+
+            else:
+                canvas = UnifiedCurveCanvas(self.canvas_container, self)
+                canvas.plot(selected_channels, selected_features)
+                canvas.get_widget().pack(fill=tk.BOTH, expand=True)
+
+            # 添加工具栏（表格不需要）
+            if chart_type != "table":
+                toolbar_frame = ttk.Frame(self.canvas_container)
+                toolbar_frame.pack(fill=tk.X)
+                toolbar = NavigationToolbar2Tk(canvas.canvas, toolbar_frame)
+                toolbar.update()
+
+            self.current_canvas = canvas
+            print("✅ 绘图完成")
+
+        except Exception as e:
+            messagebox.showerror("错误", f"绘图失败:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def save_plot(self):
+        """保存当前图形"""
+        if not hasattr(self, 'current_canvas') or not self.current_canvas:
+            messagebox.showwarning("警告", "没有可保存的图形，请先生成图形")
+            return
+
+        # 获取当前画布
+        canvas = self.current_canvas
+
+        # 询问保存路径
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[
+                ("PNG 图片", "*.png"),
+                ("JPEG 图片", "*.jpg"),
+                ("PDF 文档", "*.pdf"),
+                ("SVG 矢量图", "*.svg"),
+                ("所有文件", "*.*")
+            ],
+            title="保存图形"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            # 保存图形
+            dpi = simpledialog.askinteger("DPI", "请输入图片分辨率 (DPI):",
+                                          initialvalue=300, minvalue=72, maxvalue=1200)
+            if dpi:
+                canvas.fig.savefig(file_path, dpi=dpi, bbox_inches='tight')
+                messagebox.showinfo("成功", f"图形已保存到:\n{file_path}")
+        except Exception as e:
+            messagebox.showerror("错误", f"保存失败:\n{str(e)}")
+
+
+# ==================== 统一画布基类 ====================
+
+class UnifiedBaseCanvas:
+    """统一画布基类"""
+
+    def __init__(self, parent, view):
+        self.parent = parent
+        self.view = view
+        self.fig = Figure(figsize=(view.settings["width"], view.settings["height"]), dpi=100)
+        self.canvas = FigureCanvasTkAgg(self.fig, parent)
+        self.ax = self.fig.add_subplot(111)
+
+    def get_widget(self):
+        return self.canvas.get_tk_widget()
+
+    def draw(self):
+        self.fig.tight_layout()
+        self.canvas.draw()
+        self.canvas.flush_events()  # 强制刷新事件
+
+
+class UnifiedCurveCanvas(UnifiedBaseCanvas):
+    """统一曲线图"""
+
+    def plot(self, selected_channels, selected_features):
+        self.ax.clear()
+
+        print(f"\n=== UnifiedCurveCanvas.plot ===")
+        print(f"selected_channels: {selected_channels}")
+        print(f"selected_features: {selected_features}")
+
+        x = np.arange(len(selected_features))
+        colors = plt.cm.tab10(np.linspace(0, 1, len(selected_channels)))
+
+        for i, ch in enumerate(selected_channels):
+            ch_idx = self.view.channel_names.index(ch)
+            print(f"通道 {ch} 的索引: {ch_idx}")
+
+            values = []
+            for feat in selected_features:
+                if feat in self.view.feature_values:
+                    vals = self.view.feature_values[feat]
+                    if ch_idx < len(vals):
+                        val = vals[ch_idx]
+                        values.append(val)
+                    else:
+                        values.append(np.nan)
+                else:
+                    values.append(np.nan)
+
+            print(f"通道 {ch} 的值列表: {values}")
+
+            # 绘制曲线
+            line = self.ax.plot(x, values, marker='o', linewidth=2, label=ch,
+                                color=colors[i], markersize=8)[0]
+
+            # 在每个数据点上显示数值
+            for j, (x_val, y_val) in enumerate(zip(x, values)):
+                if not np.isnan(y_val):
+                    # 根据数值大小决定显示格式
+                    if abs(y_val) < 0.01 or abs(y_val) > 1000:
+                        text = f'{y_val:.2e}'
+                    else:
+                        text = f'{y_val:.2f}'
+
+                    # 根据曲线位置调整文本位置
+                    if i == 0:
+                        offset = 5  # 第一条曲线上方
+                    else:
+                        offset = 5 + i * 3  # 其他曲线上方偏移
+
+                    self.ax.annotate(text, (x_val, y_val),
+                                     textcoords="offset points",
+                                     xytext=(0, offset),
+                                     ha='center', va='bottom',
+                                     fontsize=7, color=colors[i],
+                                     bbox=dict(boxstyle='round,pad=0.2',
+                                               facecolor='white',
+                                               alpha=0.7,
+                                               edgecolor='none'))
+
+        self.ax.set_xlabel(self.view.settings.get('xlabel', '特征'))
+        self.ax.set_ylabel(self.view.settings.get('ylabel', '幅值'))
+        self.ax.set_title(self.view.settings.get('title', f'{self.view.modality}特征曲线'))
+        self.ax.set_xticks(x)
+        self.ax.set_xticklabels([f.split('.')[-1] for f in selected_features], rotation=45, ha='right')
+        self.ax.legend()
+        self.ax.grid(True, alpha=0.3)
+
+        # 强制刷新
+        self.ax.relim()
+        self.ax.autoscale_view()
+        self.fig.tight_layout()
+        self.canvas.draw()
+        self.canvas.flush_events()
+
+        print("✅ UnifiedCurveCanvas.plot 完成")
+
+
+class UnifiedBarCanvas(UnifiedBaseCanvas):
+    """统一柱状图"""
+
+    def plot(self, selected_channels, selected_features):
+        self.ax.clear()
+
+        print(f"\n=== UnifiedBarCanvas.plot ===")
+        print(f"selected_channels: {selected_channels}")
+        print(f"selected_features: {selected_features}")
+
+        x = np.arange(len(selected_features))
+        width = 0.8 / len(selected_channels)
+        colors = plt.cm.tab10(np.linspace(0, 1, len(selected_channels)))
+
+        # 存储所有值用于确定y轴范围
+        all_values = []
+
+        for i, ch in enumerate(selected_channels):
+            ch_idx = self.view.channel_names.index(ch)
+
+            values = []
+            for feat in selected_features:
+                if feat in self.view.feature_values:
+                    vals = self.view.feature_values[feat]
+                    if ch_idx < len(vals):
+                        val = vals[ch_idx]
+                        values.append(val)
+                        all_values.append(val)
+                    else:
+                        values.append(np.nan)
+                else:
+                    values.append(np.nan)
+
+            offset = (i - len(selected_channels) / 2 + 0.5) * width
+            bars = self.ax.bar(x + offset, values, width, label=ch,
+                               color=colors[i], alpha=0.7)
+
+            # 在每个柱子上显示数值
+            for bar, val in zip(bars, values):
+                if not np.isnan(val):
+                    height = bar.get_height()
+                    # 根据数值大小决定显示格式
+                    if abs(val) < 0.01 or abs(val) > 1000:
+                        text = f'{val:.2e}'
+                    else:
+                        text = f'{val:.2f}'
+
+                    # 根据数值正负决定文本位置
+                    if val >= 0:
+                        va = 'bottom'
+                        y_pos = height
+                    else:
+                        va = 'top'
+                        y_pos = height
+
+                    self.ax.text(bar.get_x() + bar.get_width() / 2, y_pos,
+                                 text, ha='center', va=va,
+                                 fontsize=8, rotation=0,
+                                 bbox=dict(boxstyle='round,pad=0.1',
+                                           facecolor='white',
+                                           alpha=0.7,
+                                           edgecolor='none'))
+
+        self.ax.set_xlabel(self.view.settings.get('xlabel', '特征'))
+        self.ax.set_ylabel(self.view.settings.get('ylabel', '幅值'))
+        self.ax.set_title(self.view.settings.get('title', f'{self.view.modality}特征柱状图'))
+        self.ax.set_xticks(x)
+        self.ax.set_xticklabels([f.split('.')[-1] for f in selected_features], rotation=45, ha='right')
+        self.ax.legend()
+        self.ax.grid(True, alpha=0.3, axis='y')
+
+        # 根据数值范围自动调整y轴边距
+        if all_values:
+            y_min, y_max = min(all_values), max(all_values)
+            y_range = y_max - y_min
+            self.ax.set_ylim(y_min - 0.1 * y_range, y_max + 0.2 * y_range)
+
+        # 强制刷新
+        self.ax.relim()
+        self.ax.autoscale_view()
+        self.fig.tight_layout()
+        self.canvas.draw()
+        self.canvas.flush_events()
+
+        print("✅ UnifiedBarCanvas.plot 完成")
+
+
+class UnifiedHeatmapCanvas(UnifiedBaseCanvas):
+    """统一热力图"""
+
+    def plot(self, selected_channels, selected_features):
+        self.ax.clear()
+
+        print(f"\n=== UnifiedHeatmapCanvas.plot ===")
+        print(f"selected_channels: {selected_channels}")
+        print(f"selected_features: {selected_features}")
+
+        # 构建矩阵
+        n_channels = len(selected_channels)
+        n_features = len(selected_features)
+        matrix = np.zeros((n_channels, n_features))
+
+        for i, ch in enumerate(selected_channels):
+            ch_idx = self.view.channel_names.index(ch)
+            for j, feat in enumerate(selected_features):
+                if feat in self.view.feature_values:
+                    vals = self.view.feature_values[feat]
+                    if ch_idx < len(vals):
+                        matrix[i, j] = vals[ch_idx]
+                    else:
+                        matrix[i, j] = np.nan
+                else:
+                    matrix[i, j] = np.nan
+
+        im = self.ax.imshow(matrix, cmap='viridis', aspect='auto', interpolation='nearest')
+
+        # 在每个单元格中显示数值
+        for i in range(n_channels):
+            for j in range(n_features):
+                val = matrix[i, j]
+                if not np.isnan(val):
+                    # 根据数值大小决定显示格式
+                    if abs(val) < 0.01 or abs(val) > 1000:
+                        text = f'{val:.2e}'
+                    else:
+                        text = f'{val:.2f}'
+
+                    # 根据背景颜色决定文字颜色
+                    color = 'white' if matrix[i, j] > matrix.mean() else 'black'
+
+                    self.ax.text(j, i, text,
+                                 ha='center', va='center',
+                                 fontsize=7, color=color)
+
+        self.ax.set_xticks(range(n_features))
+        self.ax.set_yticks(range(n_channels))
+        self.ax.set_xticklabels([f.split('.')[-1] for f in selected_features], rotation=45, ha='right')
+        self.ax.set_yticklabels(selected_channels)
+        self.ax.set_xlabel(self.view.settings.get('xlabel', '特征'))
+        self.ax.set_ylabel(self.view.settings.get('ylabel', '通道'))
+        self.ax.set_title(self.view.settings.get('title', f'{self.view.modality}特征热力图'))
+        self.fig.colorbar(im, ax=self.ax)
+
+        # 强制刷新
+        self.fig.tight_layout()
+        self.canvas.draw()
+        self.canvas.flush_events()
+
+        print("✅ UnifiedHeatmapCanvas.plot 完成")
+
+
+class UnifiedTableCanvas(UnifiedBaseCanvas):
+    """统一表格视图"""
+
+    def __init__(self, parent, view):
+        super().__init__(parent, view)
+        # 表格不使用matplotlib，使用Treeview
+        self.fig.clear()
+        self.canvas.get_tk_widget().destroy()
+
+        self.tree_frame = ttk.Frame(parent)
+        self.tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        # 创建滚动条
+        vsb = ttk.Scrollbar(self.tree_frame, orient="vertical")
+        hsb = ttk.Scrollbar(self.tree_frame, orient="horizontal")
+
+        self.tree = ttk.Treeview(self.tree_frame, show="headings",
+                                 yscrollcommand=vsb.set,
+                                 xscrollcommand=hsb.set,
+                                 height=20)
+
+        vsb.config(command=self.tree.yview)
+        hsb.config(command=self.tree.xview)
+
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+
+        self.tree_frame.grid_rowconfigure(0, weight=1)
+        self.tree_frame.grid_columnconfigure(0, weight=1)
+
+    def plot(self, selected_channels, selected_features):
+        # 清空
+        self.tree.delete(*self.tree.get_children())
+
+        # 设置列
+        columns = ["通道"] + [f.split('.')[-1] for f in selected_features]
+        self.tree["columns"] = columns
+        for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=100, anchor="center")
+
+        # 添加数据
+        for ch in selected_channels:
+            ch_idx = self.view.channel_names.index(ch)
+            values = [ch]
+            for feat in selected_features:
+                vals = self.view.feature_values[feat]
+                if ch_idx < len(vals):
+                    val = vals[ch_idx]
+                    if isinstance(val, (int, float)):
+                        values.append(f"{val:.4f}")
+                    else:
+                        values.append(str(val)[:20])
+                else:
+                    values.append("N/A")
+            self.tree.insert("", tk.END, values=values)
+
+
+# ==================== 模态特定画布 ====================
+
+class UnifiedFNIRSDualCanvas(UnifiedBaseCanvas):
+    """fNIRS HbO/HbR双通道对比"""
+
+    def plot(self, selected_channels, selected_features):
+        self.ax.clear()
+
+        # 分离HbO和HbR通道
+        hbo_channels = [ch for i, ch in enumerate(selected_channels) if i % 2 == 0]
+        hbr_channels = [ch for i, ch in enumerate(selected_channels) if i % 2 == 1]
+
+        n_pairs = min(len(hbo_channels), len(hbr_channels))
+        if n_pairs == 0:
+            self.ax.text(0.5, 0.5, '请同时选择HbO和HbR通道',
+                         ha='center', va='center', fontsize=12)
+            self.draw()
+            return
+
+        # 选择特征
+        display_features = selected_features[:8]
+        x = np.arange(len(display_features))
+        width = 0.35
+
+        for i in range(n_pairs):
+            hbo_idx = self.view.channel_names.index(hbo_channels[i])
+            hbr_idx = self.view.channel_names.index(hbr_channels[i])
+
+            hbo_values = []
+            hbr_values = []
+            for feat in display_features:
+                vals = self.view.feature_values[feat]
+                if hbo_idx < len(vals):
+                    hbo_values.append(vals[hbo_idx])
+                else:
+                    hbo_values.append(np.nan)
+                if hbr_idx < len(vals):
+                    hbr_values.append(vals[hbr_idx])
+                else:
+                    hbr_values.append(np.nan)
+
+            offset = i * width * 2
+            self.ax.bar(x - width + offset, hbo_values, width,
+                        label=f'{hbo_channels[i]}', color='red', alpha=0.7)
+            self.ax.bar(x + offset, hbr_values, width,
+                        label=f'{hbr_channels[i]}', color='blue', alpha=0.7)
+
+        self.ax.set_xlabel('特征')
+        self.ax.set_ylabel('浓度变化')
+        self.ax.set_title('fNIRS HbO/HbR通道对比')
+        self.ax.set_xticks(x)
+        self.ax.set_xticklabels([f.split('.')[-1] for f in display_features], rotation=45, ha='right')
+        self.ax.legend()
+        self.ax.grid(True, alpha=0.3, axis='y')
+        self.draw()
+
+
+class UnifiedFNIRSGlobalCanvas(UnifiedBaseCanvas):
+    """fNIRS全局平均特征"""
+
+    def plot(self, selected_channels, selected_features):
+        self.ax.clear()
+
+        # 筛选全局特征
+        global_feats = {}
+        for feat in selected_features:
+            info = self.view.feature_map[feat]
+            if info["is_global"] and any(p in feat for p in ['hbo_', 'hbr_', 'hbt_', 'diff_']):
+                global_feats[feat] = self.view.feature_values[feat][0]
+
+        if not global_feats:
+            self.ax.text(0.5, 0.5, '未找到全局特征\n(如 hbo_mean, hbr_mean 等)',
+                         ha='center', va='center', fontsize=12)
+            self.draw()
+            return
+
+        # 分组
+        hbo_dict = {k: v for k, v in global_feats.items() if 'hbo_' in k}
+        hbr_dict = {k: v for k, v in global_feats.items() if 'hbr_' in k}
+        hbt_dict = {k: v for k, v in global_feats.items() if 'hbt_' in k}
+        diff_dict = {k: v for k, v in global_feats.items() if 'diff_' in k}
+
+        x = np.arange(len(hbo_dict)) if hbo_dict else np.arange(1)
+        width = 0.2
+        colors = {'hbo': 'red', 'hbr': 'blue', 'hbt': 'green', 'diff': 'purple'}
+
+        if hbo_dict:
+            self.ax.bar(x - width * 1.5, list(hbo_dict.values()), width,
+                        label='HbO', color=colors['hbo'], alpha=0.7)
+        if hbr_dict:
+            self.ax.bar(x - width / 2, list(hbr_dict.values()), width,
+                        label='HbR', color=colors['hbr'], alpha=0.7)
+        if hbt_dict:
+            self.ax.bar(x + width / 2, list(hbt_dict.values()), width,
+                        label='HbT', color=colors['hbt'], alpha=0.7)
+        if diff_dict:
+            self.ax.bar(x + width * 1.5, list(diff_dict.values()), width,
+                        label='HbO-HbR', color=colors['diff'], alpha=0.7)
+
+        # 设置标签
+        if hbo_dict:
+            labels = [k.replace('hbo_', '').split('.')[-1] for k in hbo_dict.keys()]
+        elif hbr_dict:
+            labels = [k.replace('hbr_', '').split('.')[-1] for k in hbr_dict.keys()]
+        else:
+            labels = [k.split('.')[-1] for k in global_feats.keys()]
+
+        self.ax.set_xlabel('特征')
+        self.ax.set_ylabel('浓度变化')
+        self.ax.set_title('fNIRS全局平均特征对比')
+        self.ax.set_xticks(x)
+        self.ax.set_xticklabels(labels, rotation=45, ha='right')
+        self.ax.legend()
+        self.ax.grid(True, alpha=0.3, axis='y')
+        self.draw()
+
+
+class UnifiedEMGSpectrumCanvas(UnifiedBaseCanvas):
+    """EMG功率谱特征"""
+
+    def plot(self, selected_channels, selected_features):
+        self.ax.clear()
+
+        colors = plt.cm.tab10(np.linspace(0, 1, len(selected_channels)))
+
+        for i, ch in enumerate(selected_channels):
+            ch_idx = self.view.channel_names.index(ch)
+
+            # 提取频率和功率特征
+            freqs = []
+            powers = []
+            for feat in selected_features:
+                vals = self.view.feature_values[feat]
+                if ch_idx < len(vals):
+                    val = vals[ch_idx]
+                    if 'freq' in feat.lower() and 'power' not in feat.lower():
+                        freqs.append(val)
+                    elif 'power' in feat.lower():
+                        powers.append(val)
+
+            if len(freqs) == len(powers) and len(freqs) > 0:
+                self.ax.plot(freqs, powers, 'o-', linewidth=2, label=ch,
+                             color=colors[i], markersize=6)
+
+        self.ax.set_xlabel('频率 (Hz)')
+        self.ax.set_ylabel('功率')
+        self.ax.set_title('EMG功率谱特征')
+        self.ax.legend()
+        self.ax.grid(True, alpha=0.3)
+        self.draw()
+
+
+class UnifiedECGHRVCanvas(UnifiedBaseCanvas):
+    """ECG HRV频谱特征"""
+
+    def plot(self, selected_channels, selected_features):
+        self.ax.clear()
+
+        if not selected_channels:
+            return
+
+        ch = selected_channels[0]
+        ch_idx = self.view.channel_names.index(ch)
+
+        # 提取频带功率
+        freq_bands = ['VLF', 'LF', 'HF']
+        powers = []
+
+        for band in freq_bands:
+            found = False
+            for feat in selected_features:
+                if band.lower() in feat.lower() and 'power' in feat.lower():
+                    vals = self.view.feature_values[feat]
+                    if ch_idx < len(vals):
+                        powers.append(vals[ch_idx])
+                        found = True
+                        break
+            if not found:
+                powers.append(0)
+
+        x = range(len(freq_bands))
+        self.ax.bar(x, powers, color=['blue', 'green', 'red'], alpha=0.7)
+        self.ax.set_xticks(x)
+        self.ax.set_xticklabels(freq_bands)
+        self.ax.set_xlabel('频带')
+        self.ax.set_ylabel('功率')
+        self.ax.set_title('HRV频谱')
+
+        # 显示LF/HF比
+        if len(powers) >= 3 and powers[2] > 0:
+            lf_hf = powers[1] / powers[2]
+            self.ax.text(0.5, 0.9, f'LF/HF = {lf_hf:.2f}',
+                         transform=self.ax.transAxes, ha='center',
+                         bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.3))
+
+        self.ax.grid(True, alpha=0.3, axis='y')
+        self.draw()
+
+
+# ==================== 绘图设置对话框 ====================
 
 class PlotSettingsDialog(tk.Toplevel):
     """绘图设置对话框"""
@@ -44,10 +1337,8 @@ class PlotSettingsDialog(tk.Toplevel):
         self.geometry("450x350")
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
 
         self._create_widgets()
-        self.center_window()
 
     def _create_widgets(self):
         main_frame = ttk.Frame(self, padding=20)
@@ -90,14 +1381,6 @@ class PlotSettingsDialog(tk.Toplevel):
         ttk.Button(btn_frame, text="保存", command=self.save, width=10).pack(side=tk.LEFT, padx=10)
         ttk.Button(btn_frame, text="取消", command=self.destroy, width=10).pack(side=tk.LEFT, padx=10)
 
-    def center_window(self):
-        self.update_idletasks()
-        width = self.winfo_width()
-        height = self.winfo_height()
-        x = (self.winfo_screenwidth() // 2) - (width // 2)
-        y = (self.winfo_screenheight() // 2) - (height // 2)
-        self.geometry(f'{width}x{height}+{x}+{y}')
-
     def save(self):
         self.result = {
             "title": self.title_entry.get(),
@@ -109,882 +1392,15 @@ class PlotSettingsDialog(tk.Toplevel):
         self.destroy()
 
 
-# ---------- 画布基类 ----------
-class BaseCanvas:
-    """绘图画布基类"""
-
-    def __init__(self, parent, width=10, height=7, dpi=100):
-        self.parent = parent
-        self.fig = Figure(figsize=(width, height), dpi=dpi)
-        self.canvas = FigureCanvasTkAgg(self.fig, parent)
-        self.canvas.draw()
-        self.ax = self.fig.add_subplot(111)
-
-    def get_widget(self):
-        return self.canvas.get_tk_widget()
-
-    def draw(self):
-        self.canvas.draw()
-
-
-class CurveCanvas(BaseCanvas):
-    """曲线图 - 横坐标是特征，不同颜色曲线代表不同通道"""
-
-    def plot(self, data, selected_channels, selected_features, settings):
-        # ===== 确保 settings 有默认值 =====
-        if "title" not in settings or not settings["title"]:
-            settings["title"] = "特征曲线图"  # 直接写死，不用 plot_type
-        if "xlabel" not in settings or not settings["xlabel"]:
-            settings["xlabel"] = "特征"
-        if "ylabel" not in settings or not settings["ylabel"]:
-            settings["ylabel"] = "幅值"
-
-        self.ax.clear()
-        select_data = self._get_selected_data(data, selected_channels, selected_features)
-
-        x = np.arange(len(selected_features))
-        colors = plt.cm.tab10(np.linspace(0, 1, len(selected_channels)))
-
-        for i, ch in enumerate(selected_channels):
-            values = [select_data[f][i] for f in selected_features]
-            self.ax.plot(x, values, marker='o', linewidth=2, label=ch,
-                         color=colors[i], markersize=8, markerfacecolor='white')
-
-            # 标记数值
-            for j, (xi, val) in enumerate(zip(x, values)):
-                self.ax.annotate(f'{val:.1f}', (xi, val),
-                                 textcoords="offset points", xytext=(0, 10),
-                                 ha='center', fontsize=8)
-
-        self.ax.set_xticks(x)
-        self.ax.set_xticklabels(selected_features, fontsize=9, rotation=30, ha='right')
-
-        # ===== 强制设置标题和标签 =====
-        title = settings.get("title", "特征曲线图")
-        xlabel = settings.get("xlabel", "特征")
-        ylabel = settings.get("ylabel", "幅值")
-
-        print(f"设置标题: {title}, X轴: {xlabel}, Y轴: {ylabel}")  # 调试用
-
-        self.ax.set_title(title, fontsize=14, pad=15)
-        self.ax.set_xlabel(xlabel, fontsize=11)
-        self.ax.set_ylabel(ylabel, fontsize=11)
-
-        self.ax.legend(loc='best', fontsize=9, title="通道")
-        self.ax.grid(True, alpha=0.3, linestyle='--')
-        self.ax.spines['top'].set_visible(False)
-        self.ax.spines['right'].set_visible(False)
-        self.fig.tight_layout()
-        self.draw()
-
-    def _get_selected_data(self, feature_dict, channels, features):
-        idx = [i for i, ch in enumerate(feature_dict['ch_names']) if ch in channels]
-        out = {}
-        for f in features:
-            if f in feature_dict['feature']:
-                out[f] = [feature_dict['feature'][f][i] for i in idx]
-        return out
-
-
-class BarCanvas(BaseCanvas):
-    """柱状图 - 横坐标是特征，颜色代表通道"""
-
-    def plot(self, data, selected_channels, selected_features, settings):
-        # ===== 确保 settings 有默认值 =====
-        if "title" not in settings or not settings["title"]:
-            settings["title"] = "特征柱状图"  # 直接写死
-        if "xlabel" not in settings or not settings["xlabel"]:
-            settings["xlabel"] = "特征"
-        if "ylabel" not in settings or not settings["ylabel"]:
-            settings["ylabel"] = "幅值"
-
-        self.ax.clear()
-        select_data = self._get_selected_data(data, selected_channels, selected_features)
-
-        x = np.arange(len(selected_features))
-        width = 0.8 / len(selected_channels)
-
-        colors = plt.cm.tab10(np.linspace(0, 1, len(selected_channels)))
-
-        for i, ch in enumerate(selected_channels):
-            values = [select_data[f][i] for f in selected_features]
-            offset = (i - len(selected_channels) / 2 + 0.5) * width
-            bars = self.ax.bar(x + offset, values, width, label=ch,
-                               color=colors[i], alpha=0.8, edgecolor='black', linewidth=0.8)
-
-            # 在柱子上显示数值
-            for j, (bar, val) in enumerate(zip(bars, values)):
-                height = bar.get_height()
-                self.ax.text(bar.get_x() + bar.get_width() / 2, height + 0.5,
-                             f'{val:.1f}', ha='center', va='bottom', fontsize=8)
-
-        self.ax.set_xticks(x)
-        self.ax.set_xticklabels(selected_features, fontsize=9, rotation=30, ha='right')
-
-        # ===== 强制设置标题和标签 =====
-        title = settings.get("title", "特征柱状图")
-        xlabel = settings.get("xlabel", "特征")
-        ylabel = settings.get("ylabel", "幅值")
-
-        print(f"设置标题: {title}, X轴: {xlabel}, Y轴: {ylabel}")  # 调试用
-
-        self.ax.set_title(title, fontsize=14, pad=15)
-        self.ax.set_xlabel(xlabel, fontsize=11)
-        self.ax.set_ylabel(ylabel, fontsize=11)
-
-        self.ax.legend(loc='best', fontsize=9, title="通道")
-        self.ax.grid(True, alpha=0.3, axis='y', linestyle='--')
-        self.ax.spines['top'].set_visible(False)
-        self.ax.spines['right'].set_visible(False)
-        self.fig.tight_layout()
-        self.draw()
-
-    def _get_selected_data(self, feature_dict, channels, features):
-        idx = [i for i, ch in enumerate(feature_dict['ch_names']) if ch in channels]
-        out = {}
-        for f in features:
-            if f in feature_dict['feature']:
-                out[f] = [feature_dict['feature'][f][i] for i in idx]
-        return out
-
-
-class TableCanvas(ttk.Frame):
-    """表格画布"""
-
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.parent = parent
-        self.tree = None
-        self._create_widgets()
-
-    def _create_widgets(self):
-        # 创建滚动条
-        vsb = ttk.Scrollbar(self, orient="vertical")
-        hsb = ttk.Scrollbar(self, orient="horizontal")
-
-        # 创建表格
-        self.tree = ttk.Treeview(self, show="headings",
-                                 yscrollcommand=vsb.set,
-                                 xscrollcommand=hsb.set,
-                                 height=20)
-
-        vsb.config(command=self.tree.yview)
-        hsb.config(command=self.tree.xview)
-
-        # 布局
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-
-    def plot(self, df):
-        # 清空现有内容
-        self.tree.delete(*self.tree.get_children())
-
-        # 设置列
-        self.tree["columns"] = list(df.columns)
-        for col in df.columns:
-            self.tree.heading(col, text=col)
-            self.tree.column(col, width=120, anchor="center")
-
-        # 添加数据
-        for _, row in df.iterrows():
-            values = [f"{row[col]:.3f}" if isinstance(row[col], (int, float)) else str(row[col])[:30]
-                      for col in df.columns]
-            self.tree.insert("", tk.END, values=values)
-
-
-class TopomapCanvas(BaseCanvas):
-    """地形图画布"""
-
-    def __init__(self, parent, width=10, height=7, dpi=100):
-        super().__init__(parent, width, height, dpi)
-        try:
-            import mne
-            self.mne_available = True
-        except ImportError:
-            self.mne_available = False
-
-    def plot(self, data, info_dict, selected_channels, selected_features,
-             is_relative=False, is_show_sensor=False):
-        if not self.mne_available:
-            self.ax.text(0.5, 0.5, "请安装 mne 以使用地形图功能",
-                         ha='center', va='center', fontsize=14, color='red')
-            self.draw()
-            return
-
-        import mne
-
-        if not data:
-            return
-
-        num = len(selected_features)
-        self.fig.clear()
-        self.axes = self.fig.subplots(1, num, sharex=True, sharey=True)
-        if num == 1:
-            self.axes = [self.axes]
-
-        select_data = self._get_selected_data(data, selected_channels, selected_features)
-        chan_data = np.array([select_data[f] for f in selected_features])
-
-        if is_relative:
-            norm_data = (chan_data - chan_data.min(axis=1, keepdims=True)) / (
-                    chan_data.max(axis=1, keepdims=True) - chan_data.min(axis=1, keepdims=True) + 1e-10)
-            norm_data = norm_data * 2 - 1
-        else:
-            norm_data = (chan_data - chan_data.min()) / (chan_data.max() - chan_data.min() + 1e-10)
-            norm_data = norm_data * 2 - 1
-
-        if 'montage' in info_dict:
-            montage = mne.channels.make_standard_montage(info_dict['montage'])
-            info = mne.create_info(ch_names=selected_channels,
-                                   sfreq=info_dict.get('srate', 1000),
-                                   ch_types='eeg')
-            evoked = mne.EvokedArray(data=chan_data.T, info=info)
-            evoked.set_montage(montage)
-
-            for i, (ax, psd) in enumerate(zip(self.axes, norm_data)):
-                ax.clear()
-                ax.set_title(selected_features[i], fontsize=11, pad=10)
-                im = mne.viz.plot_topomap(
-                    psd, evoked.info, axes=ax, show=False,
-                    sensors=is_show_sensor, vlim=(-1, 1),
-                    names=selected_channels if is_show_sensor else None,
-                    cmap='RdBu_r'
-                )
-            self.fig.tight_layout()
-            self.draw()
-
-    def _get_selected_data(self, feature_dict, channels, features):
-        idx = [i for i, ch in enumerate(feature_dict['ch_names']) if ch in channels]
-        out = {}
-        for f in features:
-            if f in feature_dict['feature']:
-                out[f] = [feature_dict['feature'][f][i] for i in idx]
-        return out
-
-
-# ---------- 主窗口 ----------
-class FeatureView(tk.Toplevel):
-    """特征可视化主窗口 - 最佳布局（添加模态选择器）"""
-
-    def __init__(self, parent, data, channels, features, available_modalities=None, current_modality=None):
-        super().__init__(parent)
-        self.parent = parent
-        self.data = data
-        self.all_channels = channels
-        self.all_features = features
-        self.settings = {"width": 10, "height": 7, "title": "", "xlabel": "", "ylabel": ""}
-        self.current_canvas = None
-        self.info = None
-
-        # ===== 添加模态相关变量 =====
-        self.available_modalities = available_modalities if available_modalities else []
-        self.current_modality = current_modality
-        # ===========================
-
-        self.title("特征可视化")
-        self.geometry("1400x850")
-        self.minsize(800, 600)  # 设置最小尺寸
-
-        # ===== 允许最小化和全屏化 =====
-        self.resizable(True, True)  # 允许调整大小
-        self.state('normal')  # 正常状态（不是最大化也不是最小化）
-
-        # 添加窗口状态绑定
-        self.bind("<F11>", lambda e: self.attributes('-fullscreen', not self.attributes('-fullscreen')))
-
-        self._create_menu()
-        self._create_layout()
-
-    # self.transient(parent)
-    # self.grab_set()
-
-    def _create_menu(self):
-        """创建菜单栏"""
-        menubar = tk.Menu(self)
-        self.config(menu=menubar)
-
-        # 文件菜单
-        file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="文件", menu=file_menu)
-        file_menu.add_command(label="保存图像", command=self.save_plot, accelerator="Ctrl+S")
-        file_menu.add_separator()
-        file_menu.add_command(label="退出", command=self.destroy, accelerator="Ctrl+Q")
-
-        # 设置菜单
-        settings_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="设置", menu=settings_menu)
-        settings_menu.add_command(label="绘图设置", command=self.show_settings, accelerator="Ctrl+P")
-
-        # 视图菜单
-        view_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="视图", menu=view_menu)
-        view_menu.add_command(label="全选通道", command=self.select_all_channels)
-        view_menu.add_command(label="全选特征", command=self.select_all_features)
-        view_menu.add_separator()
-        view_menu.add_command(label="最小化", command=self.iconify)  # 最小化
-        view_menu.add_command(label="最大化", command=self.maximize)  # 最大化
-        view_menu.add_command(label="全屏", command=self.toggle_fullscreen, accelerator="F11")  # 全屏
-        view_menu.add_separator()
-        view_menu.add_command(label="重置视图", command=self.reset_view)
-
-        # 绑定快捷键
-        self.bind_all("<Control-s>", lambda e: self.save_plot())
-        self.bind_all("<Control-p>", lambda e: self.show_settings())
-        self.bind_all("<Control-q>", lambda e: self.destroy())
-
-    def _create_layout(self):
-        """创建主布局 - 无空白紧凑布局"""
-        # 主容器 - 使用PanedWindow支持拖动分割，去掉所有边距
-        main_panel = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
-        main_panel.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
-
-        # ===== 左侧控制面板 =====
-        left_frame = ttk.Frame(main_panel, width=300, relief=tk.FLAT)
-        main_panel.add(left_frame, weight=1)
-
-        self._create_left_panel(left_frame)
-
-        # ===== 右侧图形面板 =====
-        right_frame = ttk.Frame(main_panel, relief=tk.FLAT)
-        main_panel.add(right_frame, weight=4)
-
-        self._create_right_panel(right_frame)
-
-    def _create_left_panel(self, parent):
-        """创建左侧控制面板 - 优化布局填满整个面板（添加模态选择器）"""
-
-        # 使用网格布局让各部分按比例分配高度
-        # 根据是否有模态选择器动态调整行索引
-        has_modality = len(self.available_modalities) > 0
-
-        if has_modality:
-            # 有模态选择器：模态(0) + 标题(1) + 通道(2) + 特征(3) + 类型(4) + 地形图(5) + 按钮(6)
-            parent.grid_rowconfigure(0, weight=0)  # 模态
-            parent.grid_rowconfigure(1, weight=0)  # 标题
-            parent.grid_rowconfigure(2, weight=2)  # 通道选择
-            parent.grid_rowconfigure(3, weight=3)  # 特征选择
-            parent.grid_rowconfigure(4, weight=0)  # 绘图类型
-            parent.grid_rowconfigure(5, weight=0)  # 地形图选项
-            parent.grid_rowconfigure(6, weight=0)  # 操作按钮
-        else:
-            # 无模态选择器：标题(0) + 通道(1) + 特征(2) + 类型(3) + 地形图(4) + 按钮(5)
-            parent.grid_rowconfigure(0, weight=0)  # 标题
-            parent.grid_rowconfigure(1, weight=2)  # 通道选择
-            parent.grid_rowconfigure(2, weight=3)  # 特征选择
-            parent.grid_rowconfigure(3, weight=0)  # 绘图类型
-            parent.grid_rowconfigure(4, weight=0)  # 地形图选项
-            parent.grid_rowconfigure(5, weight=0)  # 操作按钮
-
-        parent.grid_columnconfigure(0, weight=1)
-
-        row_offset = 0
-
-        # ===== 添加模态选择器（如果有）=====
-        if has_modality:
-            modality_frame = ttk.LabelFrame(parent, text="模态选择", padding=2)
-            modality_frame.grid(row=0, column=0, sticky="ew", padx=1, pady=1)
-
-            self.modality_var = tk.StringVar(value=self.current_modality if self.current_modality else "")
-            modality_combo = ttk.Combobox(modality_frame, textvariable=self.modality_var,
-                                          values=self.available_modalities, state="readonly")
-            modality_combo.pack(fill=tk.X, padx=2, pady=2)
-            modality_combo.bind('<<ComboboxSelected>>', self.on_modality_changed)
-
-            row_offset = 1
-
-        # ===== 标题 =====
-        title_label = tk.Label(parent, text="控制面板",
-                               font=('微软雅黑', 14, 'bold'),
-                               fg='#2c3e50', bg='#f5f5f5')
-        title_label.grid(row=0 + row_offset, column=0, sticky="ew", pady=(5, 2))
-
-        # ===== 通道选择区域 =====
-        ch_frame = ttk.LabelFrame(parent, text="通道选择", padding=2)
-        ch_frame.grid(row=1 + row_offset, column=0, sticky="nsew", padx=1, pady=1)
-
-        ch_frame.grid_rowconfigure(0, weight=1)
-        ch_frame.grid_columnconfigure(0, weight=1)
-
-        # 通道列表
-        self.ch_listbox = tk.Listbox(ch_frame, selectmode=tk.MULTIPLE,
-                                     exportselection=False, bg='white',
-                                     font=('微软雅黑', 9),
-                                     relief=tk.FLAT, bd=1,
-                                     highlightthickness=0)
-        ch_scroll = ttk.Scrollbar(ch_frame, orient=tk.VERTICAL,
-                                  command=self.ch_listbox.yview)
-        self.ch_listbox.configure(yscrollcommand=ch_scroll.set)
-
-        for ch in self.all_channels:
-            self.ch_listbox.insert(tk.END, ch)
-        self.ch_listbox.selection_set(0, tk.END)
-
-        self.ch_listbox.grid(row=0, column=0, sticky="nsew", padx=(0, 1))
-        ch_scroll.grid(row=0, column=1, sticky="ns")
-
-        # 通道操作按钮
-        ch_btn_frame = ttk.Frame(ch_frame)
-        ch_btn_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=1)
-
-        ttk.Button(ch_btn_frame, text="全选", width=4,
-                   command=self.select_all_channels).pack(side=tk.LEFT, padx=1)
-        ttk.Button(ch_btn_frame, text="清空", width=4,
-                   command=self.clear_all_channels).pack(side=tk.LEFT, padx=1)
-        ttk.Label(ch_btn_frame, text=f"共{len(self.all_channels)}个",
-                  font=('微软雅黑', 8)).pack(side=tk.RIGHT, padx=2)
-
-        # ===== 特征选择区域 =====
-        feat_frame = ttk.LabelFrame(parent, text="特征选择", padding=2)
-        feat_frame.grid(row=2 + row_offset, column=0, sticky="nsew", padx=1, pady=1)
-
-        feat_frame.grid_rowconfigure(0, weight=1)
-        feat_frame.grid_columnconfigure(0, weight=1)
-
-        # 特征列表
-        self.feat_listbox = tk.Listbox(feat_frame, selectmode=tk.MULTIPLE,
-                                       exportselection=False, bg='white',
-                                       font=('微软雅黑', 8),
-                                       relief=tk.FLAT, bd=1,
-                                       highlightthickness=0)
-        feat_scroll = ttk.Scrollbar(feat_frame, orient=tk.VERTICAL,
-                                    command=self.feat_listbox.yview)
-        self.feat_listbox.configure(yscrollcommand=feat_scroll.set)
-
-        for feat in self.all_features:
-            self.feat_listbox.insert(tk.END, feat)
-        self.feat_listbox.selection_set(0, tk.END)
-
-        self.feat_listbox.grid(row=0, column=0, sticky="nsew", padx=(0, 1))
-        feat_scroll.grid(row=0, column=1, sticky="ns")
-
-        # 特征操作按钮
-        feat_btn_frame = ttk.Frame(feat_frame)
-        feat_btn_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=1)
-
-        ttk.Button(feat_btn_frame, text="全选", width=4,
-                   command=self.select_all_features).pack(side=tk.LEFT, padx=1)
-        ttk.Button(feat_btn_frame, text="清空", width=4,
-                   command=self.clear_all_features).pack(side=tk.LEFT, padx=1)
-        ttk.Label(feat_btn_frame, text=f"共{len(self.all_features)}个",
-                  font=('微软雅黑', 8)).pack(side=tk.RIGHT, padx=2)
-
-        # ===== 绘图类型区域 =====
-        type_frame = ttk.LabelFrame(parent, text="绘图类型", padding=2)
-        type_frame.grid(row=3 + row_offset, column=0, sticky="ew", padx=1, pady=1)
-
-        self.plot_type = tk.StringVar(value="曲线图")
-
-        # 两行两列布局
-        type_grid = ttk.Frame(type_frame)
-        type_grid.pack(fill=tk.X, expand=True)
-
-        # 第一行
-        ttk.Radiobutton(type_grid, text="📈 曲线图", variable=self.plot_type,
-                        value="曲线图").grid(row=0, column=0, sticky=tk.W, padx=2, pady=1)
-        ttk.Radiobutton(type_grid, text="📊 柱状图", variable=self.plot_type,
-                        value="柱状图").grid(row=0, column=1, sticky=tk.W, padx=2, pady=1)
-
-        # 第二行
-        ttk.Radiobutton(type_grid, text="📋 表格", variable=self.plot_type,
-                        value="表格").grid(row=1, column=0, sticky=tk.W, padx=2, pady=1)
-        ttk.Radiobutton(type_grid, text="🗺️ 地形图", variable=self.plot_type,
-                        value="地形图").grid(row=1, column=1, sticky=tk.W, padx=2, pady=1)
-
-        # 配置网格列权重
-        type_grid.grid_columnconfigure(0, weight=1)
-        type_grid.grid_columnconfigure(1, weight=1)
-
-        # ===== 地形图选项区域 =====
-        self.topo_frame = ttk.LabelFrame(parent, text="地形图设置", padding=2)
-        self.topo_frame.grid(row=4 + row_offset, column=0, sticky="ew", padx=1, pady=1)
-
-        # 信息文件选择
-        info_row = ttk.Frame(self.topo_frame)
-        info_row.pack(fill=tk.X, pady=1)
-
-        ttk.Button(info_row, text="选择文件", width=6,
-                   command=self.select_info).pack(side=tk.LEFT, padx=1)
-        self.info_label = ttk.Label(info_row, text="未选择",
-                                    font=('微软雅黑', 8), foreground='#666')
-        self.info_label.pack(side=tk.LEFT, padx=2)
-
-        # 地形图选项 - 并排显示
-        opt_row = ttk.Frame(self.topo_frame)
-        opt_row.pack(fill=tk.X, pady=1)
-
-        self.cb_relative = tk.BooleanVar(value=False)
-        self.cb_sensor = tk.BooleanVar(value=False)
-
-        ttk.Checkbutton(opt_row, text="相对缩放",
-                        variable=self.cb_relative).pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
-        ttk.Checkbutton(opt_row, text="显示传感器",
-                        variable=self.cb_sensor).pack(side=tk.LEFT, padx=2, fill=tk.X, expand=True)
-
-        # ===== 操作按钮区域 =====
-        btn_frame = ttk.Frame(parent)
-        btn_frame.grid(row=5 + row_offset, column=0, sticky="ew", padx=1, pady=2)
-
-        # 生成图形按钮 - 最突出
-        generate_btn = tk.Button(btn_frame, text="生成图形",
-                                 bg="#27ae60", fg="white",
-                                 font=('微软雅黑', 11, 'bold'),
-                                 command=self.plot,
-                                 relief=tk.FLAT)
-        generate_btn.pack(fill=tk.X, pady=1)
-
-        # 保存图像按钮
-        save_btn = tk.Button(btn_frame, text="保存图像",
-                             bg="#f39c12", fg="white",
-                             font=('微软雅黑', 10, 'bold'),
-                             command=self.save_plot,
-                             relief=tk.FLAT)
-        save_btn.pack(fill=tk.X, pady=1)
-
-        # 设置按钮
-        setting_btn = tk.Button(btn_frame, text="⚙️ 绘图设置",
-                                bg="#3498db", fg="white",
-                                font=('微软雅黑', 9),
-                                command=self.show_settings,
-                                relief=tk.FLAT)
-        setting_btn.pack(fill=tk.X, pady=1)
-
-    def _create_right_panel(self, parent):
-        """创建右侧图形面板 - 保留坐标轴标题"""
-
-        # 在创建任何图形前强制设置中文字体
-        import matplotlib.pyplot as plt
-        import matplotlib as mpl
-
-        # 方法1：通用字体设置
-        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'sans-serif']
-        plt.rcParams['axes.unicode_minus'] = False
-
-        # 方法2：直接指定字体路径（Windows系统）
-        try:
-            import os
-            font_paths = [
-                'C:/Windows/Fonts/msyh.ttc',  # 微软雅黑
-                'C:/Windows/Fonts/simhei.ttf',  # 黑体
-                'C:/Windows/Fonts/msyhbd.ttc',  # 微软雅黑粗体
-            ]
-            for font_path in font_paths:
-                if os.path.exists(font_path):
-                    mpl.font_manager.fontManager.addfont(font_path)
-                    plt.rcParams['font.family'] = 'sans-serif'
-                    plt.rcParams['font.sans-serif'] = [mpl.font_manager.FontProperties(fname=font_path).get_name()]
-                    break
-        except:
-            pass
-
-        # 创建画布容器 - 无边距
-        self.canvas_container = ttk.Frame(parent, relief=tk.FLAT)
-        self.canvas_container.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
-
-        # 创建初始图形
-        self.fig = Figure(figsize=(10, 7), dpi=100, facecolor='white')
-        self.canvas = FigureCanvasTkAgg(self.fig, self.canvas_container)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
-
-        # 创建轴
-        self.ax = self.fig.add_subplot(111)
-
-        # 设置白色背景
-        self.ax.set_facecolor('white')
-        self.fig.patch.set_facecolor('white')
-
-        # 保留坐标轴框架，但隐藏刻度
-        self.ax.spines['top'].set_visible(False)
-        self.ax.spines['right'].set_visible(False)
-        self.ax.spines['bottom'].set_visible(True)
-        self.ax.spines['left'].set_visible(True)
-
-        # 隐藏刻度标签但保留轴线
-        self.ax.set_xticks([])
-        self.ax.set_yticks([])
-
-        # ===== 添加坐标轴标题和主标题 =====
-        # 从设置中获取标题，如果没有则使用默认值
-        title = self.settings.get("title", "")
-        xlabel = self.settings.get("xlabel", "")
-        ylabel = self.settings.get("ylabel", "")
-
-        # 如果设置为空，显示默认提示
-        if not title:
-            title = "特征可视化"
-        if not xlabel:
-            xlabel = "特征"
-        if not ylabel:
-            ylabel = "幅值"
-
-        # 设置标题和轴标签
-        self.ax.set_title(title, fontsize=14, pad=15, fontfamily='Microsoft YaHei')
-        self.ax.set_xlabel(xlabel, fontsize=11, fontfamily='Microsoft YaHei')
-        self.ax.set_ylabel(ylabel, fontsize=11, fontfamily='Microsoft YaHei')
-
-        # 在图形中心添加一个淡灰色的提示文字
-        self.ax.text(0.5, 0.5, "请选择通道和特征后点击「生成图形」",
-                     ha='center', va='center', fontsize=12,
-                     transform=self.ax.transAxes,
-                     color='#999999',
-                     fontfamily='Microsoft YaHei',
-                     bbox=dict(boxstyle="round,pad=0.5",
-                               facecolor="#f8f8f8", alpha=0.8,
-                               edgecolor='#dddddd'))
-
-        self.canvas.draw()
-
-        # 保存当前画布
-        self.current_canvas = type('obj', (object,), {
-            'fig': self.fig,
-            'canvas': self.canvas,
-            'ax': self.ax,
-            'get_widget': lambda: self.canvas.get_tk_widget()
-        })
-
-    # ========== 模态切换方法 ==========
-    def on_modality_changed(self, event=None):
-        """模态切换 - 只更新显示，不改变数据"""
-        new_modality = self.modality_var.get()
-        if new_modality != self.current_modality:
-            self.current_modality = new_modality
-            self.title(f"特征可视化 - {self.current_modality}")
-            # 可以在这里添加提示信息
-            print(f"切换到模态: {new_modality}")
-            # 不改变数据，只更新标题
-
-    # ========== 辅助方法 ==========
-    def select_all_channels(self):
-        """全选通道"""
-        self.ch_listbox.selection_set(0, tk.END)
-
-    def clear_all_channels(self):
-        """清空通道选择"""
-        self.ch_listbox.selection_clear(0, tk.END)
-
-    def select_all_features(self):
-        """全选特征"""
-        self.feat_listbox.selection_set(0, tk.END)
-
-    def clear_all_features(self):
-        """清空特征选择"""
-        self.feat_listbox.selection_clear(0, tk.END)
-
-    def reset_view(self):
-        """重置视图"""
-        self.select_all_channels()
-        self.select_all_features()
-        self.plot()
-
-    def maximize(self):
-        """最大化窗口"""
-        self.state('zoomed')  # Windows
-        # self.attributes('-zoomed', True)  # Linux 可能用这个
-
-    def toggle_fullscreen(self, event=None):
-        """切换全屏模式"""
-        self.attributes('-fullscreen', not self.attributes('-fullscreen'))
-
-    def select_info(self):
-        """选择信息文件"""
-        path = filedialog.askopenfilename(
-            title="选择信息文件",
-            filetypes=[("JSON文件", "*.json"), ("所有文件", "*.*")]
-        )
-        if path:
-            self.info = read_info(path)
-            self.info_label.config(text=os.path.basename(path))
-
-    def show_settings(self):
-        """显示设置对话框"""
-        dialog = PlotSettingsDialog(self, self.settings)
-        self.wait_window(dialog)
-        if dialog.result:
-            self.settings.update(dialog.result)
-            # 如果已经有图形，重新绘制
-            if hasattr(self.current_canvas, 'plot'):
-                self.plot()
-
-    def get_selected_channels(self):
-        """获取选中的通道"""
-        indices = self.ch_listbox.curselection()
-        return [self.all_channels[i] for i in indices]
-
-    def get_selected_features(self):
-        """获取选中的特征"""
-        indices = self.feat_listbox.curselection()
-        return [self.all_features[i] for i in indices]
-
-    def plot(self):
-        """生成图形"""
-        selected_channels = self.get_selected_channels()
-        selected_features = self.get_selected_features()
-
-        if not selected_channels or not selected_features:
-            messagebox.showwarning("警告", "请至少选择一个通道和一个特征")
-            return
-
-        plot_type = self.plot_type.get()
-
-        # 清除旧画布
-        for widget in self.canvas_container.winfo_children():
-            widget.destroy()
-
-        # 重新设置中文字体（确保）
-        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
-        plt.rcParams['axes.unicode_minus'] = False
-
-        try:
-            if plot_type == "曲线图":
-                canvas = CurveCanvas(self.canvas_container,
-                                     width=self.settings["width"],
-                                     height=self.settings["height"])
-                canvas.plot(self.data, selected_channels,
-                            selected_features, self.settings)
-
-            elif plot_type == "柱状图":
-                canvas = BarCanvas(self.canvas_container,
-                                   width=self.settings["width"],
-                                   height=self.settings["height"])
-                canvas.plot(self.data, selected_channels,
-                            selected_features, self.settings)
-
-            elif plot_type == "表格":
-                canvas = TableCanvas(self.canvas_container)
-                df = self._feature_dict_to_df(self.data)
-                canvas.plot(df)
-                canvas.pack(fill=tk.BOTH, expand=True)
-                self.current_canvas = canvas
-                return
-
-            elif plot_type == "地形图":
-                if not self.info:
-                    messagebox.showwarning("警告", "请先选择信息文件")
-                    return
-                canvas = TopomapCanvas(self.canvas_container,
-                                       width=self.settings["width"],
-                                       height=self.settings["height"])
-                canvas.plot(self.data, self.info, selected_channels,
-                            selected_features,
-                            self.cb_relative.get(), self.cb_sensor.get())
-
-            else:
-                return
-
-            canvas.get_widget().pack(fill=tk.BOTH, expand=True)
-
-            # 添加工具栏
-            toolbar_frame = ttk.Frame(self.canvas_container)
-            toolbar_frame.pack(fill=tk.X)
-            toolbar = NavigationToolbar2Tk(canvas.canvas, toolbar_frame)
-            toolbar.update()
-
-            self.current_canvas = canvas
-
-        except Exception as e:
-            messagebox.showerror("错误", f"绘图失败:\n{str(e)}")
-            import traceback
-            traceback.print_exc()
-
-    def save_plot(self):
-        """保存图像"""
-        if not hasattr(self.current_canvas, 'fig'):
-            messagebox.showwarning("警告", "请先生成图形")
-            return
-
-        path = filedialog.asksaveasfilename(
-            defaultextension=".png",
-            filetypes=[("PNG图像", "*.png"), ("JPEG图像", "*.jpg"),
-                       ("PDF文件", "*.pdf"), ("SVG图像", "*.svg")]
-        )
-        if path:
-            dpi = simpledialog.askinteger("DPI", "请输入DPI (推荐300):",
-                                          initialvalue=300, minvalue=50, maxvalue=600)
-            if dpi:
-                self.current_canvas.fig.savefig(path, dpi=dpi, bbox_inches='tight')
-                messagebox.showinfo("成功", f"图像已保存到:\n{path}")
-
-    def _feature_dict_to_df(self, fd):
-        """特征字典转DataFrame"""
-        data = {"通道": fd["ch_names"]}
-        for k, v in fd["feature"].items():
-            data[k] = v
-        df = pd.DataFrame(data)
-        return df
-
-
 # ==================== 外部调用接口 ====================
+
 def show_feature_view(parent, data_dict):
     """
-    显示特征视图
-
-    Args:
-        parent: 父窗口
-        data_dict: 数据字典
+    统一特征可视化入口
     """
     try:
-        # 解析数据
-        processed = data_dict.get("processed", {})
-        feature_data = processed.get("features", {})
-
-        if not feature_data:
-            feature_data = data_dict.get("feature", {})
-
-        if not feature_data:
-            messagebox.showerror("错误", "数据中没有特征信息")
-            return None
-
-        # 获取通道列表
-        channels = []
-        available_modalities = []
-        current_modality = None
-
-        if 'signal' in data_dict and data_dict['signal']:
-            available_modalities = list(data_dict['signal'].keys())
-            if available_modalities:
-                current_modality = available_modalities[0]
-                channels = data_dict['signal'][current_modality].get('channel_names', [])
-
-        if not channels:
-            messagebox.showerror("错误", "没有通道信息")
-            return None
-
-        # 获取特征列表
-        feature_names_set = set()
-        for key in feature_data.keys():
-            if '_' in key:
-                parts = key.split('_', 1)
-                if len(parts) == 2:
-                    feature_names_set.add(parts[1])
-
-        feature_names = sorted(list(feature_names_set))
-
-        if not feature_names:
-            messagebox.showerror("错误", "无法识别特征格式")
-            return None
-
-        # 转换数据格式
-        converted_features = {}
-        for feat_name in feature_names:
-            values = []
-            for ch in channels:
-                key = f"{ch}_{feat_name}"
-                values.append(feature_data.get(key, 0.0))
-            converted_features[feat_name] = values
-
-        converted_data = {
-            'ch_names': channels,
-            'feature': converted_features
-        }
-
-        # 创建视图（传递模态信息）
-        view = FeatureView(parent, converted_data, channels, feature_names,
-                           available_modalities, current_modality)
+        view = FeatureView(parent, data_dict)  # 这里也用原名
         return view
-
     except Exception as e:
         messagebox.showerror("错误", f"打开特征视图失败:\n{str(e)}")
         import traceback
@@ -993,33 +1409,22 @@ def show_feature_view(parent, data_dict):
 
 
 if __name__ == "__main__":
-    import sys
-
     root = tk.Tk()
-    root.title("特征视图测试")
-    root.geometry("800x600")
+    root.withdraw()  # 隐藏主窗口
 
-    # 测试数据
+    # 创建测试数据
     test_data = {
-        "signal": {
-            "EEG": {
-                "channel_names": [f"EEG_{i}" for i in range(16)]
-            },
-            "EMG": {
-                "channel_names": [f"EMG_{i}" for i in range(8)]
+        "meta": {"modality": ["TEST"]},
+        "processed": {
+            "features": {
+                "test_category": {
+                    "test_feature": [1, 2, 3, 4]
+                }
             }
         },
-        "feature": {
-            'ch_names': [f"EEG_{i}" for i in range(16)],
-            'feature': {
-                'Delta': np.random.rand(16).tolist(),
-                'Theta': np.random.rand(16).tolist(),
-                'Alpha': np.random.rand(16).tolist(),
-                'Beta': np.random.rand(16).tolist(),
-                'Gamma': np.random.rand(16).tolist()
-            }
-        }
+        "signal": {}
     }
 
-    view = show_feature_view(root, test_data)
-    root.mainloop()
+    # 创建视图
+    view = FeatureView(root, test_data)
+    view.mainloop()
